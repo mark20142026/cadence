@@ -1,6 +1,7 @@
 //! Platform-free game logic for Cadence: data formats, objects, physics.
 //! No file, window or network access here, so it builds the same for native and wasm32.
 
+pub mod advfollow;
 pub mod area;
 pub mod fxhash;
 pub mod camera;

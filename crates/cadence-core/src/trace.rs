@@ -17,6 +17,13 @@ pub struct Spec {
     pub buttons: Vec<BTreeMap<u32, Vec<(bool, u8)>>>,
     /// Game updates per rendered frame (`speed`; the cocos scheduler ticks once per frame).
     pub speed: u32,
+    /// `levelstring <file>`: play this raw level string instead of a main level.
+    pub level_string: Option<String>,
+    /// `watchgroup <group> <file>` lines: the harness writes the group's first objects'
+    /// positions every step there.
+    pub watch: Vec<(i32, String)>,
+    /// `watchmax N`: objects per watched group (4 by default).
+    pub watch_max: usize,
 }
 
 impl Spec {
@@ -27,6 +34,7 @@ impl Spec {
             attempts: vec![BTreeMap::new()],
             buttons: vec![BTreeMap::new()],
             speed: 1,
+            watch_max: 4,
             ..Spec::default()
         };
         for line in text.lines() {
@@ -38,6 +46,13 @@ impl Spec {
                 "steps" => spec.steps = arg.parse().unwrap_or(2400),
                 "out" => spec.out = arg.to_owned(),
                 "speed" => spec.speed = arg.parse().unwrap_or(1),
+                "levelstring" => spec.level_string = Some(arg.to_owned()),
+                "watchmax" => spec.watch_max = arg.parse().unwrap_or(4),
+                "watchgroup" => {
+                    if let (Ok(group), Some(path)) = (arg.parse(), words.next()) {
+                        spec.watch.push((group, path.to_owned()));
+                    }
+                }
                 "attempt" => {
                     if !spec.buttons.last().unwrap().is_empty() {
                         spec.attempts.push(BTreeMap::new());

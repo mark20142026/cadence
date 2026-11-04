@@ -20,6 +20,7 @@ fn main() -> ExitCode {
             Ok(())
         })(),
         ["replay", spec, out] => replay(spec, out),
+        ["watch", spec] => watch(spec),
         ["verify", spec] => verify(spec),
         ["route", level, count, out_pattern] => route(level, count, out_pattern),
         ["proute", level, waypoints, out_pattern] => route_platformer(level, waypoints, out_pattern),
@@ -144,6 +145,7 @@ fn simulate_both(
             press(&mut player, world, down, button);
         }
         let cam = player.camera;
+        world.observe(player.dual.as_ref().map(|p| (p.x, p.y)), (cam.x, cam.y));
         world.pre_step((player.x, player.y));
         player.step(world);
         if was_dashing && !player.dashing {
@@ -210,12 +212,84 @@ fn press(player: &mut cadence_core::physics::Player, world: &mut cadence_core::w
     }
 }
 
+/// The world of a spec: its `levelstring` file (a raw or encoded level string) or main level.
+fn load_spec_world(spec: &cadence_core::trace::Spec) -> Result<cadence_core::world::World, Box<dyn std::error::Error>> {
+    let Some(path) = &spec.level_string else { return load_world(spec.level) };
+    let bytes = std::fs::read(path)?;
+    let text = String::from_utf8_lossy(&bytes);
+    let text = if text.trim_start().starts_with("H4sI") || !text.contains(';') { decode_level_bytes(&bytes)? } else { text.into_owned() };
+    Ok(world_of(LevelString::parse(&text)))
+}
+
 fn load_world(level: i32) -> Result<cadence_core::world::World, Box<dyn std::error::Error>> {
     let level_path = format!("{}/levels/{}.txt", gd_resources(), level);
     let level = LevelString::parse(&decode_level_bytes(&std::fs::read(&level_path)?)?);
+    Ok(world_of(level))
+}
+
+/// A world for a level, with its camera triggers and settings kept for `spawn_player`.
+fn world_of(level: LevelString) -> cadence_core::world::World {
     CAMERA_TRIGGERS.with(|c| *c.borrow_mut() = cadence_core::camera::CameraTriggers::from_level(&level));
     LEVEL_SETTINGS.with(|c| *c.borrow_mut() = Some(level.clone()));
-    Ok(cadence_core::world::World::from_level(&level))
+    cadence_core::world::World::from_level(&level)
+}
+
+/// `cadence watch <spec>`: simulate the spec's first attempt and write each `watchgroup`'s
+/// objects every step next to the harness's file (`<file>.ours`): `step,id:x:y:rot:real=x:y`
+/// per object (the level object's f64 position as the game's +0x3b0/+0x3b8, its turned
+/// rotation), plus `:op=` opacity-related state is left to screenshots.
+fn watch(spec_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let spec = cadence_core::trace::Spec::parse(&std::fs::read_to_string(spec_path)?);
+    let mut world = load_spec_world(&spec)?;
+    world.sched_every = spec.speed;
+    if let Ok(text) = std::fs::read_to_string(spec.out_path(0)) {
+        world.sched_phase = cadence_core::trace::sched_index(&text).unwrap_or(0);
+    }
+    let level = LEVEL_SETTINGS.with(|c| c.borrow().clone()).unwrap_or_default();
+    let view_w = std::env::var("CADENCE_VIEW_W").ok().and_then(|v| v.parse().ok()).unwrap_or(569.0);
+    let inputs = spec.buttons.first().cloned().unwrap_or_default();
+    world.reset();
+    let mut player = spawn_player(&world);
+    // each watched group's first objects by level order (the game's group array order)
+    let groups: Vec<(Vec<usize>, String)> = spec
+        .watch
+        .iter()
+        .map(|(g, path)| {
+            let members: Vec<usize> = level.objects.iter().enumerate().filter(|(_, o)| o.groups().contains(g)).map(|(i, _)| i).take(spec.watch_max).collect();
+            (members, format!("{path}.ours"))
+        })
+        .collect();
+    let mut outs: Vec<String> = vec![String::new(); groups.len()];
+    for step in 0..spec.steps {
+        player.begin_step(&world);
+        for &(down, button) in inputs.get(&step).map(|v| v.as_slice()).unwrap_or(&[]) {
+            press(&mut player, &mut world, down, button);
+        }
+        world.observe(player.dual.as_ref().map(|p| (p.x, p.y)), (player.camera.x, player.camera.y));
+        world.pre_step((player.x, player.y));
+        player.step(&world);
+        world.post_step(&player);
+        player.step_camera(&world, view_w);
+        for (k, (members, _)) in groups.iter().enumerate() {
+            let mut line = format!("{step}");
+            for &i in members {
+                let (x, y) = world.level_position(i);
+                let o = &level.objects[i];
+                let rot = o.get_f32(6).unwrap_or(0.0) + world.turned[i];
+                line.push_str(&format!(",{}:{}:{}:{}:real={}:{}", o.id(), x as f32, y as f32, rot, x, y));
+            }
+            outs[k].push_str(&line);
+            outs[k].push('\n');
+        }
+        if player.dead || player.finished || world.level_end {
+            break;
+        }
+    }
+    for (k, (_, path)) in groups.iter().enumerate() {
+        std::fs::write(path, &outs[k])?;
+        eprintln!("wrote {path}");
+    }
+    Ok(())
 }
 
 thread_local! {
@@ -243,7 +317,7 @@ const PLAN_VIEW_W: f32 = 493.0;
 /// Replay the first attempt of a spec and write the trace.
 fn replay(spec_path: &str, out_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let spec = cadence_core::trace::Spec::parse(&std::fs::read_to_string(spec_path)?);
-    let mut world = load_world(spec.level)?;
+    let mut world = load_spec_world(&spec)?;
     world.sched_every = spec.speed;
     // The scheduler phase from the real trace when there is one.
     if let Ok(text) = std::fs::read_to_string(spec.out_path(0)) {
@@ -285,7 +359,7 @@ fn legacy_dash_ends(text: &str, rows: &[cadence_core::trace::Row]) -> BTreeMap<u
 fn verify(spec_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     use cadence_core::trace::parse_csv;
     let spec = cadence_core::trace::Spec::parse(&std::fs::read_to_string(spec_path)?);
-    let mut world = load_world(spec.level)?;
+    let mut world = load_spec_world(&spec)?;
     world.sched_every = spec.speed;
     let (mut matched, mut total, mut steps) = (0, 0, 0usize);
     let (mut rot_max, mut rot_sum, mut rot_n) = (0.0f32, 0.0f64, 0usize);

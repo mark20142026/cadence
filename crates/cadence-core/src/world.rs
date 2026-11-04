@@ -139,6 +139,8 @@ pub struct World {
     /// scaled it by (for drawing).
     pub turned: Vec<f32>,
     pub scaled: Vec<(f32, f32)>,
+    /// Per level object: its rotation in the level (key 6).
+    base_rotation: std::sync::Arc<Vec<f32>>,
     /// Per level object: its start position and its current f64 position (objects that
     /// triggers move, collidable or not — rotation centers are often decorations).
     start: Vec<(f32, f32)>,
@@ -280,6 +282,11 @@ pub struct World {
     /// the player compares with to take them off its destroyed list.
     pub restored: Vec<usize>,
     pub restore_count: u64,
+    /// Advanced follow (advfollow.rs), and what it follows besides groups: player 2 and the
+    /// camera (the drivers tell the world, `observe`).
+    pub adv: crate::advfollow::AdvFollow,
+    pub player2_pos: Option<(f32, f32)>,
+    pub camera_pos: (f32, f32),
 }
 
 /// A spawn particle trigger's values (`SpawnParticleGameObject::customObjectSetup` 0x188b3c).
@@ -457,10 +464,22 @@ impl World {
                 | crate::groups::Action::Reverse
                 | crate::groups::Action::Enter { .. }
                 | crate::groups::Action::EnterStop { .. }
-                | crate::groups::Action::AdvFollow { .. }
-                | crate::groups::Action::AdvFollowEdit { .. }
                 | crate::groups::Action::KeyframeAnim { .. }
                 | crate::groups::Action::Effect { .. } => {}
+                crate::groups::Action::AdvFollow { order } | crate::groups::Action::AdvFollowEdit { order } => {
+                    // the followed group and the moved group
+                    if let Some(raw) = level.objects.get(order as usize) {
+                        let g = raw.get_i32(51).unwrap_or(0);
+                        if g > 0 && raw.id() == 3016 {
+                            moving_groups.insert(g);
+                        }
+                        for k in [51, 71, 560, 565] {
+                            if let Some(g) = raw.get_i32(k).filter(|&g| g > 0) {
+                                members.entry(g).or_default();
+                            }
+                        }
+                    }
+                }
                 crate::groups::Action::SpawnParticle { order } | crate::groups::Action::Checkpoint { order } => {
                     // their position groups (and the particle group, for the app)
                     if let Some(raw) = level.objects.get(order as usize) {
@@ -638,6 +657,7 @@ impl World {
             max_width,
             max_radius,
             max_slope_width,
+            base_rotation: std::sync::Arc::new(level.objects.iter().map(|o| o.get_f32(6).unwrap_or(0.0)).collect()),
             level_length: max_x + 340.0,
             start_speed,
             enter: crate::enter::EnterState::default(),
@@ -693,6 +713,9 @@ impl World {
             platformer: level.setting("kA22") == Some("1"),
             restored: Vec::new(),
             restore_count: 0,
+            adv: crate::advfollow::AdvFollow::new(level),
+            player2_pos: None,
+            camera_pos: (0.0, 0.0),
         };
         if first_dynamic < world.objects.len() || !world.members.is_empty() || !world.enter_specs.is_empty() || !world.triggers.actions().is_empty() {
             world.initial = Some(Box::new(world.clone()));
@@ -832,6 +855,7 @@ impl World {
             }
         }
         if self.triggers.commands.is_empty() {
+            self.process_adv_follow();
             self.process_area_moves();
             return;
         }
@@ -958,7 +982,44 @@ impl World {
             }
         }
         self.triggers.commands.retain(|c| !c.done);
+        // processAdvancedFollowActions (after the player follows; the game runs the follow
+        // triggers after it)
+        self.process_adv_follow();
         self.process_area_moves();
+    }
+
+    /// What the world can't see itself: player 2's position and the camera (advanced follow
+    /// triggers can follow them). Drivers call it before `pre_step`.
+    pub fn observe(&mut self, player2: Option<(f32, f32)>, camera: (f32, f32)) {
+        self.player2_pos = player2;
+        self.camera_pos = camera;
+    }
+
+    /// Player 1's position at this step's start.
+    pub(crate) fn last_player_pos(&self) -> Option<(f32, f32)> {
+        self.last_player
+    }
+
+    /// `getLastPosition` of a level object.
+    pub(crate) fn level_last_of(&self, i: usize) -> (f32, f32) {
+        self.level_last[i]
+    }
+
+    /// An object's rotation now (its own plus what triggers turned it).
+    pub(crate) fn turned_of(&self, i: usize) -> f32 {
+        self.base_rotation.get(i).copied().unwrap_or(0.0) + self.turned[i]
+    }
+
+    /// `m_canRotateFree`: solids, breakables and slopes don't turn unless the level allows it.
+    pub(crate) fn can_rotate_free(&self, i: usize) -> bool {
+        let c = self.collider[i];
+        !(c != u32::MAX && matches!(self.objects[c as usize].kind.0, 0 | 21 | 25)) || self.rotate_free_all
+    }
+
+    /// Turn a level object in place.
+    pub(crate) fn turn_object(&mut self, i: usize, degrees: f32) {
+        let pos = self.level_pos[i];
+        self.set_level_pos(i, pos, degrees);
     }
 
     /// `PlayerObject::getOldPosition`: player 1's y `delay` seconds ago (0.01 s buckets, at
@@ -1606,7 +1667,9 @@ impl World {
                         }
                     }
                     crate::groups::Action::EnterStop { channel, mode, effect_id } => self.enter.stop(channel, mode, effect_id),
-                    crate::groups::Action::AdvFollow { .. } | crate::groups::Action::AdvFollowEdit { .. } | crate::groups::Action::KeyframeAnim { .. } => {}
+                    crate::groups::Action::AdvFollow { order } => self.adv_fire(order),
+                    crate::groups::Action::AdvFollowEdit { order } => self.adv_edit(order),
+                    crate::groups::Action::KeyframeAnim { .. } => {}
                 }
             }
         }

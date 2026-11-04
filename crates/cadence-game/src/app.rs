@@ -1553,6 +1553,7 @@ impl Game {
                     self.player.set_direction(self.direction[i], button);
                 }
             }
+            self.world.observe(self.player.dual.as_ref().map(|p| (p.x, p.y)), (self.player.camera.x, self.player.camera.y));
             self.world.pre_step((self.player.x, self.player.y));
             self.player.step(&self.world);
             self.world.post_step(&self.player);
@@ -2018,6 +2019,7 @@ impl App {
                         game.player.set_direction(down, button);
                     }
                 }
+                game.world.observe(game.player.dual.as_ref().map(|p| (p.x, p.y)), (game.player.camera.x, game.player.camera.y));
                 game.world.pre_step((game.player.x, game.player.y));
                 game.player.step(&game.world);
                 game.world.post_step(&game.player);
