@@ -436,7 +436,8 @@ impl Editor {
         // the start line (x = 0)
         let (sx, _) = to_screen(0.0, 0.0);
         c.rect(sx - 0.5, 0.0, 1.0, h, [1.0, 1.0, 1.0], 0.5);
-        self.draw_guides(c, view);
+        // (the guides and the playback line are drawn by the app under the objects:
+        // `guide_lines`)
         // selected objects: a green box
         for &i in &self.selected {
             if let Some(o) = self.objects.get(i) {
@@ -636,8 +637,21 @@ pub const Z_LAYERS: [i32; 9] = [-5, -3, -1, 1, 3, 5, 7, 9, 11];
 /// 3 faster, 4 fastest), as `DrawGridLayer` keeps them.
 const GUIDE_SPEEDS: [f32; 5] = [311.58011, 251.16007, 387.42014, 468.00015, 576.00018];
 
+/// A guide line in level space, drawn by the app under the level's objects (the game's
+/// `DrawGridLayer` is under the object layer).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GuideLine {
+    pub from: (f32, f32),
+    pub to: (f32, f32),
+    pub color: [f32; 3],
+    pub alpha: f32,
+    /// Level units, or framebuffer pixels (`glLineWidth`) when `pixels`.
+    pub width: f32,
+    pub pixels: bool,
+}
+
 impl Editor {
-    /// The guide objects' overlays:
+    /// The guide objects' overlays, in level space (`view` = x, y, width, height of the view):
     /// - Camera Guide 2016 (`LevelEditorLayer::updateDebugDraw` 0xba678): with preview opacity 506
     ///   above 0, zoom 371 held to 0.4..3: a green 480 × 320 rectangle ÷ zoom (the game's
     ///   reference view) and, when the window isn't 3:2, an orange (255, 128, 0) one of the window's
@@ -648,12 +662,13 @@ impl Editor {
     ///   with BPM 498 above 0, a line every speed(499) · 60 / (BPM · max(1, 501)) units from the
     ///   object's x over duration 10 seconds of the speed: every 501st line yellow, the others
     ///   orange (all yellow when 501 < 1); one pixel wide, opaque.
-    fn draw_guides(&self, c: &mut Canvas, view: (f32, f32, f32, f32)) {
-        let (w, h) = (c.width, c.height);
-        let to_screen = |x: f32, y: f32| ((x - view.0) * w / view.2, (y - view.1) * h / view.3);
-        let unit = w / view.2;
+    /// - The music playback line (`DrawGridLayer::draw`, while EditorUI plays the song): green
+    ///   (50, 255, 50) at posForTime(song time), 5 pixels wide, from y −3000 up; once stopped it
+    ///   stays at its last place, 3 pixels wide at opacity 100. `playback` = (x, playing).
+    pub fn guide_lines(&self, view: (f32, f32, f32, f32), playback: Option<(f32, bool)>) -> Vec<GuideLine> {
+        let mut out = Vec::new();
         let f = |o: &EdObject, k: u16| o.get(k).and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
-        let line = 0.5 * unit;
+        let world = |from: (f32, f32), to: (f32, f32), color: [f32; 3], alpha: f32| GuideLine { from, to, color, alpha, width: 0.5, pixels: false };
         for o in self.objects.iter().filter(|o| o.id == 2016) {
             let opacity = f(o, 506);
             if opacity <= 0.0 {
@@ -661,52 +676,87 @@ impl Editor {
             }
             let zoom = f(o, 371).min(3.0).max(0.4);
             let (ox, oy) = (f(o, 28), f(o, 29));
-            let rect = |c: &mut Canvas, rw: f32, rh: f32, color: [f32; 3]| {
+            let mut rect = |rw: f32, rh: f32, color: [f32; 3]| {
                 let cy = o.y.max(rh * 0.5);
-                let (x0, y0) = to_screen(o.x + ox - rw * 0.5, cy + oy - rh * 0.5 + GROUND);
-                let (x1, y1) = to_screen(o.x + ox + rw * 0.5, cy + oy + rh * 0.5 + GROUND);
-                c.rect(x0 - line * 0.5, y0 - line * 0.5, x1 - x0 + line, line, color, opacity);
-                c.rect(x0 - line * 0.5, y1 - line * 0.5, x1 - x0 + line, line, color, opacity);
-                c.rect(x0 - line * 0.5, y0 - line * 0.5, line, y1 - y0 + line, color, opacity);
-                c.rect(x1 - line * 0.5, y0 - line * 0.5, line, y1 - y0 + line, color, opacity);
+                let (x0, y0) = (o.x + ox - rw * 0.5, cy + oy - rh * 0.5 + GROUND);
+                let (x1, y1) = (o.x + ox + rw * 0.5, cy + oy + rh * 0.5 + GROUND);
+                out.push(world((x0, y0), (x1, y0), color, opacity));
+                out.push(world((x0, y1), (x1, y1), color, opacity));
+                out.push(world((x0, y0), (x0, y1), color, opacity));
+                out.push(world((x1, y0), (x1, y1), color, opacity));
                 (y0, y1)
             };
             // the window (Cadence's view is VIEW_HEIGHT tall, its width the window's aspect)
             let (win_w, win_h) = (view.2 * self.zoom, view.3 * self.zoom);
             if (480.0 / zoom, 320.0 / zoom) != (win_w / zoom, win_h / zoom) {
-                rect(c, win_w / zoom, win_h / zoom, [1.0, 0.5, 0.0]);
+                rect(win_w / zoom, win_h / zoom, [1.0, 0.5, 0.0]);
             }
-            let (y0, y1) = rect(c, 480.0 / zoom, 320.0 / zoom, [0.0, 1.0, 0.0]);
-            let (sx, _) = to_screen(o.x, 0.0);
-            c.rect(sx - line * 0.5, y0, line, y1 - y0, [1.0, 1.0, 0.0], opacity);
+            let (y0, y1) = rect(480.0 / zoom, 320.0 / zoom, [0.0, 1.0, 0.0]);
+            out.push(world((o.x, y0), (o.x, y1), [1.0, 1.0, 0.0], opacity));
         }
-        if !self.show_bpm_markers {
-            return;
+        let (bottom, top) = (view.1, view.1 + view.3);
+        if self.show_bpm_markers {
+            for o in self.objects.iter().filter(|o| o.id == 3642) {
+                let bpm = f(o, 498) as i32;
+                if bpm <= 0 || f(o, 500) as i32 != 0 {
+                    continue;
+                }
+                let per_bar = f(o, 501) as i32;
+                let speed = GUIDE_SPEEDS.get(f(o, 499) as usize).copied().unwrap_or(GUIDE_SPEEDS[0]);
+                let step = speed * (60.0 / (per_bar.max(1) * bpm) as f32);
+                let end = (o.x + speed * f(o, 10)).min(view.0 + view.2);
+                let (mut x, mut n) = (o.x, 0i32);
+                if view.0 > x {
+                    let skip = ((view.0 - x) / step) as i32;
+                    n = skip;
+                    x += step * skip as f32;
+                }
+                while x < end {
+                    let yellow = per_bar < 1 || n % per_bar == 0;
+                    let color = if yellow { [1.0, 1.0, 0.0] } else { [1.0, 0.5, 0.0] };
+                    out.push(GuideLine { from: (x, bottom), to: (x, top), color, alpha: 1.0, width: 1.0, pixels: true });
+                    x += step;
+                    n += 1;
+                }
+            }
         }
-        let pixel = 0.45;
-        for o in self.objects.iter().filter(|o| o.id == 3642) {
-            let bpm = f(o, 498) as i32;
-            if bpm <= 0 || f(o, 500) as i32 != 0 {
+        if let Some((x, playing)) = playback.filter(|&(x, _)| 0.0 < x) {
+            let (alpha, width) = if playing { (1.0, 5.0) } else { (100.0 / 255.0, 3.0) };
+            out.push(GuideLine { from: (x, bottom.max(-3000.0)), to: (x, top), color: [50.0 / 255.0, 1.0, 50.0 / 255.0], alpha, width, pixels: true });
+        }
+        out
+    }
+
+    /// `LevelTools::posForTime`: where the level is `t` seconds in, at the start speed (kA4)
+    /// and through the speed portals (200 slow, 201 normal, 202 fast, 203 faster, 1334 fastest)
+    /// — the music playback line's x.
+    pub fn playback_x(&self, t: f32) -> f32 {
+        let index = |id: u16| match id {
+            200 => Some(1),
+            201 => Some(0),
+            202 => Some(2),
+            203 => Some(3),
+            1334 => Some(4),
+            _ => None,
+        };
+        let mut portals: Vec<(f32, usize)> = self.objects.iter().filter_map(|o| index(o.id).map(|i| (o.x, i))).collect();
+        portals.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut speed = GUIDE_SPEEDS[self.setting("kA4").and_then(|v| v.parse::<usize>().ok()).filter(|&i| i < 5).unwrap_or(0)];
+        let (mut x, mut t) = (0.0f32, t.max(0.0));
+        for (px, i) in portals {
+            if px <= x {
+                speed = GUIDE_SPEEDS[i];
                 continue;
             }
-            let per_bar = f(o, 501) as i32;
-            let speed = GUIDE_SPEEDS.get(f(o, 499) as usize).copied().unwrap_or(GUIDE_SPEEDS[0]);
-            let step = speed * (60.0 / (per_bar.max(1) * bpm) as f32);
-            let end = (o.x + speed * f(o, 10)).min(view.0 + view.2);
-            let (mut x, mut n) = (o.x, 0i32);
-            if view.0 > x {
-                let skip = ((view.0 - x) / step) as i32;
-                n = skip;
-                x += step * skip as f32;
+            let dt = (px - x) / speed;
+            if t < dt {
+                break;
             }
-            while x < end {
-                let yellow = per_bar < 1 || n % per_bar == 0;
-                let (sx, _) = to_screen(x, 0.0);
-                c.rect(sx - pixel * 0.5, 0.0, pixel, h, if yellow { [1.0, 1.0, 0.0] } else { [1.0, 0.5, 0.0] }, 1.0);
-                x += step;
-                n += 1;
-            }
+            t -= dt;
+            x = px;
+            speed = GUIDE_SPEEDS[i];
         }
+        x + t * speed
     }
 }
 

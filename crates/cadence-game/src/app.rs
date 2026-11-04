@@ -1740,6 +1740,9 @@ pub struct App {
     /// The editor's level (decoded level string) while the editor is open: the game is built
     /// from it in editor mode (no physics, no player, editor-only objects shown).
     editor_level: Option<String>,
+    /// The editor's music playback (EditorUI::onPlayback): the song time it started at and
+    /// when, while it plays; after it stops, the time it reached (DrawGridLayer keeps the line).
+    editor_playback: Option<(f32, Option<Instant>)>,
     /// CADENCE_UI_SCRIPT: scripted input for headless UI tests (one command a line: click X Y
     /// in points, key Name, wheel D, wait FRAMES, shot PATH), and the shot due this frame.
     script: Option<std::collections::VecDeque<String>>,
@@ -2371,6 +2374,27 @@ impl App {
             }
         }
         let world_start = draws.len();
+        // The editor's guides and music playback line (DrawGridLayer, under the objects).
+        if game.editor {
+            if let (Some(e), Some(square)) = (self.ui.editor.as_ref(), sheets.frames.get(PARTICLE_TEXTURE)) {
+                let playback = self.editor_playback.map(|(t, since)| {
+                    let t = t + since.map_or(0.0, |i| i.elapsed().as_secs_f32());
+                    (e.playback_x(t), since.is_some())
+                });
+                for g in e.guide_lines((cam_x, cam_y, view_w, view_h), playback) {
+                    let width = if g.pixels { g.width * pixel } else { g.width };
+                    let (dx, dy) = (g.to.0 - g.from.0, g.to.1 - g.from.1);
+                    let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+                    let (nx, ny) = (-dy / len * width * 0.5, dx / len * width * 0.5);
+                    let (a, b) = ((g.from.0 + nx, g.from.1 + ny), (g.from.0 - nx, g.from.1 - ny));
+                    let (c, d) = ((g.to.0 + nx, g.to.1 + ny), (g.to.0 - nx, g.to.1 - ny));
+                    let color = tint(g.color, g.alpha);
+                    for (p, q, r) in [(a, b, d), (a, d, c)] {
+                        draws.push(Draw { sheet: square.sheet, blend: Blend::Normal, instance: triangle_instance(p, q, r, (0.5, 0.5), color) });
+                    }
+                }
+            }
+        }
         let t_objects = Instant::now();
         // Where the shader/gradient z layers start in `draws` (fx.rs).
         let mut marks = crate::fx::LayerMarks::default();
@@ -3596,6 +3620,10 @@ impl App {
                 Action::MenuMusic => {}
                 // the editor's music button
                 Action::EditorMusic(start) => {
+                    self.editor_playback = match start {
+                        Some(t) => Some((t, Some(Instant::now()))),
+                        None => self.editor_playback.map(|(t, since)| (t + since.map_or(0.0, |i| i.elapsed().as_secs_f32()), None)),
+                    };
                     if let Some(a) = self.audio.as_deref_mut() {
                         match (start, self.ui.editor_song.clone()) {
                             (Some(offset), Some(song)) => a.play_music(&song, offset),
@@ -3631,6 +3659,8 @@ impl App {
                 }
                 Action::PlayOnline => {
                     self.editor_level = None;
+                    // a playtest clears the playback line (DrawGridLayer +0x1e4)
+                    self.editor_playback = None;
                     if let Some(l) = self.ui.take_online() {
                         let id = l.info.id;
                         self.online = Some(l);
@@ -4123,6 +4153,7 @@ pub fn run(files: Box<dyn Files>, audio: Box<dyn Audio>, level_id: i32, quality:
             o
         },
         editor_level: None,
+        editor_playback: None,
         script: std::env::var("CADENCE_UI_SCRIPT").ok().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| t.lines().map(str::to_string).filter(|l| !l.trim().is_empty() && !l.starts_with('#')).collect()),
         script_shot: None,
         script_wait: 0,
@@ -4175,5 +4206,21 @@ mod tests {
         assert!((copy.scale - 0.8125).abs() < 1e-4);
         assert!((copy.rotation - 37.5).abs() < 1e-3);
         assert_eq!((a * 255.0) as i32, 201);
+    }
+
+    /// The editor's music playback line: posForTime through a speed portal; green, 5 pixels
+    /// while playing, 3 pixels at opacity 100 once stopped.
+    #[test]
+    fn editor_playback_line() {
+        let e = crate::ui::editor::Editor::from_level_string("t", ";1,202,2,311.58011,3,105;1,1,2,600,3,105");
+        assert!((e.playback_x(0.5) - 155.790055).abs() < 1e-3);
+        assert!((e.playback_x(2.0) - (311.58011 + 387.42014)).abs() < 1e-2);
+        let view = (0.0, 0.0, 569.0, 320.0);
+        let playing = e.guide_lines(view, Some((200.0, true)));
+        let line = playing.last().unwrap();
+        assert_eq!((line.from.0, line.color, line.width, line.pixels), (200.0, [50.0 / 255.0, 1.0, 50.0 / 255.0], 5.0, true));
+        let stopped = e.guide_lines(view, Some((200.0, false)));
+        assert_eq!((stopped.last().unwrap().width, stopped.last().unwrap().alpha), (3.0, 100.0 / 255.0));
+        assert!(e.guide_lines(view, None).is_empty());
     }
 }
