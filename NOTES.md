@@ -1427,6 +1427,10 @@ are in the scratch `DecompileTyped.java`; with them Ghidra keeps the float expre
   `m_varianceValues` (+0x100c) at the object's `m_varianceIndex` (+0x3ec) + k; Cadence hashes.
   Group parents / linked objects moving as one (`m_targetGroups` +0xf00, `getSpecialKey` keys
   280 / 281) aren't ported.
+- **Edge fade margin** (`m_fadeMargin` +0x34c, set at 0x1005ad3d4): not half the width — the size
+  (content size × |scale|, swapped when turned a quarter, the diagonal at other angles) over 30
+  gives width / 2 − 15, else 0. A 30-unit block fades from its center. (Real traces: Cadence's old
+  half-width margin was 15 units early.)
 - **Keyframes (3032 objects, 3033 trigger)** (`FUN_1000e6070`, `createKeyframeCommand` 0x26a6fc,
   `prepareMoveActions` mode 5). Keyframe objects: 373 group, 374 index, 10 duration to the next,
   30 / 85 easing, 71 / 557 the group spawned when reached and its delay, 377 spawn at 95%, 536
@@ -1438,9 +1442,10 @@ are in the scratch `DecompileTyped.java`; with them Ghidra keeps the float expre
   finishes at once. Positions and scales are taken relative to the first keyframe and scaled by
   the mods; each keyframe keeps its change from the previous one; per step, finished segments
   count fully and the current one by its eased progress; the summed offset (f32), rotation and
-  1 + summed scale changes become this step's move (into the group's sum), a rotation about the
-  group's main object and a scale. Not ported: curves, reference-only runs, close loop, the center
-  object's own rotation turning the moves (the +0x628 list).
+  1 + summed scale changes become this step's move (into the group's sum), and a rotation and a
+  scale of each object in place (real traces: nothing orbits). Groups reached spawn at the next
+  step's start. Not ported: curves, reference-only runs, close loop, the center object's own
+  rotation turning the moves (the +0x628 list).
 - **Enter effects** (`updateActiveEnterEffect` 0xd918c, `PlayLayer::updateVisibility` 0x7ae88,
   `applyEnterEffect` 0x7c570, `applyCustomEnterEffect` 0x7bdd0, `stopCustomEnterEffect` 0xd9c10).
   Codes per enter channel (344, objects choose theirs with 343) and side (217: 0 both, 1 enter =
@@ -1469,7 +1474,8 @@ are in the scratch `DecompileTyped.java`; with them Ghidra keeps the float expre
   guide).
 - **Small ones**: random 1912 (fast_rand · 100 ≤ chance 10 → spawn 51, else 71); BG effect on /
   off 1818 / 1819 (`PlayLayer::toggleBGEffectVisibility` 0x82ca8: the glitter, +0x399d, never reset
-  between attempts); reverse 1917 (`reversePlayer` → `doReversePlayer(!left)`, not in platformer);
+  between attempts); reverse 1917 (`reversePlayer` → `doReversePlayer(!left)` at once, not in
+  platformer: the going-left flag is set on the trigger's step, before the camera);
   end 1931 calls `PlayLayer::activateEndTrigger`, which is empty (`ret`) — inert, as is 3655
   (`FUN_1000e58fc` is empty); the end trigger with effects is 3600 (`activatePlatformerEndTrigger`);
   area stop 3024 (`controlAreaEffectWithID(51, −1, 0)`); reset 3618 (`activateResetTrigger`

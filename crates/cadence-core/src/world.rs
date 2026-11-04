@@ -106,6 +106,9 @@ impl Object {
     }
 }
 
+/// A rotation / scale "center" meaning each object about itself (keyframe animations).
+const IN_PLACE: i32 = i32::MIN;
+
 /// The game's `m_sectionXFactor` (f32 1/100). Section = (int)(x * factor), computed in f64.
 pub const SECTION_X_FACTOR: f32 = 0.01;
 
@@ -258,9 +261,8 @@ pub struct World {
     pub audio_edits: Vec<crate::groups::AudioEdit>,
     /// Touch triggers registered (`GJEffectManager` +0x1c0): (group, hold, mode, only, dual).
     touch_triggers: Vec<(i32, bool, i32, i32, bool)>,
-    /// A reverse trigger (1917) fired after the last step, and the one the coming step applies.
+    /// A reverse trigger (1917) fired this step (the player's camera step applies it).
     reverse: bool,
-    pub reverse_now: bool,
     /// Spawn particle triggers (3608) fired since the app last looked: (particle group, position,
     /// rotation, scale).
     pub particle_spawns: Vec<(i32, (f32, f32), f32, f32)>,
@@ -699,7 +701,6 @@ impl World {
             audio_edits: Vec::new(),
             touch_triggers: Vec::new(),
             reverse: false,
-            reverse_now: false,
             particle_spawns: Vec::new(),
             particle_specs: std::sync::Arc::new(
                 level
@@ -849,7 +850,7 @@ impl World {
         self.last_player = Some(player);
         self.teleport_now = self.teleport.take();
         self.control_now = self.control.take();
-        self.reverse_now = std::mem::take(&mut self.reverse);
+        self.reverse = false;
         self.step_count += 1;
         let now = self.step_count as f64 * self.step_secs;
         self.player_history.push_back((now, player.1));
@@ -947,20 +948,23 @@ impl World {
                     }
                 }
                 if k.turn != 0.0 {
-                    match turns.iter_mut().find(|t| t.0 == k.group && t.1 == k.group) {
+                    // (real traces: each object turns in place, nothing orbits)
+                    match turns.iter_mut().find(|t| t.0 == k.group && t.1 == IN_PLACE) {
                         Some(t) => t.2 += k.turn,
-                        None => turns.push((k.group, k.group, k.turn, false)),
+                        None => turns.push((k.group, IN_PLACE, k.turn, false)),
                     }
                 }
                 if let Some((rx, ry)) = k.scale {
-                    scales.push((k.group, k.group, rx as f32, ry as f32, false));
+                    scales.push((k.group, IN_PLACE, rx as f32, ry as f32, false));
                 }
                 spawns.extend(k.spawns);
             }
             if !spawns.is_empty() {
                 let actions: Vec<_> = spawns
                     .into_iter()
-                    .map(|(group, delay)| (crate::groups::Action::Spawn { group, delay, ordered: false, remap: 0 }, Vec::new()))
+                    // queued: they come due at the next step's start (real traces: a spawned
+                    // move starts a step later than an instant spawn would)
+                    .map(|(group, delay)| (crate::groups::Action::Spawn { group, delay: delay.max(1e-9), ordered: false, remap: 0 }, Vec::new()))
                     .collect();
                 let actions = self.triggers.expand_public(actions, &self.enabled);
                 self.apply(actions);
@@ -1042,6 +1046,11 @@ impl World {
         self.process_area_moves();
     }
 
+    /// A reverse trigger fired this step (`Player::step_camera` turns the players around).
+    pub fn reverse_pending(&self) -> bool {
+        self.reverse
+    }
+
     /// What the world can't see itself: player 2's position and the camera (advanced follow
     /// triggers can follow them). Drivers call it before `pre_step`.
     pub fn observe(&mut self, player2: Option<(f32, f32)>, camera: (f32, f32)) {
@@ -1092,6 +1101,16 @@ impl World {
     /// transform (`CCPointApplyAffineTransform`, doubles inside, f32 out), plus the claimed
     /// move, and turns itself by `delta` unless locked. Not yet checked against the game.
     fn rotate_group(&mut self, group: i32, center: i32, delta: f32, (mx, my): (f32, f32), lock: bool) {
+        if center == IN_PLACE {
+            // keyframe rotations: every object turns about itself (plus the claimed move)
+            for order in self.members.get(&group).cloned().unwrap_or_default() {
+                let i = order as usize;
+                let (x, y) = self.level_pos[i];
+                let turn = if self.can_rotate_free(i) { delta } else { 0.0 };
+                self.set_level_pos(i, (x + mx as f64, y + my as f64), turn);
+            }
+            return;
+        }
         let Some(&center_order) = self.members.get(&center).and_then(|m| m.first()) else { return };
         let Some(members) = self.members.get(&group).cloned() else { return };
         let (cx, cy) = (self.level_pos[center_order as usize].0 as f32, self.level_pos[center_order as usize].1 as f32);
@@ -2078,12 +2097,11 @@ mod tests {
         assert_eq!(w.platformer_progress, 40);
         act(&mut w, Action::Progress { value: 150, add: true, item: None, counter: 0 });
         assert_eq!(w.platformer_progress, 139);
-        // reverse: applied to the coming step
+        // reverse: pending until the next step starts
         act(&mut w, Action::Reverse);
+        assert!(w.reverse_pending());
         w.pre_step((0.0, 0.0));
-        assert!(w.reverse_now);
-        w.pre_step((0.0, 0.0));
-        assert!(!w.reverse_now);
+        assert!(!w.reverse_pending());
     }
 
     #[test]

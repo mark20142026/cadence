@@ -285,7 +285,7 @@ fn watch(spec_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 let eo = cadence_core::enter::EnterObject {
                     x: x as f32,
                     y: y as f32,
-                    margin: cadence_core::objects::info(o.canonical_id()).map_or(15.0, |inf| inf.width * 0.5) * sx.abs(),
+                    margin: cadence_core::objects::info(o.canonical_id()).map_or(0.0, |inf| cadence_core::enter::fade_margin(inf.width, inf.height, (sx, sy), rot)),
                     channel: o.get_i32(343).unwrap_or(0).clamp(0, 100),
                     ignore_enter: o.get(67) == Some("1"),
                     ignore_fade: o.get(64) == Some("1"),

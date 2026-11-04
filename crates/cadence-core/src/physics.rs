@@ -856,15 +856,7 @@ impl Player {
             self.restore_seen = world.restore_count;
             self.destroyed.retain(|i| !world.restored.contains(i));
         }
-        // a reverse trigger (1917) fired last step: `reversePlayer` (not in platformer mode)
-        if world.reverse_now && !self.platformer.on {
-            let left = !self.going_left;
-            self.do_reverse_player(left);
-            if let Some(p2) = &mut self.dual {
-                let left = !p2.going_left;
-                p2.do_reverse_player(left);
-            }
-        }
+
         // a player control trigger (1932) fired last step: releaseButton / stopRotation
         if let Some((stop_jump, stop_move, stop_rotation)) = world.control_now {
             if stop_jump {
@@ -955,6 +947,16 @@ impl Player {
     /// fires the camera triggers the player reached and moves the camera. Drivers call it after
     /// `World::post_step`; without it the corridors keep their unzoomed static edges.
     pub fn step_camera(&mut self, world: &World, view_w: f32) {
+        // a reverse trigger (1917) fired this step: `reversePlayer` at once, before the camera
+        // (not in platformer mode; real traces flag going-left on the trigger's step)
+        if world.reverse_pending() && !self.platformer.on {
+            let left = !self.going_left;
+            self.do_reverse_player(left);
+            if let Some(p2) = &mut self.dual {
+                let left = !p2.going_left;
+                p2.do_reverse_player(left);
+            }
+        }
         let fired = std::mem::take(&mut self.pending_camera);
         if !fired.is_empty() && std::env::var_os("CADENCE_DEBUG_CAMERA").is_some() {
             eprintln!("camera at x {} y {}: {:?}", self.x, self.y, fired);

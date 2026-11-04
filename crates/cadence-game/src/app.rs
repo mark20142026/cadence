@@ -2566,7 +2566,7 @@ impl App {
                 let eo = cadence_core::enter::EnterObject {
                     x: ox,
                     y: oy,
-                    margin: objects::info(st.canonical).map_or(15.0, |i| i.width * 0.5) * sx.abs(),
+                    margin: objects::info(st.canonical).map_or(0.0, |i| cadence_core::enter::fade_margin(i.width, i.height, (sx, sy), rotation)),
                     channel: st.enter_channel as i32,
                     ignore_enter: st.no_enter,
                     ignore_fade: st.no_fade,

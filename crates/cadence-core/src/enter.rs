@@ -230,6 +230,28 @@ pub struct EnterObject {
     pub seed: u32,
 }
 
+/// `m_fadeMargin` (+0x34c, set at 0x1005ad3d4): the object's size (content size × |scale|, the
+/// sides swapped when turned a quarter, the diagonal at other angles); over 30 wide it's half the
+/// width − 15, else 0. The edge fade measures from the object's position ± this.
+pub fn fade_margin(width: f32, height: f32, scale: (f32, f32), rotation: f32) -> f32 {
+    let (mut w, mut h) = (width, height);
+    if scale.0 != 1.0 {
+        w *= scale.0.abs();
+    }
+    if scale.1 != 1.0 {
+        h *= scale.1.abs();
+    }
+    let r = rotation.rem_euclid(360.0);
+    let w = if r == 90.0 || r == 270.0 {
+        h
+    } else if r != 0.0 && r != 180.0 {
+        w.mul_add(w, h * h).sqrt()
+    } else {
+        w
+    };
+    if w > 30.0 { w.mul_add(0.5, -15.0) } else { 0.0 }
+}
+
 /// The view the effects measure against (camera x, its width and its vertical middle).
 #[derive(Clone, Copy, Debug)]
 pub struct EnterView {
@@ -478,6 +500,11 @@ mod tests {
         // 35 units in from the right edge, far side 50 in: opacity int(50/70·255)/255
         let r = s.apply(&obj(445.0), &VIEW, &mut lock);
         assert_eq!(r.opacity, ((50.0f32 / 70.0) * 255.0) as i32 as f32 / 255.0);
+        // a 30-unit block has no margin; a 60-unit one 15; turned 45° the diagonal counts
+        assert_eq!(fade_margin(30.0, 30.0, (1.0, 1.0), 0.0), 0.0);
+        assert_eq!(fade_margin(30.0, 30.0, (2.0, 1.0), 0.0), 15.0);
+        assert_eq!(fade_margin(60.0, 30.0, (1.0, 1.0), 90.0), 0.0);
+        assert!((fade_margin(30.0, 30.0, (1.0, 1.0), 45.0) - (30.0f32.hypot(30.0) * 0.5 - 15.0)).abs() < 1e-4);
         assert_eq!((r.dx, r.dy), (0.0, 0.0));
     }
 
