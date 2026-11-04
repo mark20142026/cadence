@@ -1918,6 +1918,24 @@ impl App {
     }
 
     fn draw(&mut self) {
+        // CADENCE_EDITOR_LEVEL=<file>: screenshots of the editor on these objects (a level
+        // string, header optional), nothing selected, the BPM markers on, the view's bottom left
+        // at CADENCE_EDITOR_CAM=x,y (zoom 1); applied once, when the editor opens
+        static EDITOR_LEVEL: std::sync::Once = std::sync::Once::new();
+        if let Some(e) = self.ui.editor.as_mut().filter(|_| !EDITOR_LEVEL.is_completed()) {
+            EDITOR_LEVEL.call_once(|| {
+                let Some(text) = std::env::var("CADENCE_EDITOR_LEVEL").ok().and_then(|p| std::fs::read_to_string(p).ok()) else { return };
+                let text = if text.contains("kA") { text } else { format!(";{}", text.trim()) };
+                e.objects = crate::ui::editor::Editor::from_level_string(&e.name, &text).objects;
+                e.selected.clear();
+                e.show_bpm_markers = true;
+                e.dirty = true;
+                if let Some((x, y)) = std::env::var("CADENCE_EDITOR_CAM").ok().and_then(|v| v.split_once(',').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?)))) {
+                    e.cam = (x, y);
+                    e.zoom = 1.0;
+                }
+            });
+        }
         if self.ui.editor_dirty() {
             self.rebuild_editor();
         }

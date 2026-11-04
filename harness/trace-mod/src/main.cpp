@@ -1005,7 +1005,21 @@ void stepGui() {
         auto colon = spec.find(':');
         std::string kind = spec.substr(0, colon);
         int id = colon == std::string::npos ? 1 : std::atoi(spec.c_str() + colon + 1);
-        if (auto lel = CCDirector::get()->getRunningScene()->getChildByType<LevelEditorLayer>(0)) {
+        auto lel = CCDirector::get()->getRunningScene()->getChildByType<LevelEditorLayer>(0);
+        if (lel && kind == "string") {
+            // edit:string:<file>: the objects of a level string file (`1,<id>,2,<x>,3,<y>,...;`),
+            // nothing selected, with the BPM guides shown (GameManager's showBPMMarkers)
+            std::ifstream file(spec.substr(colon + 1));
+            std::stringstream text;
+            text << file.rdbuf();
+            lel->createObjectsFromString(text.str(), true, true);
+            GameManager::get()->m_showBPMMarkers = true;
+            lel->m_editorUI->deselectAll();
+            // the view 150 higher, so what's above the ground shows between the bars
+            lel->m_objectLayer->setPositionY(lel->m_objectLayer->getPositionY() - 150.f);
+            lel = nullptr;
+        }
+        if (lel) {
             auto ui = lel->m_editorUI;
             auto obj = lel->createObject(id, {165.f, 105.f}, false);
             ui->selectObject(obj, true);
