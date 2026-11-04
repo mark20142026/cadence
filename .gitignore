@@ -1,0 +1,31 @@
+# Build output
+/target/
+/web/pkg/
+
+# Reverse-engineering workspace: binary slices, Ghidra project, decompiled output.
+# Derived from RobTop's binary; local reference only, never committed.
+/re/
+
+# Third-party reference data (Geode bindings have no stated license).
+/third_party/
+
+# Anything copied from a Geometry Dash install (levels, saves, sprites, audio)
+/gd-data/
+*.dat
+
+# Local dev link to the game files (never deployed)
+/web/gd
+
+# Real-game screenshots, harness scene dumps and comparisons (RobTop's art; local reference only)
+/shots/
+/bench-levels
+/web/bench
+
+# Function names copied out of the Geode bindings (no stated license);
+# tools/re/ghidra.sh rebuilds it from third_party/ with bro_names.py.
+/tools/re/names-*.tsv
+
+# Python and macOS clutter
+__pycache__/
+*.pyc
+.DS_Store

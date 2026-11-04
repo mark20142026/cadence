@@ -1,0 +1,23 @@
+# ColorSelectPopup (color trigger 899) builds its own controls, not SetupTriggerPopup's
+# dictionaries: its fields by hand. Keys: 7/8/9 RGB, 10 fade time, 23 target channel,
+# 15/16 player color 1/2, 17 blending, 11 touch, 62 spawn.
+drop 88.50 212.00
+drop 130.50 212.00
+drop 172.50 212.00
+drop 319.50 92.00
+drop 434.50 70.00
+I 7 88.50 212.00 36.00 20.00
+I 8 130.50 212.00 36.00 20.00
+I 9 172.50 212.00 36.00 20.00
+I 10 319.50 92.00 50.00 24.00
+I 23 434.50 70.00 40.00 24.00
+K 15 79.50 30.00 21.70 21.70
+K 16 176.50 30.00 21.70 21.70
+K 17 79.50 61.00 21.70 21.70
+K 11 348.50 30.00 21.70 21.70
+K 62 438.50 30.00 21.70 21.70
+V 7 255
+V 8 255
+V 9 255
+V 10 0.5
+V 23 1

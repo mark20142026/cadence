@@ -1,0 +1,11 @@
+{
+    "geode": "6.0.0-alpha.1",
+    "gd": {
+        "mac": "2.2091"
+    },
+    "version": "v1.0.0",
+    "id": "cadence.trace",
+    "name": "Cadence Trace",
+    "developer": "Cadence",
+    "description": "Records player physics per step for differential testing. Does nothing unless CADENCE_TRACE_SPEC is set."
+}

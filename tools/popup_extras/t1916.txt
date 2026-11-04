@@ -1,0 +1,13 @@
+# SetupCameraOffsetTrigger builds its own fields: 28 / 29 offset x / y, 10 move time, 101 axis
+# (x only / y only aren't keys of their own: not wired), 11 touch, 62 spawn.
+drop 224.50 255.00
+drop 434.50 255.00
+drop 329.50 100.00
+I 28 224.50 255.00 50.00 26.00
+I 29 434.50 255.00 50.00 26.00
+I 10 329.50 100.00 50.00 26.00
+K 11 89.50 55.00 21.70 21.70
+K 62 89.50 25.00 21.70 21.70
+V 28 0
+V 29 0
+V 10 0.5

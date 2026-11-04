@@ -1,0 +1,45 @@
+// Decompile every function whose qualified name matches a regex, one file per function.
+// Usage: analyzeHeadless <proj> <name> -process -noanalysis -readOnly \
+//          -postScript DecompileMatching.java <regex> <outDir>
+import ghidra.app.decompiler.DecompInterface;
+import ghidra.app.decompiler.DecompileOptions;
+import ghidra.app.decompiler.DecompileResults;
+import ghidra.app.script.GhidraScript;
+import ghidra.program.model.listing.Function;
+
+import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.regex.Pattern;
+
+public class DecompileMatching extends GhidraScript {
+    @Override
+    public void run() throws Exception {
+        String[] args = getScriptArgs();
+        Pattern pattern = Pattern.compile(args[0]);
+        Path outDir = Path.of(args[1]);
+        Files.createDirectories(outDir);
+
+        DecompInterface decomp = new DecompInterface();
+        decomp.setOptions(new DecompileOptions());
+        decomp.openProgram(currentProgram);
+        long base = currentProgram.getImageBase().getOffset();
+        int count = 0;
+        for (Function f : currentProgram.getFunctionManager().getFunctions(true)) {
+            if (monitor.isCancelled()) break;
+            String qname = f.getName(true);
+            if (!pattern.matcher(qname).find()) continue;
+            DecompileResults res = decomp.decompileFunction(f, 120, monitor);
+            long off = f.getEntryPoint().getOffset() - base;
+            String file = qname.replace("::", "__").replaceAll("[^\\w.~-]", "_") + String.format("@%x.c", off);
+            try (PrintWriter out = new PrintWriter(outDir.resolve(file).toFile())) {
+                out.printf("// %s  m1 0x%x%n", qname, off);
+                out.println(res.decompileCompleted() ? res.getDecompiledFunction().getC()
+                        : "// decompile failed: " + res.getErrorMessage());
+            }
+            count++;
+        }
+        decomp.dispose();
+        println("DecompileMatching: wrote " + count + " functions to " + outDir);
+    }
+}

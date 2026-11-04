@@ -1,0 +1,3 @@
+# The Group ID / Count inputs build the sequence list (key 435), not keys.
+del -1
+del -2

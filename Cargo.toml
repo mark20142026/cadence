@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = ["crates/cadence-core", "crates/cadence-tools", "crates/cadence-game"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+cadence-core = { path = "crates/cadence-core" }
+aes = "0.8"
+base64 = "0.22"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+bytemuck = { version = "1", features = ["derive"] }
+plist = "1"
+png = "0.18"
+pollster = "1"
+wgpu = "30"
+winit = "0.30"
+
+[profile.release]
+debug = 1

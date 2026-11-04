@@ -1,0 +1,2 @@
+# SetupOpacityPopup keys its Group ID input by tag 3: the target group (51).
+map 3 51

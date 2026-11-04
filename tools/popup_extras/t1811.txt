@@ -1,0 +1,3 @@
+# SetupInstantCountPopup keys its inputs by tags: 0 the item (80), 2 the target group (51).
+map 0 80
+map 2 51

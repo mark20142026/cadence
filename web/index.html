@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cadence</title>
+<style>
+  :root {
+    --ground: #101215;
+    --raised: #1b1e23;
+    --ink: #f4f5f6;
+    --soft: #b9bec6;
+    --accent: #7dff00;
+    --accent-ink: #101215;
+    --gap: 24px;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body.playing { overflow: hidden; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font: 18px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main {
+    min-height: 100%;
+    display: grid;
+    align-content: center;
+    gap: 40px;
+    padding: 48px 32px;
+    max-width: 1120px;
+    margin: 0 auto;
+  }
+  h1 {
+    margin: 0;
+    font-size: clamp(56px, 11vw, 136px);
+    line-height: 0.92;
+    letter-spacing: -0.04em;
+    font-weight: 800;
+  }
+  .lede { margin: 0; max-width: 34em; font-size: 22px; }
+  .panel {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr;
+    gap: var(--gap);
+    align-items: start;
+  }
+  .drop {
+    background: var(--raised);
+    padding: 32px;
+    display: grid;
+    gap: 16px;
+    align-content: start;
+    transition: background-color 160ms ease;
+  }
+  .drop.over { background: #23272e; }
+  .drop h2, .options h2 { margin: 0; font-size: 26px; line-height: 1.15; }
+  .drop p, .options p { margin: 0; }
+  .where { color: var(--soft); font-size: 16px; }
+  .options {
+    background: var(--raised);
+    padding: 32px;
+    display: grid;
+    gap: 18px;
+    align-content: start;
+  }
+  label { display: grid; gap: 6px; font-size: 16px; }
+  select, button {
+    font: inherit;
+    border: 0;
+    border-radius: 0;
+    padding: 12px 16px;
+  }
+  select { background: var(--ground); color: var(--ink); }
+  button {
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-weight: 700;
+    cursor: pointer;
+    justify-self: start;
+    transition: transform 120ms ease, filter 120ms ease;
+  }
+  button.quiet { background: var(--ground); color: var(--ink); }
+  button:hover { filter: brightness(1.08); }
+  button:active { transform: translateY(1px); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+  #status:empty { display: none; }
+  #status.error { color: #ff8c7a; }
+  .privacy { color: var(--soft); font-size: 16px; max-width: 46em; margin: 0; }
+  canvas { position: fixed; inset: 0; width: 100vw !important; height: 100dvh !important; display: block; }
+  @media (max-width: 760px) {
+    main { padding: 32px 16px; gap: 28px; }
+    .panel { grid-template-columns: 1fr; }
+    .lede { font-size: 19px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<main id="start">
+  <h1>Cadence</h1>
+  <p class="lede">Play the levels from your own copy of Geometry Dash in the browser, with physics matched to the real game step for step.</p>
+
+  <div class="panel">
+    <section class="drop" id="drop" aria-labelledby="drop-title">
+      <h2 id="drop-title">Your game folder</h2>
+      <p>Drop the Geometry Dash folder here, or choose it.</p>
+      <p class="where">Steam on Mac: right-click Geometry Dash in your library, Manage, Browse local files, then drop the app. On Windows, drop the Geometry Dash folder.</p>
+      <button type="button" id="pick">Choose folder</button>
+      <input type="file" id="folder" webkitdirectory directory multiple hidden>
+      <p id="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="options" aria-labelledby="options-title">
+      <h2 id="options-title">Level</h2>
+      <label>Level
+        <select id="level"></select>
+      </label>
+      <label>Texture quality
+        <select id="quality">
+          <option value="medium" selected>Medium (fast on most devices)</option>
+          <option value="low">Low (oldest devices)</option>
+          <option value="high">High (sharp, needs a strong GPU)</option>
+        </select>
+      </label>
+      <button type="button" id="play" disabled>Play</button>
+      <p class="where">Space, Up, W or click to jump. R restarts.</p>
+    </section>
+  </div>
+
+  <p class="privacy">Your files stay on this device. The page reads only the sprite sheets, icons and levels it needs, and sends nothing anywhere.</p>
+</main>
+
+<script type="module">
+import init, { FileStore, needed_files, start, level_song, death_effect } from "./pkg/cadence_game.js";
+
+const LEVELS = [
+  [0, "Main menu"], [1, "Stereo Madness"], [2, "Back On Track"], [3, "Polargeist"], [4, "Dry Out"], [5, "Base After Base"],
+  [6, "Cant Let Go"], [7, "Jumper"], [8, "Time Machine"], [9, "Cycles"], [10, "xStep"], [11, "Clutterfunk"],
+  [12, "Theory of Everything"], [13, "Electroman Adventures"], [14, "Clubstep"], [15, "Electrodynamix"],
+  [16, "Hexagon Force"], [17, "Blast Processing"], [18, "Theory of Everything 2"], [19, "Geometrical Dominator"],
+  [20, "Deadlocked"], [21, "Fingerdash"], [22, "Dash"], [5001, "The Tower"], [5002, "The Sewers"],
+  [5003, "The Cellar"], [5004, "The Secret Hollow"], [3001, "The Challenge"],
+];
+const $ = (id) => document.getElementById(id);
+for (const [id, name] of LEVELS) $("level").add(new Option(name, id));
+// Development: ?dev=1&level=<id> plays bench/<id>.txt (test levels saved in Cadence's own
+// bench-levels folder; never in gd/, which is the game's install folder).
+const devLevel = new URLSearchParams(location.search).get("level");
+if (devLevel) {
+  $("level").add(new Option(`Level ${devLevel}`, devLevel));
+  $("level").value = devLevel;
+}
+
+let source = null; // { read(path) -> Promise<Uint8Array|null> }
+const status = (text, error = false) => { $("status").textContent = text; $("status").className = error ? "error" : ""; };
+
+// Find the Resources root: the folder that contains levels/1.txt.
+function fromFiles(entries) {
+  const map = new Map();
+  let root = null;
+  for (const [path, file] of entries) {
+    map.set(path, file);
+    if (path.endsWith("levels/1.txt")) root = path.slice(0, -"levels/1.txt".length);
+  }
+  if (root === null) return null;
+  return { read: async (p) => { const f = map.get(root + p); return f ? new Uint8Array(await f.arrayBuffer()) : null; } };
+}
+
+function accept(entries) {
+  source = fromFiles(entries);
+  if (source) {
+    status("Found your game files. Choose a level and press Play.");
+    $("play").disabled = false;
+    $("play").focus();
+  } else {
+    status("That folder has no levels/1.txt. Drop the Geometry Dash folder (or its Resources folder).", true);
+  }
+}
+
+$("pick").addEventListener("click", () => $("folder").click());
+$("folder").addEventListener("change", (e) => accept([...e.target.files].map((f) => [f.webkitRelativePath, f])));
+
+async function walk(entry, prefix, out) {
+  if (entry.isFile) {
+    out.push([prefix + entry.name, await new Promise((ok, err) => entry.file(ok, err))]);
+  } else if (entry.isDirectory) {
+    const reader = entry.createReader();
+    for (;;) {
+      const batch = await new Promise((ok, err) => reader.readEntries(ok, err));
+      if (!batch.length) break;
+      for (const child of batch) await walk(child, prefix + entry.name + "/", out);
+    }
+  }
+}
+const drop = $("drop");
+drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  drop.classList.remove("over");
+  status("Reading the folder…");
+  const out = [];
+  for (const item of e.dataTransfer.items) {
+    const entry = item.webkitGetAsEntry && item.webkitGetAsEntry();
+    if (entry) await walk(entry, "", out);
+  }
+  accept(out);
+});
+
+// Development only: ?dev=1 reads the files from ./gd/ on a local server.
+if (new URLSearchParams(location.search).has("dev")) {
+  source = { read: async (p) => { const r = await fetch("gd/" + p); return r.ok ? new Uint8Array(await r.arrayBuffer()) : null; } };
+  status("Development mode: reading game files from the local server.");
+  $("play").disabled = false;
+}
+
+// Sound. The game calls window.cadenceAudio (crates/cadence-game/src/audio.rs). Files are decoded
+// with WebAudio straight from the player's folder the first time they're needed. A song that
+// finishes decoding late starts further in, so it stays in time with the level.
+const sound = {
+  ctx: null,
+  buffers: new Map(),
+  music: null,
+  wanted: null,
+  // The music's level meter (the game's objects pulse with it): an analyser on the song.
+  analyser: null,
+  meterData: new Float32Array(1024),
+  // Volumes (the options' sliders): gain nodes after the analyser, so the meter is unaffected.
+  musicGain: null,
+  sfxGain: null,
+  volumes: [1, 1],
+  gains() {
+    if (!this.musicGain) {
+      this.musicGain = this.ctx.createGain();
+      this.musicGain.connect(this.ctx.destination);
+      this.sfxGain = this.ctx.createGain();
+      this.sfxGain.connect(this.ctx.destination);
+    }
+    this.musicGain.gain.value = this.volumes[0];
+    this.sfxGain.gain.value = this.volumes[1];
+  },
+  setVolumes(music, sfx) {
+    this.volumes = [music, sfx];
+    if (this.ctx) this.gains();
+  },
+  buffer(path) {
+    if (!this.buffers.has(path)) {
+      this.buffers.set(path, source.read(path).then((bytes) => (bytes ? this.ctx.decodeAudioData(bytes.buffer) : null)).catch(() => null));
+    }
+    return this.buffers.get(path);
+  },
+  playMusic(path, offset, loop = false) {
+    if (!this.ctx) return;
+    this.stopMusic();
+    const token = {};
+    const requested = this.ctx.currentTime;
+    this.wanted = token;
+    this.buffer(path).then((buf) => {
+      if (this.wanted !== token || !buf) return;
+      const node = this.ctx.createBufferSource();
+      node.buffer = buf;
+      node.loop = loop;
+      if (!this.analyser) {
+        this.analyser = this.ctx.createAnalyser();
+        this.analyser.fftSize = 1024;
+      }
+      this.gains();
+      node.connect(this.musicGain);
+      node.connect(this.analyser);
+      node.start(0, offset + (this.ctx.currentTime - requested));
+      this.music = node;
+    });
+  },
+  // The menu music loops; the pause menu suspends all sound.
+  playLoop(path) { this.playMusic(path, 0, true); },
+  setPaused(paused) {
+    if (!this.ctx) return;
+    if (paused) this.ctx.suspend(); else this.ctx.resume();
+  },
+  stopMusic() {
+    this.wanted = null;
+    if (this.music) {
+      try { this.music.stop(); } catch (_) {}
+      this.music = null;
+    }
+  },
+  // Peak of the last 1024 samples (both channels mixed), like FMOD's metering.
+  peak() {
+    if (!this.music || !this.analyser) return 0;
+    this.analyser.getFloatTimeDomainData(this.meterData);
+    let p = 0;
+    for (const v of this.meterData) p = Math.max(p, Math.abs(v));
+    return p;
+  },
+  playEffect(path) {
+    if (!this.ctx) return;
+    this.buffer(path).then((buf) => {
+      if (!buf) return;
+      const node = this.ctx.createBufferSource();
+      node.buffer = buf;
+      this.gains();
+      node.connect(this.sfxGain);
+      node.start();
+    });
+  },
+};
+window.cadenceAudio = sound;
+
+$("play").addEventListener("click", async () => {
+  $("play").disabled = true;
+  status("Loading…");
+  // Browsers only allow sound after a click, so the audio context starts here.
+  sound.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  await init();
+  const song = level_song(Number($("level").value));
+  if (song) sound.buffer(song);
+  sound.buffer(death_effect());
+  const quality = $("quality").value;
+  const store = new FileStore();
+  let missing = 0;
+  for (const path of needed_files(quality)) {
+    const bytes = await source.read(path);
+    if (bytes) store.add(path, bytes); else missing++;
+  }
+  if (missing) console.warn(`${missing} game files were not found`);
+  if (devLevel) {
+    const r = await fetch(`bench/${devLevel}.txt`);
+    const bytes = r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+    if (bytes) store.add(`levels/${devLevel}.txt`, bytes);
+  }
+  $("start").hidden = true;
+  document.body.classList.add("playing");
+  // ?webgl=1 forces the WebGL2 path (what older devices get) for testing.
+  start(store, Number($("level").value), quality, new URLSearchParams(location.search).has("webgl"));
+});
+</script>
+</body>
+</html>

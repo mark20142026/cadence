@@ -1,0 +1,2 @@
+# The Advanced Random popup's Group ID / Chance inputs add to a list (key 152), not keys.
+del 1
