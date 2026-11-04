@@ -62,3 +62,12 @@ fn parse_quality(quality: &str) -> Quality {
         _ => Quality::Medium,
     }
 }
+
+/// Level files (`.gmd`) dropped on the page while the game runs, waiting for the next frame.
+pub static IMPORTS: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
+
+/// The page hands over a dropped level file.
+#[wasm_bindgen]
+pub fn import_level_file(bytes: Vec<u8>) {
+    IMPORTS.lock().unwrap_or_else(|e| e.into_inner()).push(bytes);
+}

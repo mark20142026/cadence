@@ -47,6 +47,17 @@ pub enum Scene {
     Trigger(u16),
     /// An object's Edit Special popup (`EditorUI::editObject2`), by object id
     Special(u16),
+    /// Your own `ProfilePage`, `FriendsProfilePage`, `FRequestProfilePage`,
+    /// `GJAccountSettingsLayer` (`ui::social`)
+    MyProfile,
+    Friends,
+    Requests,
+    AcctSettings,
+    /// Your level's Share popup (`ShareLevelLayer`, `ui::share`)
+    ShareLevel,
+    /// The legacy messages (`MessagesProfilePage`) and `NotificationsPage` (`ui::social`)
+    OldMessages,
+    Notifications,
 }
 
 /// The scenes that are FLAlertLayer popups (they open with `FLAlertLayer::show`'s scale-in);
@@ -56,10 +67,10 @@ pub fn is_popup(scene: Scene) -> bool {
 }
 
 /// The Edit Special popups with a captured layout.
-pub const SPECIAL_POPUPS: [u16; 2] = [1615, 747];
+pub const SPECIAL_POPUPS: [u16; 10] = [1594, 1615, 1704, 1751, 2063, 2065, 2902, 2903, 3027, 747];
 
 /// The trigger popups with a captured layout.
-pub const TRIGGER_POPUPS: [u16; 62] = [1006, 1007, 1049, 1268, 1346, 1347, 1520, 1595, 1611, 1612, 1613, 1616, 1811, 1812, 1814, 1815, 1817, 1818, 1819, 1913, 1914, 1915, 1916, 1917, 1932, 1934, 2015, 2016, 2062, 2066, 2067, 2068, 2899, 2900, 3006, 3007, 3008, 3009, 3010, 3016, 3022, 3029, 3033, 3602, 3603, 3604, 3605, 3606, 3607, 3608, 3609, 3612, 3613, 3614, 3615, 3617, 3619, 3620, 3640, 3662, 899, 901];
+pub const TRIGGER_POPUPS: [u16; 126] = [1006, 1007, 1049, 105, 1268, 1334, 1346, 1347, 1520, 1585, 1595, 1611, 1612, 1613, 1616, 1811, 1812, 1814, 1815, 1817, 1818, 1819, 1912, 1913, 1914, 1915, 1916, 1917, 1931, 1932, 1934, 1935, 2015, 2016, 2062, 2066, 2067, 2068, 22, 23, 24, 25, 26, 27, 28, 2899, 29, 2900, 2901, 2904, 2905, 2907, 2909, 2910, 2911, 2912, 2913, 2914, 2915, 2916, 2917, 2919, 2920, 2921, 2922, 2923, 2924, 2925, 2999, 30, 3006, 3007, 3008, 3009, 3010, 3016, 3017, 3018, 3019, 3020, 3021, 3022, 3023, 3024, 3029, 3030, 3031, 3033, 31, 32, 33, 3600, 3602, 3603, 3604, 3605, 3606, 3607, 3608, 3609, 3612, 3613, 3614, 3615, 3617, 3618, 3619, 3620, 3640, 3641, 3642, 3655, 3660, 3661, 3662, 3663, 55, 56, 57, 58, 59, 744, 899, 900, 901, 915];
 
 /// An editable field of a trigger popup (layout lines I / K / L).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -120,6 +131,13 @@ impl Scene {
             Scene::LevelSettings => include_str!("scenes/levelsettings.txt"),
             Scene::Trigger(id) => trigger_source(id),
             Scene::Special(id) => special_source(id),
+            Scene::MyProfile => include_str!("scenes/myprofile.txt"),
+            Scene::Friends => include_str!("scenes/friends.txt"),
+            Scene::Requests => include_str!("scenes/requests.txt"),
+            Scene::AcctSettings => include_str!("scenes/acctsettings.txt"),
+            Scene::ShareLevel => include_str!("scenes/share.txt"),
+            Scene::OldMessages => include_str!("scenes/oldmessages.txt"),
+            Scene::Notifications => include_str!("scenes/notifications.txt"),
         }
     }
 }
@@ -127,7 +145,15 @@ impl Scene {
 /// An Edit Special popup's layout (generated: `tools/trigger_popups.py`).
 fn special_source(id: u16) -> &'static str {
     match id {
+        1594 => include_str!("scenes/s1594.txt"),
         1615 => include_str!("scenes/s1615.txt"),
+        1704 => include_str!("scenes/s1704.txt"),
+        1751 => include_str!("scenes/s1751.txt"),
+        2063 => include_str!("scenes/s2063.txt"),
+        2065 => include_str!("scenes/s2065.txt"),
+        2902 => include_str!("scenes/s2902.txt"),
+        2903 => include_str!("scenes/s2903.txt"),
+        3027 => include_str!("scenes/s3027.txt"),
         747 => include_str!("scenes/s747.txt"),
         _ => "",
     }
@@ -139,10 +165,13 @@ fn trigger_source(id: u16) -> &'static str {
         1006 => include_str!("scenes/t1006.txt"),
         1007 => include_str!("scenes/t1007.txt"),
         1049 => include_str!("scenes/t1049.txt"),
+        105 => include_str!("scenes/t105.txt"),
         1268 => include_str!("scenes/t1268.txt"),
+        1334 => include_str!("scenes/t1334.txt"),
         1346 => include_str!("scenes/t1346.txt"),
         1347 => include_str!("scenes/t1347.txt"),
         1520 => include_str!("scenes/t1520.txt"),
+        1585 => include_str!("scenes/t1585.txt"),
         1595 => include_str!("scenes/t1595.txt"),
         1611 => include_str!("scenes/t1611.txt"),
         1612 => include_str!("scenes/t1612.txt"),
@@ -155,30 +184,76 @@ fn trigger_source(id: u16) -> &'static str {
         1817 => include_str!("scenes/t1817.txt"),
         1818 => include_str!("scenes/t1818.txt"),
         1819 => include_str!("scenes/t1819.txt"),
+        1912 => include_str!("scenes/t1912.txt"),
         1913 => include_str!("scenes/t1913.txt"),
         1914 => include_str!("scenes/t1914.txt"),
         1915 => include_str!("scenes/t1915.txt"),
         1916 => include_str!("scenes/t1916.txt"),
         1917 => include_str!("scenes/t1917.txt"),
+        1931 => include_str!("scenes/t1931.txt"),
         1932 => include_str!("scenes/t1932.txt"),
         1934 => include_str!("scenes/t1934.txt"),
+        1935 => include_str!("scenes/t1935.txt"),
         2015 => include_str!("scenes/t2015.txt"),
         2016 => include_str!("scenes/t2016.txt"),
         2062 => include_str!("scenes/t2062.txt"),
         2066 => include_str!("scenes/t2066.txt"),
         2067 => include_str!("scenes/t2067.txt"),
         2068 => include_str!("scenes/t2068.txt"),
+        22 => include_str!("scenes/t22.txt"),
+        23 => include_str!("scenes/t23.txt"),
+        24 => include_str!("scenes/t24.txt"),
+        25 => include_str!("scenes/t25.txt"),
+        26 => include_str!("scenes/t26.txt"),
+        27 => include_str!("scenes/t27.txt"),
+        28 => include_str!("scenes/t28.txt"),
         2899 => include_str!("scenes/t2899.txt"),
+        29 => include_str!("scenes/t29.txt"),
         2900 => include_str!("scenes/t2900.txt"),
+        2901 => include_str!("scenes/t2901.txt"),
+        2904 => include_str!("scenes/t2904.txt"),
+        2905 => include_str!("scenes/t2905.txt"),
+        2907 => include_str!("scenes/t2907.txt"),
+        2909 => include_str!("scenes/t2909.txt"),
+        2910 => include_str!("scenes/t2910.txt"),
+        2911 => include_str!("scenes/t2911.txt"),
+        2912 => include_str!("scenes/t2912.txt"),
+        2913 => include_str!("scenes/t2913.txt"),
+        2914 => include_str!("scenes/t2914.txt"),
+        2915 => include_str!("scenes/t2915.txt"),
+        2916 => include_str!("scenes/t2916.txt"),
+        2917 => include_str!("scenes/t2917.txt"),
+        2919 => include_str!("scenes/t2919.txt"),
+        2920 => include_str!("scenes/t2920.txt"),
+        2921 => include_str!("scenes/t2921.txt"),
+        2922 => include_str!("scenes/t2922.txt"),
+        2923 => include_str!("scenes/t2923.txt"),
+        2924 => include_str!("scenes/t2924.txt"),
+        2925 => include_str!("scenes/t2925.txt"),
+        2999 => include_str!("scenes/t2999.txt"),
+        30 => include_str!("scenes/t30.txt"),
         3006 => include_str!("scenes/t3006.txt"),
         3007 => include_str!("scenes/t3007.txt"),
         3008 => include_str!("scenes/t3008.txt"),
         3009 => include_str!("scenes/t3009.txt"),
         3010 => include_str!("scenes/t3010.txt"),
         3016 => include_str!("scenes/t3016.txt"),
+        3017 => include_str!("scenes/t3017.txt"),
+        3018 => include_str!("scenes/t3018.txt"),
+        3019 => include_str!("scenes/t3019.txt"),
+        3020 => include_str!("scenes/t3020.txt"),
+        3021 => include_str!("scenes/t3021.txt"),
         3022 => include_str!("scenes/t3022.txt"),
+        3023 => include_str!("scenes/t3023.txt"),
+        3024 => include_str!("scenes/t3024.txt"),
         3029 => include_str!("scenes/t3029.txt"),
+        3030 => include_str!("scenes/t3030.txt"),
+        3031 => include_str!("scenes/t3031.txt"),
         3033 => include_str!("scenes/t3033.txt"),
+        31 => include_str!("scenes/t31.txt"),
+        32 => include_str!("scenes/t32.txt"),
+        33 => include_str!("scenes/t33.txt"),
+        3600 => include_str!("scenes/t3600.txt"),
         3602 => include_str!("scenes/t3602.txt"),
         3603 => include_str!("scenes/t3603.txt"),
         3604 => include_str!("scenes/t3604.txt"),
@@ -192,12 +267,27 @@ fn trigger_source(id: u16) -> &'static str {
         3614 => include_str!("scenes/t3614.txt"),
         3615 => include_str!("scenes/t3615.txt"),
         3617 => include_str!("scenes/t3617.txt"),
+        3618 => include_str!("scenes/t3618.txt"),
         3619 => include_str!("scenes/t3619.txt"),
         3620 => include_str!("scenes/t3620.txt"),
         3640 => include_str!("scenes/t3640.txt"),
+        3641 => include_str!("scenes/t3641.txt"),
+        3642 => include_str!("scenes/t3642.txt"),
+        3655 => include_str!("scenes/t3655.txt"),
+        3660 => include_str!("scenes/t3660.txt"),
+        3661 => include_str!("scenes/t3661.txt"),
         3662 => include_str!("scenes/t3662.txt"),
+        3663 => include_str!("scenes/t3663.txt"),
+        55 => include_str!("scenes/t55.txt"),
+        56 => include_str!("scenes/t56.txt"),
+        57 => include_str!("scenes/t57.txt"),
+        58 => include_str!("scenes/t58.txt"),
+        59 => include_str!("scenes/t59.txt"),
+        744 => include_str!("scenes/t744.txt"),
         899 => include_str!("scenes/t899.txt"),
+        900 => include_str!("scenes/t900.txt"),
         901 => include_str!("scenes/t901.txt"),
+        915 => include_str!("scenes/t915.txt"),
         _ => "",
     }
 }
@@ -209,16 +299,40 @@ fn f(v: Option<&&str>) -> f32 {
 /// Draw a layout; buttons register as `Btn::Replay(index)` (depth-first order in the real
 /// scene). `skip` leaves out labels whose text matches (the parts Cadence draws itself).
 pub fn draw(c: &mut Canvas, ctx: &mut Ctx, scene: Scene, skip: &dyn Fn(&str) -> bool) {
+    draw_where(c, ctx, scene, &|kind, name, _, _| match kind {
+        'S' => !skip(&format!("frame:{name}")),
+        'T' => !skip(name),
+        _ => true,
+    });
+}
+
+/// `draw` with a filter that sees each item: its kind (S sprite, N 9-slice, T label, R color
+/// rectangle, B button), its frame / text / texture (a button: its index), and its position in the layout's
+/// 569 × 320 frame. The pages that draw their own rows leave the captured rows out with it.
+pub fn draw_where(c: &mut Canvas, ctx: &mut Ctx, scene: Scene, keep: &dyn Fn(char, &str, f32, f32) -> bool) {
     // the layout is in a 569 × 320 frame: center it in wider windows
     let dx = (c.width - 569.0) * 0.5;
     for line in scene.source().lines() {
         let w: Vec<&str> = line.split(' ').collect();
+        let Some(kind) = w.first().and_then(|k| (k.len() == 1).then(|| k.chars().next()).flatten()) else { continue };
+        let (x, y) = match kind {
+            'R' => (f(w.get(1)), f(w.get(2))),
+            _ => (f(w.get(2)), f(w.get(3))),
+        };
+        let name = match kind {
+            'S' => w.get(1).map(|n| n.strip_prefix("tex:").unwrap_or(n)).unwrap_or(""),
+            'T' => line.splitn(13, ' ').nth(12).unwrap_or(""),
+            'N' => w.get(1).copied().unwrap_or(""),
+            // a button's index
+            'B' => w.get(1).copied().unwrap_or(""),
+            _ => "",
+        };
+        if matches!(kind, 'S' | 'N' | 'T' | 'R' | 'B') && !keep(kind, name, x, y) {
+            continue;
+        }
         match w.first().copied() {
             Some("S") => {
                 let name = w[1].strip_prefix("tex:").unwrap_or(w[1]);
-                if skip(&format!("frame:{name}")) {
-                    continue;
-                }
                 let look = Look::default()
                     .scale_xy(f(w.get(4)), f(w.get(5)))
                     .anchor(f(w.get(7)), f(w.get(8)))
@@ -244,9 +358,6 @@ pub fn draw(c: &mut Canvas, ctx: &mut Ctx, scene: Scene, skip: &dyn Fn(&str) -> 
             }
             Some("T") => {
                 let text = w[12..].join(" ");
-                if skip(&text) {
-                    continue;
-                }
                 let look = Look::default()
                     .scale_xy(f(w.get(4)), f(w.get(5)))
                     .anchor(f(w.get(6)), f(w.get(7)))
@@ -268,6 +379,19 @@ pub fn draw(c: &mut Canvas, ctx: &mut Ctx, scene: Scene, skip: &dyn Fn(&str) -> 
             _ => {}
         }
     }
+}
+
+/// The captured text of the label at a point (an input's value as the game showed it).
+pub fn label_at(scene: Scene, x: f32, y: f32) -> Option<&'static str> {
+    scene.source().lines().find_map(|l| {
+        let w: Vec<&str> = l.splitn(13, ' ').collect();
+        (w.first() == Some(&"T") && (f(w.get(2)) - x).abs() < 2.0 && (f(w.get(3)) - y).abs() < 4.0).then(|| w.get(12).copied()).flatten()
+    })
+}
+
+/// Whether a layout draws this frame.
+pub fn has_frame(scene: Scene, frame: &str) -> bool {
+    scene.source().lines().any(|l| l.strip_prefix("S ").is_some_and(|r| r.split(' ').next() == Some(frame)))
 }
 
 /// A layout's button `i` center (its B line).

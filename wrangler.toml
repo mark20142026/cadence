@@ -1,0 +1,15 @@
+# Cadence's site on Cloudflare: one Worker serving the web build (target/site, made by
+# tools/deploy-web.sh: the page and the wasm only, never the player's game files) and the relay
+# under /relay (relay/worker.js).
+name = "cadence"
+main = "relay/worker.js"
+compatibility_date = "2026-10-01"
+
+[assets]
+directory = "target/site"
+binding = "ASSETS"
+run_worker_first = ["/relay/*"]
+
+# The relay forwards login forms (a password hash): keep request logs off.
+[observability]
+enabled = false

@@ -212,10 +212,6 @@ impl Garage {
         let (cx, cy) = (w * 0.5, h * 0.5);
         c.sprite("GJ_unlockTxt_001.png", cx, cy - 3.0, Look::default());
         c.nine_slice("square02_001.png", cx, cy - 65.0, 385.0, 100.0, Look::default().rgb([0, 0, 0]).alpha(75));
-        if self.kind >= ICON_KINDS {
-            c.text("bigFont", "Effects are not in Cadence yet", cx, cy - 65.0, Look::scaled(0.5));
-            return;
-        }
         let first = self.page * PER_PAGE + 1;
         let last = KINDS[self.kind].2;
         for slot in 0..PER_PAGE {
@@ -225,7 +221,17 @@ impl Garage {
             }
             let (col, row) = (slot % 12, slot / 12);
             let (x, y) = (cx - 165.0 + col as f32 * 30.0, cy - 35.0 - row as f32 * 30.0);
-            draw_icon(c, &icon_sheet(self.kind, id), x, y, GRID_SCALE[self.kind], [175, 175, 175], [255, 255, 255]);
+            if self.kind >= ICON_KINDS {
+                // the effects: trails (`player_special_NN`) and death effects (`explosionIcon_NN`),
+                // their own icons in the same grid
+                let frame = match KINDS[self.kind].0 {
+                    "streak" => format!("player_special_{id:02}_001.png"),
+                    _ => format!("explosionIcon_{id:02}_001.png"),
+                };
+                c.sprite(&frame, x, y, Look::scaled(0.8));
+            } else {
+                draw_icon(c, &icon_sheet(self.kind, id), x, y, GRID_SCALE[self.kind], [175, 175, 175], [255, 255, 255]);
+            }
             ctx.area(Btn::GarageIcon(slot as u8), x, y, 28.0, 28.0);
             if set.ids[self.kind] == id {
                 c.sprite("GJ_select_001.png", x, y, Look::scaled(0.85));

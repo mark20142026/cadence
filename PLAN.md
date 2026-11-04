@@ -114,3 +114,50 @@ Added the same day:
 | M11 | Optimization pass on a low-end target; texture packs; older-version levels | |
 | M12 | Cloudflare deploy (site + relay) | |
 | M13 | Mod API (compile-time, then runtime WASM) | |
+
+## v0.0.2: nothing left "not yet" (Mark, 2026-11-04)
+
+Mark: every item the README listed as missing gets done for 0.0.2. Tick items here as they land.
+
+- [x] Web online play: Cloudflare Worker relay (pass-through, no logging, CORS) + requests as
+      async (`net::post`): desktop runs them on a thread, the browser through the relay.
+- [ ] Accounts in the menus:
+      [x] register, account help, cloud Load/Save (merge, values only go up)
+      [x] main-menu profile button; own profile (stats, icons, posts: post/delete/like),
+          Friends (+ blocked), Friend Requests (received/sent: accept, remove), Account
+          Settings (update), message to a player (legacy uploadGJMessage20)
+      [x] level page: like/dislike, comment (with your best %), report
+      [x] chests: state, timers, open (orbs/diamonds into Cadence's stats)
+      [x] level upload: Share popup (request stars, notify), verify by completing from the
+          level's page, empty/unverified/account checks, update keeps the id; [ ] its Options
+          (unlisted / friends only) and "!" buttons
+      [x] rate difficulty (unrated levels: 1–10 stars → rateGJStars211), [x] user search,
+      [ ] rate demon,
+          comment history, quests claim, the chest-opening animation (RewardUnlockLayer),
+          [x] Messages (the legacy "Old Messages": list, read, reply, delete, sent);
+          [ ] the newer threads page (getGJThreads answer format), [ ] notifications' rows
+          (the page and its states are there), Following / Muted lists, level leaderboards (getGJLevelScores211's
+          chk: salt yPg6pUrtWn0J + s7, values and key not pinned yet)
+- [ ] Triggers: Advanced Follow 3016 + Edit 3660 + Re-target 3661; Keyframe objects 3032 +
+      Keyframe anim 3033; Enter effects 3017–3021, 3023, 1915; Touch 1595; BG Effect On/Off
+      1818/1819; Advanced Random 1912; Reverse 1917; End 1931; Checkpoint 2063; Gameplay Offset
+      2901; Camera Mode 2925; Camera Edge 2062; Area Stop 3024; Edit SFX 3603; Edit Song 3605;
+      BG Speed 3606; MG Speed 3612; Spawn Particle 3608; Reset 3618; Persistent Item 3641;
+      Collision State 3655; Link Visible 3662; UI progress 3663; editor guides 2016, 3642.
+- [ ] Editor: [x] pause menu options (settings, export, auto-save, get audio, …), [x] edit
+      tools (grid, wrench, color), [x] level page tools, [x] level settings buttons (font,
+      song type, 2-player; [ ] the color picker for the channels), [x] music in the
+      editor, [x] trigger popups for the triggers without one (64 more, 126 in all),
+      [x] Edit Special popups (1594 1704 1751 2063 2902 2903 3027), [ ] the particle
+      editor's fields (2065), [ ] decimal inputs shown as "1.00",
+      [x] the color popups' picker drags (hue ring, saturation/brightness square → keys 7/8/9),
+      [ ] trigger popups' sliders (each trigger's own slider ↔ value mapping).
+- [ ] Online menus: [x] User Search, [x] Lists search, [x] Advanced Options (filters;
+      [ ] layout from a capture), [x] level page Clone / Options / Delete / Refresh /
+      favorite / folder (saved levels kept), [x] My Levels My Server / Import (.gmd drop) /
+      folders / find / select all, [x] The Safe. [ ] My Lists (level lists of your own),
+      [x] Import on the web (a .gmd dropped on the page while playing).
+- [x] Icon kit: the effects pages (trails, death effects). [ ] ship fire / animations pages,
+      [ ] the chosen death effect used when dying.
+- [ ] Odds: the flying-corridor camera transition, platformer slope angle.
+- [ ] Each piece checked against the real game (harness in corner mode only), tests, docs.

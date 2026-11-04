@@ -11,6 +11,8 @@ use super::{Btn, Ctx};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Sub {
     Account,
+    /// `AccountHelpLayer`: the logged-in Account page's More
+    AccountHelp,
     Support,
     Songs,
 }
@@ -19,6 +21,7 @@ impl Sub {
     pub fn title(self) -> &'static str {
         match self {
             Sub::Account => "Account",
+            Sub::AccountHelp => "Account Help",
             Sub::Support => "Support",
             Sub::Songs => "Soundtrack",
         }
@@ -77,7 +80,8 @@ pub fn max_scroll(sub: Sub) -> f32 {
     }
 }
 
-pub fn draw(c: &mut Canvas, ctx: &mut Ctx, p: &Progress, sub: Sub, t: f32, closing: bool, scroll: f32) {
+/// `busy`: a cloud Save or Load is running (the page shows its loading circle instead of the buttons).
+pub fn draw(c: &mut Canvas, ctx: &mut Ctx, p: &Progress, sub: Sub, t: f32, closing: bool, scroll: f32, busy: bool) {
     let (w, h) = (c.width, c.height);
     let dy = options::dropdown_frame(c, ctx, p, t, closing, sub.title());
     let (cx, cy) = (w * 0.5, h * 0.5 + dy);
@@ -102,17 +106,29 @@ pub fn draw(c: &mut Canvas, ctx: &mut Ctx, p: &Progress, sub: Sub, t: f32, closi
                     }
                 }
             }
-            if matches!(account, Some((_, true))) {
-                // Save would replace the account's cloud backup with Cadence's progress, which
-                // isn't in the game's save format yet: greyed, like Load, until it is.
-                button_sprite(c, ctx, Btn::AccSave, "Save", "goldFont", "GJ_button_01.png", cx, cy + 30.0, 176.0, 31.5, 1.0, true);
-                button_sprite(c, ctx, Btn::AccLoad, "Load", "goldFont", "GJ_button_01.png", cx, cy - 15.0, 176.0, 31.5, 1.0, true);
+            if busy {
+                // `showLoadingUI`: the buttons go, a loading circle spins
+                super::online::loading_circle(c, cx, cy - 15.0, t);
+            } else if matches!(account, Some((_, true))) {
+                button_sprite(c, ctx, Btn::AccSave, "Save", "goldFont", "GJ_button_01.png", cx, cy + 30.0, 176.0, 31.5, 1.0, false);
+                button_sprite(c, ctx, Btn::AccLoad, "Load", "goldFont", "GJ_button_01.png", cx, cy - 15.0, 176.0, 31.5, 1.0, false);
                 button_sprite(c, ctx, Btn::AccMore, "More", "goldFont", "GJ_button_01.png", cx, cy - 60.0, 176.0, 31.5, 1.0, false);
             } else {
                 button_sprite(c, ctx, Btn::AccLogin, "Log in", "goldFont", "GJ_button_01.png", cx, cy + 30.0, 176.0, 31.5, 1.0, false);
                 button_sprite(c, ctx, Btn::AccHelp, "Help", "goldFont", "GJ_button_01.png", cx, cy - 15.0, 176.0, 31.5, 1.0, false);
-                // Registering is done on RobTop's site for now.
-                button_sprite(c, ctx, Btn::AccRegister, "Register", "goldFont", "GJ_button_01.png", cx, cy - 60.0, 176.0, 31.5, 1.0, true);
+                button_sprite(c, ctx, Btn::AccRegister, "Register", "goldFont", "GJ_button_01.png", cx, cy - 60.0, 176.0, 31.5, 1.0, false);
+            }
+        }
+        Sub::AccountHelp => {
+            // `AccountHelpLayer::updatePage`: the account, then Refresh Login, Manage Account,
+            // Unlink Account (the labels shrink to fit the buttons)
+            let name = crate::gjapi::linked_account().map(|(n, _)| n).unwrap_or_default();
+            let title = format!("Linked to account: {name}");
+            let (tw, _) = c.text_size("goldFont", &title);
+            c.text("goldFont", &title, cx, cy + 87.0, Look::scaled((330.0 / tw.max(1.0)).min(0.8)));
+            for (i, (id, label)) in [(Btn::AccRefreshLogin, "Refresh Login"), (Btn::AccManage, "Manage Account"), (Btn::AccUnlink, "Unlink Account")].into_iter().enumerate() {
+                let (lw, _) = c.text_size("goldFont", label);
+                button_sprite(c, ctx, id, label, "goldFont", "GJ_button_01.png", cx, cy + 30.0 - 45.0 * i as f32, 176.0, 31.5, (150.0 / lw.max(1.0)).min(1.0), false);
             }
         }
         Sub::Support => {

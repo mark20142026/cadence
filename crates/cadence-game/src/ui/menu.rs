@@ -269,7 +269,13 @@ impl Menu {
         // the news button's "!" (unread news)
         c.sprite("exMark_001.png", w - 28.5, 72.0, Look::scaled(0.8));
         ctx.button(c, Btn::MenuClose, "GJ_closeBtn_001.png", 18.0, h - 18.0, Look::scaled(0.7), 1.0);
-        // (The profile button at (45, 105) only shows with an account, which Cadence doesn't have.)
+        // `MenuLayer::updateUserProfileButton`: logged in, the profile button at (45, 105) and
+        // the account's name above it (goldFont, at most 0.7 and 70 wide)
+        if let Some((name, true)) = crate::gjapi::linked_account() {
+            ctx.button(c, Btn::MenuProfile, "GJ_profileButton_001.png", 45.0, 105.0, Look::default(), 1.1);
+            let (tw, _) = c.text_size("goldFont", &name);
+            c.text("goldFont", &name, 47.0, 141.0, Look::scaled((70.0 / tw.max(1.0)).min(0.7)));
+        }
     }
 }
 

@@ -28,6 +28,9 @@ mod editor_tabs;
 mod replay;
 mod gauntlets;
 mod login;
+mod register;
+mod social;
+mod share;
 
 use std::collections::HashMap;
 
@@ -111,7 +114,7 @@ pub fn load_assets(files: &dyn Files, sheets: &mut Sheets) -> UiAssets {
 /// The menu's links (MenuLayer's onFacebook, onTwitter, onYouTube, onTwitch, onDiscord,
 /// onRobTop, onNewgrounds), as the game has them.
 /// Then the support page's (7 privacy, 8 terms, 9 cocos2d-x) and Rate (10, the Steam page).
-pub const LINKS: [&str; 13] = [
+pub const LINKS: [&str; 14] = [
     "https://www.facebook.com/geometrydash",
     "https://twitter.com/robtopgames",
     "https://www.youtube.com/user/RobTopGames",
@@ -126,6 +129,8 @@ pub const LINKS: [&str; 13] = [
     // AccountLoginLayer::onForgotUser / onForgotPassword
     "https://www.boomlings.com/database/accounts/lostusername.php",
     "https://www.boomlings.com/database/accounts/lostpassword.php",
+    // AccountLayer's Help, AccountHelpLayer's Manage Account
+    "https://www.boomlings.com/database/accounts/accountManagement.php",
 ];
 
 /// `CCTransitionFade`'s length (half out to black, half back in).
@@ -154,6 +159,21 @@ pub enum Action {
     OpenLink(u8),
     /// Unlink the logged-in account (`AccountHelpLayer::doUnlink`).
     Unlink,
+    /// The Account page's Save and Load, confirmed (`AccountLayer::doBackup` / `doSync`).
+    CloudSave,
+    CloudLoad,
+    /// A received friend request accepted (its row on the Requests page).
+    AcceptRequest(u16),
+    /// A level reported (`reportGJLevel.php`), confirmed.
+    ReportLevel(i32),
+    /// My Levels' shown levels deleted (Select All, confirmed); one of your levels deleted.
+    DeleteMine,
+    DeleteMyLevel(u16),
+    /// The editor's music: play its song from this many seconds, or stop (None).
+    EditorMusic(Option<f32>),
+    /// A saved level deleted, confirmed; its low detail mode switched.
+    DeleteSaved(i32),
+    ToggleLdm(i32),
     /// Restart the level from the start (pause menu, end screen).
     Restart,
     /// Leave the level for the level select.
@@ -212,6 +232,23 @@ pub enum Btn {
     MenuStats,
     MenuNewgrounds,
     MenuRobTop,
+    // the search's Advanced Options popup
+    FilterToggle(u8),
+    FilterClose,
+    // the level page's Rate Difficulty popup
+    RateStar(u8),
+    RateCancel,
+    RateSubmit,
+    /// A color popup's picker (hue ring and saturation / brightness square)
+    Picker,
+    /// Your account's pages' row buttons (`ui::social::row_btn`)
+    Social(u16),
+    // the messages page's back / close
+    MsgClose,
+    // the post / message box
+    WriteField(u8),
+    WriteCancel,
+    WriteSend,
     MenuSocial(u8),
     MenuNews,
     MenuClose,
@@ -276,6 +313,14 @@ pub enum Btn {
     AccSave,
     AccLoad,
     AccMore,
+    // AccountHelpLayer (the logged-in Account page's More)
+    AccRefreshLogin,
+    AccManage,
+    AccUnlink,
+    // AccountRegisterLayer: its five fields, Cancel, Submit
+    RegField(u8),
+    RegCancel,
+    RegSubmit,
     // AccountLoginLayer
     LoginUser,
     LoginPass,
@@ -435,6 +480,69 @@ struct Session {
     first_completion: bool,
 }
 
+/// A finished cloud Save or Load.
+pub enum CloudDone {
+    /// Backed up: the two saves' sizes in MB (profile, levels).
+    Saved(f32, f32),
+    Loaded(Box<crate::cloud::CloudSave>),
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// An exported level file: the Downloads folder on the desktop, a download in the browser.
+#[cfg(not(target_arch = "wasm32"))]
+fn export_level(name: &str, bytes: &[u8]) -> Result<String, String> {
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").ok_or("no home folder")?);
+    let safe: String = name.chars().map(|c| if c.is_alphanumeric() || c == ' ' { c } else { '_' }).collect();
+    let path = home.join("Downloads").join(format!("{safe}.gmd"));
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn export_level(name: &str, bytes: &[u8]) -> Result<String, String> {
+    crate::audio::web_download(&format!("{name}.gmd"), bytes);
+    Ok(format!("{name}.gmd"))
+}
+
+fn rgb_to_hsv([r, g, b]: [f32; 3]) -> (f32, f32, f32) {
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let d = max - min;
+    let h = if d == 0.0 {
+        0.0
+    } else if max == r {
+        60.0 * ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        60.0 * ((b - r) / d + 2.0)
+    } else {
+        60.0 * ((r - g) / d + 4.0)
+    };
+    (h, if max == 0.0 { 0.0 } else { d / max }, max)
+}
+
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
+    let c = v * s;
+    let x = c * (1.0 - ((h / 60.0).rem_euclid(2.0) - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = match (h / 60.0) as i32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    [r + m, g + m, b + m]
+}
+
+/// Stars from the main levels completed (stat 6, which `onBackup` wants at least 10 of).
+fn total_stars(p: &save::Progress) -> u32 {
+    p.levels.iter().filter(|(id, l)| ((1..=22).contains(*id) || **id == 3001 || (5001..=5004).contains(*id)) && l.best >= 100).map(|(id, _)| level_info(*id).stars).sum()
+}
+
 /// A message box (`FLAlertLayer`): title, text, OK.
 #[derive(Clone, Debug)]
 pub struct Alert {
@@ -539,6 +647,29 @@ pub struct Ui {
     confirm: Option<Confirm>,
     /// The login popup (`AccountLoginLayer`), over the account page.
     login: Option<login::LoginPopup>,
+    register: Option<register::RegisterPopup>,
+    /// Your account's pages (the menu's profile button), and the box for a post or message.
+    social: Option<social::Social>,
+    /// The chests' state while the rewards popup is open (`RewardsPage`), when it arrived,
+    /// and the request in flight.
+    pub chests: Option<(crate::gjapi::Rewards, web_time::Instant)>,
+    chest_job: Option<std::sync::mpsc::Receiver<(i32, Result<crate::gjapi::Rewards, String>)>>,
+    writer: Option<social::Writer>,
+    /// Your level's Share popup, and the editor slot a play from its page is verifying.
+    share: Option<share::Share>,
+    /// The editor's song playing (its music button), and which file.
+    editor_music: bool,
+    /// Seconds since the editor last auto-saved (`autosave` option).
+    autosave_t: f32,
+    pub editor_song: Option<String>,
+    verify_slot: Option<usize>,
+    /// Cloud Save / Load in progress (the Account page shows its loading circle meanwhile).
+    cloud: Option<std::sync::mpsc::Receiver<Result<CloudDone, i32>>>,
+    /// When Save and Load were last pressed (`bak_account` / `sync_account`: 30 s apart).
+    cloud_last: [Option<web_time::Instant>; 2],
+    cloud_save: bool,
+    /// A color picker being dragged.
+    picker_drag: bool,
     /// Which vault line comes next (−1: start at a random one)
     vault_line: i32,
     /// The Vault (`SecretLayer`): the code typed so far, the guard's message (text, color) and
@@ -613,6 +744,20 @@ impl Ui {
             open_start: 0.0,
             confirm: None,
             login: None,
+            register: None,
+            social: None,
+            chests: None,
+            chest_job: None,
+            writer: None,
+            share: None,
+            editor_music: false,
+            autosave_t: 0.0,
+            editor_song: None,
+            verify_slot: None,
+            cloud: None,
+            cloud_last: [None; 2],
+            cloud_save: false,
+            picker_drag: false,
             vault_line: -1,
             vault_input: String::new(),
             group_add: 0,
@@ -752,23 +897,55 @@ impl Ui {
         let slot = e.slot.unwrap_or_else(|| (0..1000).find(|i| !self.progress.settings.contains_key(&format!("mylevel{i}"))).unwrap_or(999));
         e.slot = Some(slot);
         let data = cadence_core::codec::base64_encode_url(e.level_string().as_bytes());
+        // a changed level has to be verified again
+        if self.progress.settings.get(&format!("mylevel{slot}")) != Some(&data) {
+            self.progress.settings.remove(&format!("mylevelverified{slot}"));
+        }
         self.progress.settings.insert(format!("mylevel{slot}"), data);
         let name = if e.name.trim().is_empty() { format!("Unnamed {slot}") } else { e.name.clone() };
         self.progress.settings.insert(format!("mylevelname{slot}"), name.replace(' ', "\u{a0}"));
         self.progress.save();
     }
 
-    /// The saved local levels: (slot, name).
+    /// The saved local levels: (slot, name), in the folder shown and matching the find text.
     pub fn my_levels(&self) -> Vec<(usize, String)> {
+        let folder = self.online.my_folder;
+        let find = self.online.my_find.clone().unwrap_or_default().to_lowercase();
         let mut v: Vec<(usize, String)> = self
             .progress
             .settings
             .iter()
             .filter_map(|(k, _)| k.strip_prefix("mylevel").and_then(|n| n.parse::<usize>().ok()))
             .map(|i| (i, self.progress.settings.get(&format!("mylevelname{i}")).cloned().unwrap_or_default().replace('\u{a0}', " ")))
+            .filter(|(i, name)| {
+                let f = self.progress.settings.get(&format!("mylevelfolder{i}")).and_then(|v| v.parse::<u8>().ok()).unwrap_or(0);
+                (folder == 0 || f == folder) && name.to_lowercase().contains(&find)
+            })
             .collect();
         v.sort();
         v
+    }
+
+    /// The slots of the verified local levels.
+    fn my_verified(&self) -> Vec<usize> {
+        self.progress.settings.keys().filter_map(|k| k.strip_prefix("mylevelverified").and_then(|n| n.parse().ok())).collect()
+    }
+
+    /// A level file (`.gmd`: the game's exported level, a plist with k2 name and k4 data)
+    /// dropped on the window: into your levels.
+    pub fn import_level(&mut self, bytes: &[u8]) -> bool {
+        let text = String::from_utf8_lossy(bytes);
+        let Ok(dict) = cadence_core::save::parse_plist(&text) else { return false };
+        let get = |k: &str| cadence_core::save::get(&dict, k).and_then(|v| v.as_str()).map(str::to_string);
+        let (Some(name), Some(data)) = (get("k2"), get("k4")) else { return false };
+        let Ok(level) = cadence_core::codec::decode_level_string(&data) else { return false };
+        let slot = (0..1000).find(|i| !self.progress.settings.contains_key(&format!("mylevel{i}"))).unwrap_or(999);
+        self.progress.settings.insert(format!("mylevel{slot}"), cadence_core::codec::base64_encode_url(level.as_bytes()));
+        self.progress.settings.insert(format!("mylevelname{slot}"), name.replace(' ', "\u{a0}"));
+        self.progress.save();
+        self.online.my_levels = self.my_levels();
+        self.alert = Some(Alert { title: "Imported".into(), text: format!("<cg>{name}</c> is now in your levels."), t: 0.0 });
+        true
     }
 
     /// A saved local level's editor state.
@@ -814,6 +991,9 @@ impl Ui {
         if let Some(id) = self.slider_drag {
             self.drag_slider(id);
         }
+        if self.picker_drag {
+            self.drag_picker();
+        }
         if let (Some((x0, s0)), Screen::Levels) = (self.drag, self.screen) {
             self.levels.drag_to(s0 - (self.mouse.0 - x0) / self.view.0);
         }
@@ -840,6 +1020,9 @@ impl Ui {
 
     /// Icon sheets the menus need loaded before they draw.
     pub fn wanted_sheets(&self) -> Vec<String> {
+        if let Some(s) = &self.social {
+            return social::wanted_sheets(s);
+        }
         match self.screen {
             _ if self.replay.is_some() => self.replay.map(|(sc, _)| replay::icon_sheets(sc)).unwrap_or_default(),
             Screen::Garage => self.garage.wanted_sheets(&self.icons()),
@@ -883,6 +1066,45 @@ impl Ui {
         self.volumes_dirty |= matches!(id, Btn::SliderMusic | Btn::SliderSfx);
     }
 
+    /// `CCControlColourPicker` in a color popup (keys 7/8/9 the color): the hue ring (150
+    /// across at (208.5, 121); its knob 60 from the center) and the saturation / brightness
+    /// square (110 across at (227.5, 141); s and v over a 55 box 35 in, held to the circle).
+    fn drag_picker(&mut self) {
+        let dx = (self.window_px.0 / self.window_px.1 * 320.0 - 569.0) * 0.5;
+        let (mx, my) = (self.mouse.0 - dx, self.mouse.1);
+        let Some(e) = self.editor.as_mut() else { return };
+        let Some(o) = e.selection().next() else { return };
+        let rgb = [7, 8, 9].map(|k| o.get(k).and_then(|v| v.parse::<f32>().ok()).unwrap_or(255.0) / 255.0);
+        let (mut h, mut sat, mut val) = rgb_to_hsv(rgb);
+        let (hx, hy) = (283.5f32, 196.0f32);
+        let d = ((mx - hx).powi(2) + (my - hy).powi(2)).sqrt();
+        if d > 59.0 {
+            // the hue ring (cocos2d-x: angle + 180°)
+            h = ((my - hy).atan2(mx - hx).to_degrees() + 180.0) % 360.0;
+        } else {
+            let (sx, sy) = (227.5f32, 141.0f32);
+            let (cx, cy) = (sx + 55.0, sy + 55.0);
+            let (mut px, mut py) = (mx, my);
+            let dd = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
+            if dd > 55.0 {
+                let a = (py - cy).atan2(px - cx);
+                px = cx + 55.0 * a.cos();
+                py = cy + 55.0 * a.sin();
+            }
+            px = px.clamp(sx + 35.0, sx + 89.0);
+            py = py.clamp(sy + 35.0, sy + 89.0);
+            sat = 1.0 - ((sx + 35.0 - px) / 55.0).abs();
+            val = ((sy + 35.0 - py) / 55.0).abs();
+        }
+        let c = hsv_to_rgb(h, sat, val);
+        let vals: Vec<(u16, String)> = [7u16, 8, 9].iter().zip(c).map(|(k, v)| (*k, ((v * 255.0).round() as i32).to_string())).collect();
+        e.edit_selected(move |o| {
+            for (k, v) in &vals {
+                o.set(*k, Some(v.clone()));
+            }
+        });
+    }
+
     fn hit(&self) -> Option<Btn> {
         let (mx, my) = self.mouse;
         // the last registered button is on top
@@ -893,6 +1115,11 @@ impl Ui {
     pub fn mouse_button(&mut self, down: bool) -> bool {
         if down {
             let hit = self.hit();
+            if let Some(Btn::Picker) = hit {
+                self.picker_drag = true;
+                self.drag_picker();
+                return true;
+            }
             if let Some(id @ (Btn::SliderMusic | Btn::SliderSfx | Btn::SliderSetting(_))) = hit {
                 self.slider_drag = Some(id);
                 self.drag_slider(id);
@@ -931,6 +1158,9 @@ impl Ui {
             }
             // In a level, a click anywhere while a menu is up belongs to the menu.
             return self.screen != Screen::Level || self.pause.is_some() || self.end.is_some();
+        }
+        if std::mem::take(&mut self.picker_drag) {
+            return true;
         }
         if self.slider_drag.take().is_some() {
             self.progress.save();
@@ -974,6 +1204,39 @@ impl Ui {
                 return true;
             }
             return false;
+        }
+        if let Some(w) = self.writer.as_mut() {
+            match key {
+                K::Backspace => w.backspace(),
+                K::Tab if w.to.is_some() => w.field ^= 1,
+                K::Escape => self.writer = None,
+                _ => {}
+            }
+            return true;
+        }
+        if let Some(s) = self.social.as_mut().filter(|_| self.alert.is_none() && self.confirm.is_none()) {
+            if key == K::Escape {
+                s.stack.pop();
+                if s.stack.is_empty() {
+                    self.social = None;
+                } else {
+                    s.load();
+                }
+            }
+            return true;
+        }
+        if let Some(r) = self.register.as_mut() {
+            match key {
+                K::Backspace => r.backspace(),
+                K::Tab => {
+                    r.focus = (r.focus + 1) % 5;
+                    r.active = true;
+                }
+                K::Enter | K::NumpadEnter => r.submit(),
+                K::Escape if !r.loading() => self.register = None,
+                _ => {}
+            }
+            return true;
         }
         if let Some(l) = self.login.as_mut() {
             match key {
@@ -1236,6 +1499,10 @@ impl Ui {
     }
 
     pub fn scroll(&mut self, delta: f32) {
+        if let Some(s) = self.social.as_mut() {
+            s.scroll_by(-delta);
+            return;
+        }
         if self.screen == Screen::Editor {
             if let Some(e) = self.editor.as_mut() {
                 e.cam.1 += delta * 2.0 / e.zoom;
@@ -1258,6 +1525,21 @@ impl Ui {
 
     /// Typed text (the online search box). Returns true if the UI used it.
     pub fn text(&mut self, text: &str) -> bool {
+        if self.screen == Screen::Online && self.online.my_find.is_some() && self.online.search.kind == -1 {
+            if let Some(f) = self.online.my_find.as_mut() {
+                f.extend(text.chars().filter(|c| !c.is_control()));
+            }
+            self.online.my_levels = self.my_levels();
+            return true;
+        }
+        if let Some(w) = self.writer.as_mut().filter(|_| self.alert.is_none()) {
+            w.type_text(text);
+            return true;
+        }
+        if let Some(r) = self.register.as_mut().filter(|_| self.alert.is_none()) {
+            r.type_text(text);
+            return true;
+        }
         if let Some(l) = self.login.as_mut().filter(|_| self.alert.is_none()) {
             l.type_text(text);
             return true;
@@ -1369,7 +1651,63 @@ impl Ui {
     }
 
     fn clicked_now(&mut self, id: Btn) {
+        if let (Some(sh), Btn::Replay(i)) = (self.share.as_mut(), id) {
+            if let share::Effect::Close = sh.click(i) {
+                self.share = None;
+            }
+            return;
+        }
+        // another player's profile opened from your lists sits over them
+        if self.social.is_some() && self.online.popup == Some(replay::Scene::Profile) {
+            if let Btn::Replay(i) = id {
+                if let online::Effect::Alert(title, text) = self.online.popup_click(i) {
+                    self.alert = Some(Alert { title, text, t: 0.0 });
+                }
+            }
+            return;
+        }
+        if let Some(s) = self.social.as_mut().filter(|_| self.writer.is_none() && matches!(id, Btn::Replay(_) | Btn::Social(_) | Btn::MsgClose)) {
+            let e = s.click(id);
+            self.social_effect(e);
+            return;
+        }
         match id {
+            Btn::MenuProfile => self.social = Some(social::Social::open()),
+            Btn::WriteField(f) => {
+                if let Some(w) = self.writer.as_mut() {
+                    w.field = f;
+                }
+            }
+            Btn::WriteCancel => self.writer = None,
+            // a custom song's id for your level
+            Btn::WriteSend if self.writer.as_ref().is_some_and(|w| w.song_slot.is_some()) => {
+                if let Some(w) = self.writer.take() {
+                    if let (Some(slot), Ok(id)) = (w.song_slot, w.body.trim().parse::<i32>()) {
+                        self.progress.settings.insert(format!("mylevelsong{slot}"), id.to_string());
+                        self.progress.save();
+                    }
+                }
+            }
+            // a comment on a level: its percent is your best there
+            Btn::WriteSend if self.writer.as_ref().is_some_and(|w| w.level.is_some()) => {
+                if let Some(w) = self.writer.take() {
+                    let level = w.level.unwrap_or(0);
+                    let percent = self.progress.get(level as i32).best as i32;
+                    let text = w.body;
+                    if !text.trim().is_empty() {
+                        self.online.post_comment(level, text, percent);
+                    }
+                }
+            }
+            Btn::WriteSend => {
+                if let (Some(w), Some(s)) = (self.writer.take(), self.social.as_mut()) {
+                    match w.to {
+                        Some(to) => s.message(to, w.subject, w.body),
+                        None if !w.body.trim().is_empty() => s.post(w.body),
+                        None => {}
+                    }
+                }
+            }
             Btn::MenuPlay => {
                 self.screen = Screen::Levels;
                 self.levels.enter();
@@ -1388,7 +1726,50 @@ impl Ui {
             Btn::ConfirmNo => self.confirm = None,
             Btn::ConfirmYes => {
                 if let Some(c) = self.confirm.take() {
-                    self.pending.push(c.action);
+                    match c.action {
+                        Action::CloudSave | Action::CloudLoad => self.start_cloud(c.action == Action::CloudSave),
+                        Action::DeleteMyLevel(slot) => {
+                            for k in ["mylevel", "mylevelname", "mylevelverified", "mylevelid", "mylevelver", "mylevelfolder", "mylevelldm"] {
+                                self.progress.settings.remove(&format!("{k}{slot}"));
+                            }
+                            self.progress.save();
+                            self.editor = None;
+                            self.replay = None;
+                            self.online.my_levels = self.my_levels();
+                        }
+                        Action::DeleteMine => {
+                            for (slot, _) in std::mem::take(&mut self.online.my_levels) {
+                                for k in ["mylevel", "mylevelname", "mylevelverified", "mylevelid", "mylevelver", "mylevelfolder"] {
+                                    self.progress.settings.remove(&format!("{k}{slot}"));
+                                }
+                            }
+                            self.progress.save();
+                            self.online.my_selected = false;
+                            self.online.my_levels = self.my_levels();
+                        }
+                        Action::DeleteSaved(id) => {
+                            crate::saved::delete(id);
+                            self.online.popup = None;
+                            self.online.view = online::View::List;
+                            self.online.results = crate::saved::list().into_iter().map(|s| s.info).collect();
+                        }
+                        Action::ToggleLdm(id) => {
+                            let key = format!("ldm{id}");
+                            let on = self.progress.var(&key, false);
+                            self.progress.set_var(&key, !on);
+                            self.progress.save();
+                        }
+                        Action::ReportLevel(level) => {
+                            let _ = crate::net::spawn(async move { crate::net::post("reportGJLevel.php", &crate::gjapi::report_form(level as i64)).await.is_ok() });
+                            self.alert = Some(Alert { title: "Reported".into(), text: "Thank you for your report.".into(), t: 0.0 });
+                        }
+                        Action::AcceptRequest(row) => {
+                            if let Some(s) = self.social.as_mut() {
+                                s.accept(row as usize);
+                            }
+                        }
+                        a => self.pending.push(a),
+                    }
                 }
             }
             Btn::MenuSocial(i) => self.pending.push(Action::OpenLink(i)),
@@ -1404,7 +1785,12 @@ impl Ui {
                 })
             }
             Btn::MenuNews => self.online.open_news(),
-            Btn::MenuDaily => self.popup = Some(popups::Popup::Rewards),
+            // RewardsPage: the chests' state comes from the servers (by device id, no account)
+            Btn::MenuDaily => {
+                self.popup = Some(popups::Popup::Rewards);
+                self.chests = None;
+                self.chest_job = Some(crate::net::spawn(async { (0, crate::gjapi::rewards(0).await) }));
+            }
             Btn::MenuMoreGames => {
                 self.alert = Some(Alert { title: "More Games".into(), text: "Cadence plays the official levels from your own copy of the game.".into(), t: 0.0 });
             }
@@ -1442,14 +1828,29 @@ impl Ui {
             Btn::GarageShards => self.replay = Some((replay::Scene::Shards, self.screen)),
             Btn::Replay(i) if self.screen == Screen::Online && self.online.popup.is_some() => match self.online.popup_click(i) {
                 online::Effect::Alert(title, text) => self.alert = Some(Alert { title, text, t: 0.0 }),
+                online::Effect::Comment(level) => {
+                    let mut w = social::Writer::new("Add Comment", None);
+                    w.level = Some(level);
+                    self.writer = Some(w);
+                }
+                online::Effect::Report(level) => {
+                    self.confirm = Some(Confirm {
+                        title: "Confirm Report".into(),
+                        text: "Report this level?\n<cy>False reports may result in action against your own account.</c>".into(),
+                        btn1: "Cancel".into(),
+                        btn2: "Report".into(),
+                        action: Action::ReportLevel(level as i32),
+                        t: 0.0,
+                    })
+                }
                 _ => {}
             },
-            // the editor's pause menu (EditorPauseLayer): its first five buttons
+            // the editor's pause menu (EditorPauseLayer): Resume … Exit, then its side buttons
             Btn::Replay(i) if self.editor_paused && self.replay.is_none() => {
                 if i < 5 {
                     self.clicked(Btn::EdPauseItem(i));
                 } else {
-                    self.alert = Some(Alert { title: "Not yet".into(), text: "This editor option isn't in Cadence yet.".into(), t: 0.0 });
+                    self.editor_pause_side(i);
                 }
             }
             Btn::Replay(i) => {
@@ -1591,13 +1992,18 @@ impl Ui {
                 }
                 self.popup = None;
             }
-            Btn::RewardChest(_) | Btn::RewardFree => {
-                self.alert = Some(Alert {
-                    title: "Rewards".into(),
-                    text: "Chest rewards are claimed from the game's servers, and Cadence never writes to them.".into(),
-                    t: 0.0,
-                })
-            }
+            // a chest: ready ones open (`getGJRewards` type 1 / 2), others wait
+            Btn::RewardChest(k) if self.chest_job.is_none() => match &self.chests {
+                None => self.alert = Some(Alert { title: "Chest".into(), text: "Fetching the chest, tap it again in a moment.".into(), t: 0.0 }),
+                Some((r, at)) => {
+                    let left = if k == 0 { r.small_left } else { r.big_left } - at.elapsed().as_secs() as i64;
+                    if left <= 0 {
+                        let kind = k as i32 + 1;
+                        self.chest_job = Some(crate::net::spawn(async move { (kind, crate::gjapi::rewards(kind).await) }));
+                    }
+                }
+            },
+            Btn::RewardFree => self.alert = Some(Alert { title: "Free Chest".into(), text: "No free chests right now.".into(), t: 0.0 }),
             Btn::ParLock => {
                 let on = self.progress.var("0228", false);
                 self.progress.set_var("0228", !on);
@@ -1619,15 +2025,74 @@ impl Ui {
                 self.alert = Some(Alert { title: label.replace('\n', " "), text: text.into(), t: 0.0 });
             }
             Btn::AccLogin => self.login = Some(login::LoginPopup::new()),
-            Btn::AccMore => {
+            // AccountLayer::onMore: the Account Help page
+            Btn::AccMore => self.settings = Some(options::Settings::Sub { sub: subpages::Sub::AccountHelp, t: 0.0, closing: false, scroll: 0.0 }),
+            Btn::AccRefreshLogin => {
+                let mut l = login::LoginPopup::new();
+                l.user = crate::gjapi::linked_account().map(|(n, _)| n).unwrap_or_default();
+                l.focus = 1;
+                self.login = Some(l);
+            }
+            Btn::AccManage => {
+                self.confirm = Some(Confirm { title: "Manage".into(), text: "Open the account management page?".into(), btn1: "Cancel".into(), btn2: "Yes".into(), action: Action::OpenLink(13), t: 0.0 })
+            }
+            Btn::AccUnlink => {
+                let name = crate::gjapi::linked_account().map(|(n, _)| n).unwrap_or_default();
                 self.confirm = Some(Confirm {
                     title: "Unlink Account".into(),
-                    text: "Unlink this account? Cadence stops sending it with requests. You can log in again at any time.".into(),
+                    text: format!("Are you sure you want to <cg>unlink</c> from the account <cl>{name}</c>?"),
                     btn1: "Cancel".into(),
                     btn2: "Unlink".into(),
                     action: Action::Unlink,
                     t: 0.0,
                 })
+            }
+            Btn::AccRegister => self.register = Some(register::RegisterPopup::new()),
+            Btn::RegField(i) => {
+                if let Some(r) = self.register.as_mut() {
+                    r.focus = i;
+                    r.active = true;
+                }
+            }
+            Btn::RegCancel => {
+                if self.register.as_ref().is_some_and(|r| !r.loading()) {
+                    self.register = None;
+                }
+            }
+            Btn::RegSubmit => {
+                if let Some(r) = self.register.as_mut() {
+                    r.submit();
+                }
+            }
+            // AccountLayer::onBackup / onSync: 10 stars to save, 30 s between tries, then the
+            // game's question (Cadence's Save merges into the cloud data rather than replacing it)
+            Btn::AccSave | Btn::AccLoad if self.cloud.is_none() => {
+                let save = id == Btn::AccSave;
+                let wait = self.cloud_last[!save as usize].map_or(0, |t| 30u64.saturating_sub(t.elapsed().as_secs()));
+                if save && total_stars(&self.progress) < 10 {
+                    self.alert = Some(Alert { title: "Collect more".into(), text: "You need to <cl>collect</c> atleast <cy>10 stars</c> to enable <cg>saving</c>.".into(), t: 0.0 });
+                } else if wait > 0 {
+                    let what = if save { "back up" } else { "sync" };
+                    self.alert = Some(Alert { title: if save { "Too Fast" } else { "Too fast" }.into(), text: format!("Please wait {wait} seconds before attempting to {what} your account again."), t: 0.0 });
+                } else if save {
+                    self.confirm = Some(Confirm {
+                        title: "Save Data".into(),
+                        text: "Do you want to <cg>save</c> your account data on the <cl>cloud</c>?\n<cy>This will overwrite previously saved data.</c>".into(),
+                        btn1: "Cancel".into(),
+                        btn2: "Save".into(),
+                        action: Action::CloudSave,
+                        t: 0.0,
+                    });
+                } else {
+                    self.confirm = Some(Confirm {
+                        title: "Load Data".into(),
+                        text: "Do you want to <cg>download</c> your account data from the <cl>cloud</c>?\n<cy>This will merge current data with the saved data.</c>".into(),
+                        btn1: "Cancel".into(),
+                        btn2: "Load".into(),
+                        action: Action::CloudLoad,
+                        t: 0.0,
+                    });
+                }
             }
             Btn::LoginUser | Btn::LoginPass => {
                 if let Some(l) = self.login.as_mut() {
@@ -1644,11 +2109,7 @@ impl Ui {
                 }
             }
             Btn::AccHelp => {
-                self.alert = Some(Alert {
-                    title: "Account Help".into(),
-                    text: "Accounts back up your data on the game's servers. Cadence keeps your progress on this computer instead, so logging in is not available.".into(),
-                    t: 0.0,
-                })
+                self.confirm = Some(Confirm { title: "Help".into(), text: "Open the account help page?".into(), btn1: "Cancel".into(), btn2: "Yes".into(), action: Action::OpenLink(13), t: 0.0 })
             }
             Btn::SupLinks => self.pending.push(Action::OpenLink(5)),
             Btn::SupSfx => {
@@ -1702,10 +2163,19 @@ impl Ui {
                         open(self);
                         self.online.open_local("My Levels", "Tap <cg>New</c> to create a <cl>level</c>!");
                         self.online.my_levels = self.my_levels();
+                        self.online.my_verified = self.my_verified();
                     }
                     "Saved" => {
                         open(self);
                         self.online.open_local("Saved Levels", "You have not <cg>downloaded</c> any\n<cl>levels</c> yet!");
+                        // favorites first, like the game's saved list
+                        let mut saved = crate::saved::list();
+                        saved.sort_by_key(|s| !s.favorite);
+                        self.online.results = saved.into_iter().map(|s| s.info).collect();
+                        if !self.online.results.is_empty() {
+                            self.online.status.clear();
+                            self.online.total = self.online.results.len() as u32;
+                        }
                     }
                     "Scores" => {
                         open(self);
@@ -1800,6 +2270,11 @@ impl Ui {
             | Btn::GauntletPage(_)
             | Btn::InfoPlay
             | Btn::InfoSide(_)
+            | Btn::FilterToggle(_)
+            | Btn::FilterClose
+            | Btn::RateStar(_)
+            | Btn::RateCancel
+            | Btn::RateSubmit
             | Btn::InfoSongMore
             | Btn::InfoSongAssets
             | Btn::InfoAuthor
@@ -1809,7 +2284,46 @@ impl Ui {
                     online::Effect::Leave => self.screen = Screen::Creator,
                     online::Effect::Alert(title, text) => self.alert = Some(Alert { title, text, t: 0.0 }),
                     online::Effect::Sound(s) => self.sounds.push(s),
-                    online::Effect::None => {}
+                    online::Effect::Delete(id) => {
+                        self.confirm = Some(Confirm {
+                            title: "Delete Level".into(),
+                            text: "Are you sure you want to <cr>delete</c> this level?".into(),
+                            btn1: "Cancel".into(),
+                            btn2: "Delete".into(),
+                            action: Action::DeleteSaved(id),
+                            t: 0.0,
+                        })
+                    }
+                    online::Effect::Clone(id) => self.clone_saved(id),
+                    online::Effect::RefreshMine => {
+                        self.online.my_levels = self.my_levels();
+                        self.online.my_verified = self.my_verified();
+                        let folder = self.online.my_folder;
+                        self.online.title = if folder == 0 { "My Levels".into() } else { format!("My Levels (Folder {folder})") };
+                    }
+                    online::Effect::DeleteMine => {
+                        let n = self.online.my_levels.len();
+                        self.confirm = Some(Confirm {
+                            title: "Delete Levels".into(),
+                            text: format!("Delete the <cy>{n}</c> level{} shown? <cr>You cannot undo this.</c>", if n == 1 { "" } else { "s" }),
+                            btn1: "Cancel".into(),
+                            btn2: "Delete".into(),
+                            action: Action::DeleteMine,
+                            t: 0.0,
+                        })
+                    }
+                    online::Effect::LevelOptions(id) => {
+                        let on = self.progress.var(&format!("ldm{id}"), false);
+                        self.confirm = Some(Confirm {
+                            title: "Options".into(),
+                            text: format!("<cg>Low Detail Mode</c> for this level is <cy>{}</c>.", if on { "on" } else { "off" }),
+                            btn1: "Close".into(),
+                            btn2: if on { "Turn Off" } else { "Turn On" }.into(),
+                            action: Action::ToggleLdm(id),
+                            t: 0.0,
+                        })
+                    }
+                    online::Effect::None | online::Effect::Comment(_) | online::Effect::Report(_) => {}
                 }
             }
             Btn::LevelsBack => self.screen = Screen::Menu,
@@ -1958,8 +2472,14 @@ impl Ui {
                         self.pending.push(Action::PlayOnline);
                     }
                     editor::EdEffect::Pause => self.editor_paused = true,
+                    // EditorUI::onPlayback: the level's song from where the camera is (normal
+                    // speed, 311.58 units a second), or stop it
                     editor::EdEffect::Music => {
-                        self.alert = Some(Alert { title: "Music".into(), text: "Playing the level's song in the editor isn't in Cadence yet: use the playtest button.".into(), t: 0.0 });
+                        self.editor_music = !self.editor_music;
+                        let song = online::official_song(e.setting("kA1").and_then(|v| v.parse().ok()).unwrap_or(0));
+                        let offset = (e.cam.0 / 311.58).max(0.0);
+                        self.pending.push(Action::EditorMusic(self.editor_music.then_some(offset)));
+                        self.editor_song = song;
                     }
                     editor::EdEffect::EditObject(id) if replay::TRIGGER_POPUPS.contains(&id) => {
                         self.trig_focus = None;
@@ -1986,9 +2506,7 @@ impl Ui {
                         self.group_add = 0;
                         self.replay = Some((replay::Scene::EditGroup, Screen::Editor));
                     }
-                    editor::EdEffect::Unported => {
-                        self.alert = Some(Alert { title: "Not yet".into(), text: "This editor tool isn't in Cadence yet.".into(), t: 0.0 });
-                    }
+                    editor::EdEffect::Options => self.settings = Some(options::Settings::More { tab: 3, page: 0 }),
                     editor::EdEffect::None => {}
                 }
             }
@@ -2005,6 +2523,8 @@ impl Ui {
             ui.screen = back;
         };
         match scene {
+            // drawn and clicked by `ui::social`, never as a replayed screen
+            replay::Scene::MyProfile | replay::Scene::Friends | replay::Scene::Requests | replay::Scene::AcctSettings | replay::Scene::ShareLevel | replay::Scene::OldMessages | replay::Scene::Notifications => {}
             // OK (the first button) closes; the others (easing, pages, info) aren't ported
             replay::Scene::Trigger(_) | replay::Scene::Special(_) => {
                 if i == 0 {
@@ -2062,19 +2582,49 @@ impl Ui {
                     if let Some(e) = &self.editor {
                         let data = cadence_core::codec::base64_encode_url(e.level_string().as_bytes()).into_bytes();
                         let info = crate::online::LevelInfo { id: -100, name: e.name.clone(), author: "You".into(), ..Default::default() };
+                        // EditLevelLayer::onPlay: completing it from here verifies it
+                        self.verify_slot = e.slot;
+                        let song = online::official_song(e.setting("kA1").and_then(|v| v.parse().ok()).unwrap_or(0));
                         self.save_editor();
                         self.replay = None;
                         self.sounds.push(PLAY_SOUND);
-                        self.online.ready = Some(online::OnlineLevel { info, data, song: online::official_song(0) });
+                        self.online.ready = Some(online::OnlineLevel { info, data, song });
                         self.pending.push(Action::PlayOnline);
                     }
                 }
+                // EditLevelLayer::onShare: an account, objects and a verified level first
                 2 => {
-                    self.alert = Some(Alert {
-                        title: "Share".into(),
-                        text: "Uploading levels needs the game's servers, and Cadence never writes to them.".into(),
-                        t: 0.0,
-                    })
+                    self.save_editor();
+                    let Some(e) = self.editor.as_ref() else { return };
+                    let slot = e.slot.unwrap_or(0);
+                    let verified = self.progress.settings.contains_key(&format!("mylevelverified{slot}"));
+                    if crate::gjapi::linked_account().is_none_or(|(_, ok)| !ok) {
+                        self.alert = Some(Alert { title: "Account".into(), text: "You need an <cl>account</c> to share levels.".into(), t: 0.0 });
+                    } else if e.objects.is_empty() {
+                        self.alert = Some(Alert { title: "Empty".into(), text: "You cannot share an empty level.".into(), t: 0.0 });
+                    } else if !verified {
+                        self.alert = Some(Alert { title: "Unverified".into(), text: "Complete the level in <cl>Normal</c> mode to verify that it can be beaten!".into(), t: 0.0 });
+                    } else {
+                        let gz = cadence_core::codec::base64_encode_url(&cadence_core::codec::gzip(e.level_string().as_bytes()));
+                        let max_x = e.objects.iter().map(|o| o.x).fold(0.0f32, f32::max);
+                        // levelLength from the level's run time at normal speed (311.58 units/s)
+                        let secs = max_x / 311.58;
+                        let length = match secs { s if s < 10.0 => 0, s if s < 30.0 => 1, s if s < 60.0 => 2, s if s < 120.0 => 3, _ => 4 };
+                        let id = self.progress.settings.get(&format!("mylevelid{slot}")).and_then(|v| v.parse().ok()).unwrap_or(0);
+                        let version = self.progress.settings.get(&format!("mylevelver{slot}")).and_then(|v| v.parse().ok()).unwrap_or(0) + 1;
+                        self.share = Some(share::Share::new(crate::gjapi::Upload {
+                            level_id: id,
+                            name: if e.name.trim().is_empty() { format!("Unnamed {slot}") } else { e.name.clone() },
+                            version,
+                            length,
+                            objects: e.objects.len() as i32,
+                            coins: e.objects.iter().filter(|o| o.id == 1329).count().min(3) as i32,
+                            song_id: self.progress.settings.get(&format!("mylevelsong{slot}")).and_then(|v| v.parse().ok()).unwrap_or(0),
+                            audio_track: e.setting("kA1").and_then(|v| v.parse().ok()).unwrap_or(0),
+                            level_string: gz,
+                            ..Default::default()
+                        }));
+                    }
                 }
                 // delete (EditLevelLayer::onDelete asks first; Cadence deletes from its own save)
                 3 => {
@@ -2094,9 +2644,8 @@ impl Ui {
                     self.screen = back;
                     self.online.my_levels = self.my_levels();
                 }
-                _ => {
-                    self.alert = Some(Alert { title: "Not yet".into(), text: "This level tool isn't in Cadence yet.".into(), t: 0.0 });
-                }
+                // EditLevelLayer's other buttons
+                _ => self.edit_level_tool(i),
             },
             replay::Scene::Shards => match i {
                 0 => self.replay = None,
@@ -2243,7 +2792,35 @@ impl Ui {
             15 => self.replay = Some((replay::Scene::SelectArt(0), Screen::Editor)),
             16 => self.replay = Some((replay::Scene::SelectArt(1), Screen::Editor)),
             17 => self.replay = Some((replay::Scene::SelectArt(2), Screen::Editor)),
-            _ => self.alert = Some(Alert { title: "Not yet".into(), text: "This level setting isn't in Cadence yet.".into(), t: 0.0 }),
+            // the font text objects use (`kA18`: 0 the default, then gjFont01 … gjFont59)
+            18 => {
+                let font = (num(e, "kA18") + 1) % 60;
+                e.set_setting("kA18", &font.to_string());
+                let name = if font == 0 { "the default font".to_string() } else { format!("font {font}") };
+                self.alert = Some(Alert { title: "Font".into(), text: format!("Text objects use <cy>{name}</c>."), t: 0.0 });
+            }
+            // the song: official (Normal, the arrows) or a custom song's id
+            22 => {
+                if let Some(slot) = e.slot {
+                    self.progress.settings.remove(&format!("mylevelsong{slot}"));
+                    self.progress.save();
+                }
+            }
+            23 => {
+                let mut w = social::Writer::new("Custom Song ID", None);
+                w.song_slot = Some(e.slot.unwrap_or(0));
+                self.writer = Some(w);
+            }
+            // two-player mode (`kA10`)
+            26 => {
+                let on = num(e, "kA10") == 0;
+                e.set_setting("kA10", if on { "1" } else { "0" });
+                self.alert = Some(Alert { title: "Options".into(), text: format!("<cg>2-Player mode</c> is <cy>{}</c>.", if on { "on" } else { "off" }), t: 0.0 });
+            }
+            // the color channels (BG, Ground, Ground 2, Line, MG, MG2)
+            _ => {
+                self.alert = Some(Alert { title: "Colors".into(), text: "Set the level's colors with <cg>Color</c> triggers at the start of the level: a trigger at x 0 sets the channel from the first frame.".into(), t: 0.0 })
+            }
         }
     }
 
@@ -2520,6 +3097,39 @@ impl Ui {
                 }
                 self.login = Some(l);
             }
+            // the register popup over the account page (page 1: after submitting empty fields)
+            "register" => {
+                self.settings = Some(options::Settings::Sub { sub: subpages::Sub::Account, t: 1.0, closing: false, scroll: 0.0 });
+                let mut r = register::RegisterPopup { values: Default::default(), focus: 0, errors: [None; 5], active: false, job: None, t: 0.0 };
+                if page == Some(1) {
+                    r.submit();
+                }
+                self.register = Some(r);
+            }
+            "accounthelp" => self.settings = Some(options::Settings::Sub { sub: subpages::Sub::AccountHelp, t: 1.0, closing: false, scroll: 0.0 }),
+            "share" => self.share = Some(share::Share::new(crate::gjapi::Upload { name: "Cadence Upload".into(), ..Default::default() })),
+            // trig<id>: one such trigger in the editor, selected, its popup open
+            w if w.strip_prefix("trig").is_some_and(|n| n.parse::<u16>().is_ok()) => {
+                let id: u16 = w[4..].parse().unwrap_or(901);
+                let mut e = editor::Editor::default();
+                e.objects.push(editor::EdObject { id, x: 165.0, y: 105.0, ..editor::EdObject::default() });
+                e.selected = vec![0];
+                self.screen = Screen::Editor;
+                self.editor = Some(e);
+                self.replay = Some((replay::Scene::Trigger(id), Screen::Editor));
+            }
+            // your account's pages (CADENCE_SERVER at a stand-in with made-up answers)
+            #[cfg(not(target_arch = "wasm32"))]
+            "myprofile" | "friends" | "requests" | "acctsettings" | "oldmessages" => {
+                let page = match which {
+                    "oldmessages" => social::Page::Messages(0),
+                    "friends" => social::Page::Friends(0),
+                    "requests" => social::Page::Requests(0),
+                    "acctsettings" => social::Page::Settings,
+                    _ => social::Page::Profile,
+                };
+                self.social = Some(social::Social::open_at(page));
+            }
             "account" | "support" | "songs" => {
                 let sub = match which {
                     "account" => subpages::Sub::Account,
@@ -2783,6 +3393,12 @@ impl Ui {
             }
             s.new_coins = new;
             s.completed = true;
+            // your own level completed in normal mode from its page: verified
+            if id == -100 && !status.practice && !self.editor_playtest {
+                if let Some(slot) = self.verify_slot {
+                    self.progress.settings.insert(format!("mylevelverified{slot}"), "1".into());
+                }
+            }
             self.progress.save();
         }
         // PlayLayer::showCompleteText → showEndLayer 1.5 s later.
@@ -2795,7 +3411,291 @@ impl Ui {
         s.last = status;
     }
 
+    /// Your level's page's tools (`EditLevelLayer`): delete, folder down / up, the editor
+    /// options, duplicate, export, death stats, level options, info, emotes.
+    fn edit_level_tool(&mut self, i: u8) {
+        let Some(e) = self.editor.as_ref() else { return };
+        let slot = e.slot.unwrap_or(0);
+        let name = if e.name.trim().is_empty() { format!("Unnamed {slot}") } else { e.name.clone() };
+        match i {
+            3 => {
+                self.confirm = Some(Confirm {
+                    title: "Delete Level".into(),
+                    text: format!("Are you sure you want to <cr>delete</c> <cg>{name}</c>?"),
+                    btn1: "Cancel".into(),
+                    btn2: "Delete".into(),
+                    action: Action::DeleteMyLevel(slot as u16),
+                    t: 0.0,
+                })
+            }
+            4 | 5 => {
+                let key = format!("mylevelfolder{slot}");
+                let f = self.progress.settings.get(&key).and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
+                let f = if i == 5 { (f + 1).min(9) } else { (f - 1).max(0) };
+                self.progress.settings.insert(key, f.to_string());
+                self.progress.save();
+            }
+            7 => self.settings = Some(options::Settings::More { tab: 3, page: 0 }),
+            8 => {
+                let new = (0..1000).find(|i| !self.progress.settings.contains_key(&format!("mylevel{i}"))).unwrap_or(999);
+                if let Some(data) = self.progress.settings.get(&format!("mylevel{slot}")).cloned() {
+                    self.progress.settings.insert(format!("mylevel{new}"), data);
+                    self.progress.settings.insert(format!("mylevelname{new}"), name.replace(' ', "\u{a0}"));
+                    self.progress.save();
+                    self.online.my_levels = self.my_levels();
+                    self.alert = Some(Alert { title: "Duplicated".into(), text: format!("A copy of <cg>{name}</c> is in your levels."), t: 0.0 });
+                }
+            }
+            9 => self.editor_pause_side(6),
+            10 => self.editor_pause_side(9),
+            11 => {
+                let key = format!("mylevelldm{slot}");
+                let on = !self.progress.var(&key, false);
+                self.progress.set_var(&key, on);
+                self.progress.save();
+                self.alert = Some(Alert { title: "Options".into(), text: format!("<cg>Low Detail Mode</c> for this level is <cy>{}</c>.", if on { "on" } else { "off" }), t: 0.0 });
+            }
+            13 => {
+                let verified = self.progress.settings.contains_key(&format!("mylevelverified{slot}"));
+                let id = self.progress.settings.get(&format!("mylevelid{slot}")).cloned().unwrap_or_else(|| "na".into());
+                self.alert = Some(Alert {
+                    title: name.clone(),
+                    text: format!("<cl>Objects</c>: {}\n<cy>Level ID</c>: {id}\n{}", e.objects.len(), if verified { "<cg>Verified</c>" } else { "<cr>Unverified</c>" }),
+                    t: 0.0,
+                });
+            }
+            _ => self.alert = Some(Alert { title: "Emotes".into(), text: "Put emotes in the description with their names between colons, like <cy>:happy:</c>.".into(), t: 0.0 }),
+        }
+    }
+
+    /// The editor pause menu's side buttons: Settings (the editor options page), Export (a
+    /// `.gmd` file), Editor SFX, Auto-Save, Death Stats, Get Audio, Help.
+    fn editor_pause_side(&mut self, i: u8) {
+        match i {
+            5 => self.settings = Some(options::Settings::More { tab: 3, page: 0 }),
+            6 => {
+                let Some(e) = self.editor.as_ref() else { return };
+                let name = if e.name.trim().is_empty() { "Unnamed".to_string() } else { e.name.clone() };
+                let data = cadence_core::codec::base64_encode_url(&cadence_core::codec::gzip(e.level_string().as_bytes()));
+                let gmd = format!("<?xml version=\"1.0\"?><plist version=\"1.0\" gjver=\"2.0\"><dict><k>kCEK</k><i>4</i><k>k2</k><s>{}</s><k>k4</k><s>{data}</s><k>k13</k><t /><k>k21</k><i>2</i><k>k50</k><i>45</i></dict></plist>", xml_escape(&name));
+                self.alert = Some(match export_level(&name, gmd.as_bytes()) {
+                    Ok(where_) => Alert { title: "Exported".into(), text: format!("Saved as <cy>{where_}</c>."), t: 0.0 },
+                    Err(e) => Alert { title: "Export".into(), text: format!("The level couldn't be saved ({e})."), t: 0.0 },
+                });
+            }
+            7 => self.alert = Some(Alert { title: "Editor SFX".into(), text: "Sound effects for the level come from the <cg>SFX</c> trigger's library; they download when the level is played.".into(), t: 0.0 }),
+            8 => {
+                let on = !self.progress.var("autosave", false);
+                self.progress.set_var("autosave", on);
+                self.progress.save();
+                self.alert = Some(Alert { title: "Auto-Save".into(), text: format!("Auto-Save is <cy>{}</c>: the level saves every 5 minutes while you edit.", if on { "on" } else { "off" }), t: 0.0 });
+            }
+            9 => self.alert = Some(Alert { title: "Death Stats".into(), text: "Death markers show where players die once the level is shared and played.".into(), t: 0.0 }),
+            10 => {
+                // songs and library sounds the level's triggers use, downloaded now
+                let Some(e) = self.editor.as_ref() else { return };
+                let (mut songs, mut sfx) = (Vec::new(), Vec::new());
+                for o in &e.objects {
+                    let id = o.extra.iter().find(|(k, _)| *k == 392).and_then(|(_, v)| v.parse::<i32>().ok()).unwrap_or(0);
+                    match o.id {
+                        1934 if id > 0 => songs.push(id),
+                        3602 if id > 0 => sfx.push(id),
+                        _ => {}
+                    }
+                }
+                let n = songs.len() + sfx.len();
+                let _ = crate::net::spawn(async move {
+                    for id in songs {
+                        let _ = crate::online::song_file(id, "").await;
+                    }
+                    for id in sfx {
+                        let _ = crate::online::sfx_file(id).await;
+                    }
+                });
+                self.alert = Some(Alert { title: "Get Audio".into(), text: format!("Downloading <cy>{n}</c> song{} and sound effect{}.", if n == 1 { "" } else { "s" }, if n == 1 { "" } else { "s" }), t: 0.0 });
+            }
+            _ => self.alert = Some(Alert { title: "Help".into(), text: "<cg>Build</c> places objects, <cl>Edit</c> moves and changes the selected ones, <cr>Delete</c> removes them. Playtest with the play button on the left, and save from this menu.".into(), t: 0.0 }),
+        }
+    }
+
+    /// Clone a saved level into your own levels (`LevelTools::copy`, as "<name>" in a new slot).
+    fn clone_saved(&mut self, id: i32) {
+        let Some(s) = crate::saved::get(id) else { return };
+        let Some(text) = crate::saved::data(id).and_then(|d| cadence_core::codec::decode_level_bytes(&d).ok()) else {
+            self.alert = Some(Alert { title: "Copy".into(), text: "The level's data couldn't be read.".into(), t: 0.0 });
+            return;
+        };
+        let slot = (0..1000).find(|i| !self.progress.settings.contains_key(&format!("mylevel{i}"))).unwrap_or(999);
+        self.progress.settings.insert(format!("mylevel{slot}"), cadence_core::codec::base64_encode_url(text.as_bytes()));
+        self.progress.settings.insert(format!("mylevelname{slot}"), s.info.name.replace(' ', "\u{a0}"));
+        self.progress.save();
+        self.online.my_levels = self.my_levels();
+        self.alert = Some(Alert { title: "Copied".into(), text: format!("<cg>{}</c> is now in your levels.", s.info.name), t: 0.0 });
+    }
+
+    fn social_effect(&mut self, e: social::Effect) {
+        match e {
+            social::Effect::None => {}
+            social::Effect::Close => self.social = None,
+            social::Effect::Alert(title, text) => self.alert = Some(Alert { title, text, t: 0.0 }),
+            social::Effect::Profile(account) => {
+                self.online.open_profile(account);
+            }
+            social::Effect::Write { to, title } => self.writer = Some(social::Writer::new(title, to)),
+            social::Effect::Request { row, name, text } => {
+                self.confirm = Some(Confirm {
+                    title: name,
+                    text: if text.is_empty() { "Accept this friend request?".into() } else { text },
+                    btn1: "Cancel".into(),
+                    btn2: "Accept".into(),
+                    action: Action::AcceptRequest(row as u16),
+                    t: 0.0,
+                })
+            }
+        }
+    }
+
+    /// Save: the cloud's saves are downloaded first and Cadence's progress written into them
+    /// (`cloud::merge`), then backed up. Load: downloaded and read into the progress.
+    fn start_cloud(&mut self, save: bool) {
+        self.cloud_last[!save as usize] = Some(web_time::Instant::now());
+        self.cloud_save = save;
+        let progress = self.progress.clone();
+        self.cloud = Some(crate::net::spawn(async move {
+            let mut data = crate::cloud::sync().await?;
+            if !save {
+                return Ok(CloudDone::Loaded(Box::new(data)));
+            }
+            data.game = crate::cloud::merge(&data.game, &progress).map_err(|_| -1)?;
+            crate::cloud::backup(&data).await?;
+            let mb = |x: &str| crate::cloud::encode_part(x).len() as f32 / (1024.0 * 1024.0);
+            Ok(CloudDone::Saved(mb(&data.game), mb(&data.levels)))
+        }));
+    }
+
     fn update(&mut self, dt: f32) {
+        // a cloud Save / Load finishing (`backupAccountFinished` / `syncAccountFinished` and
+        // their failures)
+        if let Some(rx) = &self.cloud {
+            let done = match rx.try_recv() {
+                Ok(r) => Some(r),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(-1)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            };
+            if let Some(r) = done {
+                self.cloud = None;
+                let save = self.cloud_save;
+                let (title, text) = match r {
+                    Ok(CloudDone::Saved(profile, levels)) => (
+                        "Backup successful",
+                        format!("Your <cg>save data</c> has been <cy>backed up</c>.\nSize: {:.2}/32MB. (Profile: {profile:.2}, Levels: {levels:.2})", profile + levels),
+                    ),
+                    Ok(CloudDone::Loaded(data)) => match crate::cloud::import(&data.game, &mut self.progress) {
+                        Ok(()) => {
+                            self.progress.save();
+                            ("Sync successful", "<cg>Saved data</c> has been <cy>downloaded</c>.".to_string())
+                        }
+                        Err(_) => ("Error", "Sync failed. Please try again later.".to_string()),
+                    },
+                    // a bad GJP2 (the password changed since logging in)
+                    Err(-2) => ("Error", "Login failed. Please login to verify your account.".to_string()),
+                    Err(-1) if save => ("Error", "Backup failed. Please try again later.".to_string()),
+                    Err(-1) => ("Error", "Sync failed. Please try again later.".to_string()),
+                    Err(code) if save => ("Error", format!("Backup failed. Error code: {code}")),
+                    Err(code) => ("Error", format!("Sync failed. Error code: {code}")),
+                };
+                self.alert = Some(Alert { title: title.into(), text, t: 0.0 });
+            }
+        }
+        if let Some(s) = self.social.as_mut() {
+            let e = s.update(dt);
+            self.social_effect(e);
+        }
+        // the chests' answer: the state, or an opened chest's contents (added to the stats)
+        if let Some(rx) = &self.chest_job {
+            if let Ok((kind, r)) = rx.try_recv() {
+                self.chest_job = None;
+                match r {
+                    Ok(state) => {
+                        if kind > 0 {
+                            let items = if kind == 1 { state.small_items.clone() } else { state.big_items.clone() };
+                            if let Some(it) = items {
+                                let orbs = self.progress.number("stat14", 0.0) + it.orbs as f32;
+                                let diamonds = self.progress.number("stat13", 0.0) + it.diamonds as f32;
+                                self.progress.set_number("stat14", orbs);
+                                self.progress.set_number("stat13", diamonds);
+                                self.progress.save();
+                                let mut text = format!("<cl>{}</c> Orbs and <cy>{}</c> Diamonds", it.orbs, it.diamonds);
+                                if !it.items.is_empty() {
+                                    text.push_str(&format!(" and {} item{}", it.items.len(), if it.items.len() == 1 { "" } else { "s" }));
+                                }
+                                self.alert = Some(Alert { title: if kind == 1 { "Small Chest" } else { "Big Chest" }.into(), text, t: 0.0 });
+                            }
+                        }
+                        self.chests = Some((state, web_time::Instant::now()));
+                    }
+                    Err(e) => {
+                        crate::app::log(&format!("chests: {e}"));
+                        if kind > 0 {
+                            self.alert = Some(Alert { title: "Error".into(), text: "Something went wrong. Please try again later.".into(), t: 0.0 });
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(w) = self.writer.as_mut() {
+            w.t += dt;
+        }
+        // the editor's Auto-Save: every 5 minutes of editing
+        if self.screen == Screen::Editor && self.progress.var("autosave", false) {
+            self.autosave_t += dt;
+            if self.autosave_t >= 300.0 {
+                self.autosave_t = 0.0;
+                self.save_editor();
+            }
+        }
+        // the upload's answer: the level's id (kept for its next version), or a failure
+        if let Some(sh) = self.share.as_mut() {
+            sh.t += dt;
+            if let Some(Ok(r)) = sh.job.as_ref().map(|rx| rx.try_recv()) {
+                let version = sh.upload.version;
+                self.share = None;
+                match r {
+                    Ok(id) => {
+                        if let Some(slot) = self.editor.as_ref().and_then(|e| e.slot) {
+                            self.progress.settings.insert(format!("mylevelid{slot}"), id.to_string());
+                            self.progress.settings.insert(format!("mylevelver{slot}"), version.to_string());
+                            self.progress.save();
+                        }
+                        self.alert = Some(Alert { title: "Upload Complete".into(), text: format!("Your level has been shared! Its ID is <cy>{id}</c>."), t: 0.0 });
+                    }
+                    Err(-2) => self.alert = Some(Alert { title: "Upload Failed".into(), text: "Level already uploaded".into(), t: 0.0 }),
+                    Err(_) => self.alert = Some(Alert { title: "Upload Failed".into(), text: "Upload Failed. Please try again later.".into(), t: 0.0 }),
+                }
+            }
+        }
+        // the register request (`registerAccountFinished` / `registerAccountFailed`)
+        if let Some(r) = self.register.as_mut() {
+            r.t += dt;
+            let result = r.job.as_ref().and_then(|rx| match rx.try_recv() {
+                Ok(v) => Some(v),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(-1)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            });
+            match result {
+                Some(Ok(())) => {
+                    let email = r.values[3].clone();
+                    self.register = None;
+                    self.alert = Some(Alert {
+                        title: "Created".into(),
+                        text: format!("Thank you for registering.\nA confirmation email has been sent to your inbox <cy>{email}</c>.\nPlease <cg>activate</c> your account."),
+                        t: 0.0,
+                    });
+                }
+                Some(Err(code)) => r.failed(code),
+                None => {}
+            }
+        }
         for p in self.press.values_mut() {
             p.update(dt);
         }
@@ -2837,7 +3737,11 @@ impl Ui {
             | Some(options::Settings::Sub { t, closing, .. }) => {
                 *t += dt;
                 if *closing && (*t >= 0.5 || self.progress.var("0168", false)) {
-                    self.settings = None;
+                    // Account Help sits over the Account page, which is still there under it
+                    self.settings = match self.settings {
+                        Some(options::Settings::Sub { sub: subpages::Sub::AccountHelp, .. }) => Some(options::Settings::Sub { sub: subpages::Sub::Account, t: 1.0, closing: false, scroll: 0.0 }),
+                        _ => None,
+                    };
                 }
             }
             _ => {}
@@ -2948,7 +3852,7 @@ impl Ui {
             Some(options::Settings::More { tab, page }) => self.popup_anim(&mut canvas, "more", |c| options::draw_more(c, &mut ctx, &self.progress, tab, page)),
             Some(options::Settings::Stats { t, closing, scroll }) => options::draw_stats(&mut canvas, &mut ctx, &self.progress, t, closing, scroll),
             Some(options::Settings::Achievements { t, closing, scroll, page }) => achievements::draw(&mut canvas, &mut ctx, &self.progress, t, closing, scroll, page),
-            Some(options::Settings::Sub { sub, t, closing, scroll }) => subpages::draw(&mut canvas, &mut ctx, &self.progress, sub, t, closing, scroll),
+            Some(options::Settings::Sub { sub, t, closing, scroll }) => subpages::draw(&mut canvas, &mut ctx, &self.progress, sub, t, closing, scroll, self.cloud.is_some()),
             None => {}
         }
         if self.screen == Screen::Creator && self.online.daily.is_some() {
@@ -2976,12 +3880,32 @@ impl Ui {
         }
         if let Some(p) = self.popup {
             ctx.buttons.clear();
-            self.popup_anim(&mut canvas, &format!("{p:?}"), |c| popups::draw(c, &mut ctx, &self.progress, p));
+            self.popup_anim(&mut canvas, &format!("{p:?}"), |c| popups::draw(c, &mut ctx, &self.progress, p, &self.chests));
         }
         if let Some(l) = &self.login {
             ctx.buttons.clear();
             let clock = l.t;
             self.popup_anim(&mut canvas, "login", |c| login::draw(l, c, &mut ctx, clock));
+        }
+        if let Some(r) = &self.register {
+            ctx.buttons.clear();
+            let clock = r.t;
+            self.popup_anim(&mut canvas, "register", |c| register::draw(r, c, &mut ctx, clock));
+        }
+        if let Some(s) = &self.social {
+            ctx.buttons.clear();
+            self.popup_anim(&mut canvas, "social", |c| social::draw(s, c, &mut ctx));
+        }
+        if let Some(sh) = &self.share {
+            ctx.buttons.clear();
+            self.popup_anim(&mut canvas, "share", |c| share::draw(sh, c, &mut ctx));
+        }
+        if let Some(w) = &self.writer {
+            ctx.buttons.clear();
+            self.popup_anim(&mut canvas, "writer", |c| social::draw_writer(w, c, &mut ctx));
+        }
+        if self.social.is_some() && self.screen != Screen::Online {
+            self.online.draw_profile_over(&mut canvas, &mut ctx);
         }
         if self.map_promo {
             ctx.buttons.clear();
@@ -3234,6 +4158,21 @@ impl Ui {
             && let Some(o) = self.editor.as_ref().and_then(|e| e.selection().next())
         {
             let dx = (canvas.width - 569.0) * 0.5;
+            // a color popup's picker, at this object's color: ring, the square tinted with the
+            // hue, its overlay and shadow, the two knobs; one hit area for both
+            if replay::has_frame(scene, "huePickerBackground.png") {
+                let rgb = [7, 8, 9].map(|k| o.get(k).and_then(|v| v.parse::<f32>().ok()).unwrap_or(255.0) / 255.0);
+                let (h, sat, val) = rgb_to_hsv(rgb);
+                let tint = hsv_to_rgb(h, 1.0, 1.0).map(|v| (v * 255.0) as u8);
+                canvas.sprite("huePickerBackground.png", 208.5 + dx, 121.0, canvas::Look::default().anchor(0.0, 0.0));
+                canvas.sprite("colourPickerBackground.png", 227.5 + dx, 141.0, canvas::Look::default().anchor(0.0, 0.0).rgb(tint));
+                canvas.sprite("colourPickerOverlay.png", 227.5 + dx, 141.0, canvas::Look::default().anchor(0.0, 0.0));
+                canvas.sprite("colourPickerShadow.png", 227.5 + dx, 141.0, canvas::Look::default().anchor(0.0, 0.0));
+                let a = (h / 360.0) * std::f32::consts::TAU - std::f32::consts::PI;
+                canvas.sprite("colourPicker.png", 283.5 + 60.0 * a.cos() + dx, 196.0 + 60.0 * a.sin(), canvas::Look::default());
+                canvas.sprite("colourPicker.png", 227.5 + 35.0 + 55.0 * (1.0 - sat) + dx, 141.0 + 35.0 + 55.0 * val, canvas::Look::default());
+                ctx.area(Btn::Picker, 283.5 + dx, 196.0, 160.0, 160.0);
+            }
             let (fields, defaults) = replay::fields(scene);
             let value = |key: u16| o.get(key).map(str::to_string).or_else(|| defaults.iter().find(|d| d.0 == key).map(|d| d.1.clone())).unwrap_or_default();
             for field in fields {
@@ -3241,10 +4180,12 @@ impl Ui {
                     replay::Field::Input { key, x, y, w, h } => {
                         let focused = self.trig_focus.as_ref().filter(|f| f.0 == key);
                         // decimals show two places, like the game's inputs ("0.50")
+                        // a decimal field (its default has a point) always shows two places
+                        let decimal = defaults.iter().any(|d| d.0 == key && d.1.contains('.')) || replay::label_at(scene, x, y).is_some_and(|t| t.contains('.'));
                         let text = match focused {
                             Some((_, t)) => format!("{t}_"),
                             None => match value(key).parse::<f32>() {
-                                Ok(v) if v.fract() != 0.0 => format!("{v:.2}"),
+                                Ok(v) if v.fract() != 0.0 || decimal => format!("{v:.2}"),
                                 _ => value(key),
                             },
                         };
@@ -3585,6 +4526,16 @@ fn wrap(canvas: &Canvas, text: &str, max: f32, scale: f32) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn picker_colors_round_trip() {
+        assert_eq!(super::rgb_to_hsv([1.0, 0.0, 0.0]), (0.0, 1.0, 1.0));
+        for rgb in [[0.2f32, 0.6, 0.9], [1.0, 1.0, 1.0], [0.5, 0.25, 0.0]] {
+            let (h, s, v) = super::rgb_to_hsv(rgb);
+            let back = super::hsv_to_rgb(h, s, v);
+            assert!(back.iter().zip(rgb).all(|(a, b)| (a - b).abs() < 1e-4), "{rgb:?} -> {back:?}");
+        }
+    }
+
     use super::*;
 
     fn ui() -> Ui {

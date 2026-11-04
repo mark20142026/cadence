@@ -72,7 +72,7 @@ pub fn current_res(p: &Progress) -> u8 {
     (p.number("resolution", 8.0) as i32 - 1).clamp(0, RESOLUTIONS.len() as i32 - 1) as u8
 }
 
-pub fn draw(c: &mut Canvas, ctx: &mut Ctx, p: &Progress, popup: Popup) {
+pub fn draw(c: &mut Canvas, ctx: &mut Ctx, p: &Progress, popup: Popup, chests: &Option<(crate::gjapi::Rewards, web_time::Instant)>) {
     let (w, h) = (c.width, c.height);
     let (cx, cy) = (w * 0.5, h * 0.5);
     match popup {
@@ -129,8 +129,18 @@ pub fn draw(c: &mut Canvas, ctx: &mut Ctx, p: &Progress, popup: Popup) {
             ctx.button(c, Btn::RewardFree, "GJ_freeChestBtn_001.png", cx + 160.0, cy + 100.0, Look::scaled(1.1), 1.2);
             ctx.button(c, Btn::RewardChest(0), "chest_01_02_001.png", cx - 70.0, cy - 20.1, Look::default(), 1.1);
             ctx.button(c, Btn::RewardChest(1), "chest_02_02_001.png", cx + 70.0, cy - 10.0, Look::default(), 1.1);
-            c.text("bigFont", "Open", cx - 70.0, cy - 74.0, Look::scaled(0.5));
-            c.text("bigFont", "Open", cx + 70.0, cy - 74.0, Look::scaled(0.5));
+            // each chest: "Open" when ready, else the time left (h:mm:ss); nothing until the
+            // servers answer
+            for (k, x) in [(0usize, cx - 70.0), (1, cx + 70.0)] {
+                let label = match chests {
+                    None => String::new(),
+                    Some((r, at)) => {
+                        let left = if k == 0 { r.small_left } else { r.big_left } - at.elapsed().as_secs() as i64;
+                        if left <= 0 { "Open".into() } else { format!("{}:{:02}:{:02}", left / 3600, left / 60 % 60, left % 60) }
+                    }
+                };
+                c.text("bigFont", &label, x, cy - 74.0, Look::scaled(0.5));
+            }
         }
         Popup::Parental(page) => {
             c.rect(0.0, 0.0, w, h, [0.0; 3], 75.0 / 255.0);

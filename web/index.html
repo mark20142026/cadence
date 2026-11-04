@@ -133,11 +133,21 @@
     </section>
   </div>
 
-  <p class="privacy">Your files stay on this device. The page reads only the sprite sheets, icons and levels it needs, and sends nothing anywhere.</p>
+  <p class="privacy">Your game files stay on this device: the page reads only the sprite sheets, icons and levels it needs, and never uploads them. Online levels, songs and (if you log in) your account requests go to the game's servers through this site's relay, which passes them on without storing or logging anything.</p>
 </main>
 
 <script type="module">
-import init, { FileStore, needed_files, start, level_song, death_effect } from "./pkg/cadence_game.js";
+import init, { FileStore, needed_files, start, level_song, death_effect, import_level_file } from "./pkg/cadence_game.js";
+
+// While playing: a level file (.gmd) dropped anywhere goes into your levels.
+document.addEventListener("dragover", (e) => { if (document.body.classList.contains("playing")) e.preventDefault(); });
+document.addEventListener("drop", async (e) => {
+  if (!document.body.classList.contains("playing")) return;
+  e.preventDefault();
+  for (const f of e.dataTransfer.files) {
+    if (f.name.toLowerCase().endsWith(".gmd")) import_level_file(new Uint8Array(await f.arrayBuffer()));
+  }
+});
 
 const LEVELS = [
   [0, "Main menu"], [1, "Stereo Madness"], [2, "Back On Track"], [3, "Polargeist"], [4, "Dry Out"], [5, "Base After Base"],
@@ -249,9 +259,23 @@ const sound = {
     this.volumes = [music, sfx];
     if (this.ctx) this.gains();
   },
+  // Songs and sounds downloaded from the servers (through the relay), by their `net/...` names.
+  netFiles: new Map(),
+  addFile(name, bytes) { this.netFiles.set(name, bytes.slice()); this.buffers.delete(name); },
+  hasFile(name) { return this.netFiles.has(name); },
+  // A file for the player to save (the editor's Export).
+  download(name, bytes) {
+    const url = URL.createObjectURL(new Blob([bytes.slice()]));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  },
+  read(path) { return this.netFiles.has(path) ? Promise.resolve(this.netFiles.get(path)) : source.read(path); },
   buffer(path) {
     if (!this.buffers.has(path)) {
-      this.buffers.set(path, source.read(path).then((bytes) => (bytes ? this.ctx.decodeAudioData(bytes.buffer) : null)).catch(() => null));
+      this.buffers.set(path, this.read(path).then((bytes) => (bytes ? this.ctx.decodeAudioData(bytes.slice().buffer) : null)).catch(() => null));
     }
     return this.buffers.get(path);
   },
@@ -298,14 +322,22 @@ const sound = {
     for (const v of this.meterData) p = Math.max(p, Math.abs(v));
     return p;
   },
-  playEffect(path) {
+  // `volume`: an SFX trigger's own volume, on top of the options' SFX slider.
+  playEffect(path, volume = 1) {
     if (!this.ctx) return;
     this.buffer(path).then((buf) => {
       if (!buf) return;
       const node = this.ctx.createBufferSource();
       node.buffer = buf;
       this.gains();
-      node.connect(this.sfxGain);
+      if (volume === 1) {
+        node.connect(this.sfxGain);
+      } else {
+        const g = this.ctx.createGain();
+        g.gain.value = volume;
+        node.connect(g);
+        g.connect(this.sfxGain);
+      }
       node.start();
     });
   },

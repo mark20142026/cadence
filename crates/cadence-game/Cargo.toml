@@ -24,14 +24,14 @@ web-time = "1"
 base64.workspace = true
 # the game servers' checksums (GJP2, chk): SHA-1
 sha1 = "0.10"
+# the news popup's pictures (JPEG)
+zune-jpeg = "0.5"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rodio = { version = "0.23", default-features = false, features = ["playback", "mp3", "vorbis"] }
 ureq = "2"
 # the game servers: the same system libcurl the game uses (same TLS, HTTP version and headers)
 curl = "0.4"
-# the news popup's pictures (JPEG)
-zune-jpeg = "0.5"
 
 # CADENCE_CORNER parks the window with AppKit (the versions winit already uses)
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -43,4 +43,5 @@ wgpu = { workspace = true, features = ["webgl"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 console_error_panic_hook = "0.1"
-web-sys = { version = "0.3", features = ["console", "Window", "Navigator", "Storage", "Location"] }
+web-sys = { version = "0.3", features = ["console", "Window", "Navigator", "Storage", "Location", "Request", "RequestInit", "Response", "Headers"] }
+js-sys = "0.3"

@@ -76,19 +76,8 @@ impl LoginPopup {
         if self.errors.iter().any(Option::is_some) {
             return;
         }
-        let (tx, rx) = std::sync::mpsc::channel();
         let (user, pass) = (self.user.trim().to_string(), self.pass.clone());
-        #[cfg(not(target_arch = "wasm32"))]
-        std::thread::spawn(move || {
-            let _ = tx.send(crate::gjapi::login(&user, &pass));
-        });
-        // The browser can't reach the servers yet (no relay): fail like an unreachable server.
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (user, pass);
-            let _ = tx.send(Err(-1));
-        }
-        self.job = Some(rx);
+        self.job = Some(crate::net::spawn(async move { crate::gjapi::login(&user, &pass).await }));
         self.t = 0.0;
     }
 

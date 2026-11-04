@@ -1016,17 +1016,12 @@ impl Game {
             if self.practice || id <= 0 {
                 continue;
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let path = crate::online::cache_dir().join(format!("{id}.mp3"));
-                if path.exists() {
-                    self.audio.play_music(&path.to_string_lossy(), start_ms as f32 / 1000.0);
-                } else {
-                    log(&format!("song trigger: song {id} isn't downloaded"));
-                }
+            let name = crate::online::song_name(id);
+            if crate::online::have(&name) {
+                self.audio.play_music(&name, start_ms as f32 / 1000.0);
+            } else {
+                log(&format!("song trigger: song {id} isn't downloaded"));
             }
-            #[cfg(target_arch = "wasm32")]
-            let _ = start_ms;
         }
     }
 
@@ -1034,15 +1029,10 @@ impl Game {
     /// with the level).
     fn play_trigger_sfx(&mut self) {
         for (id, volume) in std::mem::take(&mut self.world.sfx) {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let path = crate::online::cache_dir().with_file_name("sfx").join(format!("s{id}.ogg"));
-                if path.exists() {
-                    self.audio.play_effect_volume(&path.to_string_lossy(), volume);
-                }
+            let name = crate::online::sfx_name(id);
+            if crate::online::have(&name) {
+                self.audio.play_effect_volume(&name, volume);
             }
-            #[cfg(target_arch = "wasm32")]
-            let _ = (id, volume);
         }
     }
 
@@ -3166,6 +3156,11 @@ impl App {
     }
 }
 
+/// The menu screens `CADENCE_SCREEN` can open for a headless screenshot (`Ui::open_for_screenshot`).
+const MENU_SCREENS: &[&str] = &[
+    "levels", "locked", "online", "settings", "options", "garage", "colors", "stats", "creator", "achievements", "account", "login", "support", "songs", "howto", "video", "parental", "osearch", "oinfo", "odaily", "opacks", "ogauntlets", "oscores", "olists", "oquests", "opaths", "rewards", "news", "editor", "tower", "shop", "secret", "treasure", "keys", "shards", "register", "accounthelp", "myprofile", "friends", "requests", "acctsettings", "share", "oldmessages",
+];
+
 /// The menus at startup: a level id of 0 opens the main menu, any other starts that level
 /// (the menus are reached from its pause menu). Screenshots pick the screen with
 /// `CADENCE_SCREEN` = menu | levels (`CADENCE_PAGE` = page) | pause | end.
@@ -3183,13 +3178,15 @@ fn new_ui(level_id: i32) -> crate::ui::Ui {
     };
     let which = std::env::var("CADENCE_SCREEN").unwrap_or_default();
     let screen = match which.as_str() {
-        "menu" | "levels" | "locked" | "online" | "settings" | "options" | "garage" | "colors" | "stats" | "creator" | "achievements" | "account" | "login" | "support" | "songs" | "howto" | "video" | "parental" | "osearch" | "oinfo" | "odaily" | "opacks" | "ogauntlets" | "oscores" | "olists" | "oquests" | "opaths" | "rewards" | "news" | "editor" | "tower" | "shop" | "secret" | "treasure" | "keys" | "shards" => Screen::Menu,
+        "menu" => Screen::Menu,
+        w if MENU_SCREENS.contains(&w) => Screen::Menu,
+        w if w.starts_with("trig") => Screen::Menu,
         _ if level_id == 0 => Screen::Menu,
         _ => Screen::Level,
     };
     let mut ui = Ui::new(screen, Vec::new(), progress);
     ui.transitions = !headless;
-    if matches!(which.as_str(), "levels" | "locked" | "online" | "settings" | "options" | "garage" | "colors" | "stats" | "creator" | "achievements" | "account" | "login" | "support" | "songs" | "howto" | "video" | "parental" | "osearch" | "oinfo" | "odaily" | "opacks" | "ogauntlets" | "oscores" | "olists" | "oquests" | "opaths" | "rewards" | "news" | "editor" | "tower" | "shop" | "secret" | "treasure" | "keys" | "shards") {
+    if MENU_SCREENS.contains(&which.as_str()) || which.starts_with("trig") {
         let page = std::env::var("CADENCE_PAGE").ok().and_then(|p| p.parse().ok());
         ui.open_for_screenshot(&which, page);
     }
@@ -3283,15 +3280,23 @@ impl App {
                     self.start_level(id)
                 }
                 Action::MenuMusic => {}
+                // the editor's music button
+                Action::EditorMusic(start) => {
+                    if let Some(a) = self.audio.as_deref_mut() {
+                        match (start, self.ui.editor_song.clone()) {
+                            (Some(offset), Some(song)) => a.play_music(&song, offset),
+                            _ => a.stop_music(),
+                        }
+                    }
+                }
                 Action::OpenLink(i) => {
                     if let Some(url) = crate::ui::LINKS.get(i as usize) {
                         open_link(url);
                     }
                 }
-                Action::Unlink => {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    crate::gjapi::unlink();
-                }
+                Action::Unlink => crate::gjapi::unlink(),
+                // started by the UI itself (its confirm), never sent here
+                Action::CloudSave | Action::CloudLoad | Action::AcceptRequest(_) | Action::ReportLevel(_) | Action::DeleteSaved(_) | Action::ToggleLdm(_) | Action::DeleteMine | Action::DeleteMyLevel(_) => {}
                 Action::Practice(on) => {
                     if let Some(g) = self.game.as_mut() {
                         g.audio.set_paused(false);
@@ -3565,6 +3570,11 @@ pub fn log(message: &str) {
 
 impl ApplicationHandler<AppEvent> for App {
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // level files dropped on the web page
+        #[cfg(target_arch = "wasm32")]
+        for bytes in std::mem::take(&mut *crate::web::IMPORTS.lock().unwrap_or_else(|e| e.into_inner())) {
+            self.ui.import_level(&bytes);
+        }
         if let Some(r) = self.renderer.as_ref() {
             r.window.request_redraw();
         }
@@ -3635,6 +3645,15 @@ impl ApplicationHandler<AppEvent> for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            // a level file dropped on the window: into your levels (`.gmd`)
+            #[cfg(not(target_arch = "wasm32"))]
+            WindowEvent::DroppedFile(path) => {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    if !self.ui.import_level(&bytes) {
+                        log(&format!("import: {} isn't a level file", path.display()));
+                    }
+                }
+            }
             WindowEvent::Resized(size) => {
                 if let Some(r) = self.renderer.as_mut() {
                     r.resize(size.width, size.height);

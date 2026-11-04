@@ -280,7 +280,7 @@ impl DecodedSong {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub use web::WebAudio;
+pub use web::{web_add_file, web_download, web_has_file, WebAudio};
 
 #[cfg(target_arch = "wasm32")]
 mod web {
@@ -295,7 +295,7 @@ mod web {
         #[wasm_bindgen(js_namespace = cadenceAudio, js_name = stopMusic)]
         fn js_stop_music();
         #[wasm_bindgen(js_namespace = cadenceAudio, js_name = playEffect)]
-        fn js_play_effect(file: &str);
+        fn js_play_effect(file: &str, volume: f32);
         #[wasm_bindgen(js_namespace = cadenceAudio, js_name = peak)]
         fn js_peak() -> f32;
         #[wasm_bindgen(js_namespace = cadenceAudio, js_name = setPaused)]
@@ -304,6 +304,26 @@ mod web {
         fn js_play_loop(file: &str);
         #[wasm_bindgen(js_namespace = cadenceAudio, js_name = setVolumes)]
         fn js_set_volumes(music: f32, sfx: f32);
+        #[wasm_bindgen(js_namespace = cadenceAudio, js_name = addFile)]
+        fn js_add_file(name: &str, bytes: &[u8]);
+        #[wasm_bindgen(js_namespace = cadenceAudio, js_name = hasFile)]
+        fn js_has_file(name: &str) -> bool;
+        #[wasm_bindgen(js_namespace = cadenceAudio, js_name = download)]
+        fn js_download(name: &str, bytes: &[u8]);
+    }
+
+    /// Give the player a file to save (an exported level).
+    pub fn web_download(name: &str, bytes: &[u8]) {
+        js_download(name, bytes);
+    }
+
+    /// A downloaded song or sound (`net/...`), kept by the page for this visit.
+    pub fn web_add_file(name: &str, bytes: &[u8]) {
+        js_add_file(name, bytes);
+    }
+
+    pub fn web_has_file(name: &str) -> bool {
+        js_has_file(name)
     }
 
     /// Forwards to `window.cadenceAudio` in index.html (WebAudio).
@@ -317,7 +337,10 @@ mod web {
             js_stop_music();
         }
         fn play_effect(&mut self, file: &str) {
-            js_play_effect(file);
+            js_play_effect(file, 1.0);
+        }
+        fn play_effect_volume(&mut self, file: &str, volume: f32) {
+            js_play_effect(file, volume);
         }
         fn peak(&self) -> f32 {
             js_peak()

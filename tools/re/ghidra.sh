@@ -10,7 +10,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 app="$HOME/Library/Application Support/Steam/steamapps/common/Geometry Dash/Geometry Dash.app"
 bin="$root/re/gd-2.2091-arm64"
-proj="$root/re/ghidra"
+proj="${GHIDRA_PROJECT:-$root/re/ghidra}"   # another copy when two sessions decompile at once
 
 export JAVA_HOME="${GHIDRA_JAVA_HOME:-$HOME/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home}"
 export PATH="$JAVA_HOME/bin:$PATH"   # Ghidra tries PATH before JAVA_HOME; /usr/bin/java is a stub

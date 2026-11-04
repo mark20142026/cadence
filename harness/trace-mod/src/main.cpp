@@ -572,6 +572,99 @@ void openGui(std::string const& name) {
         else if (what == "Support") l->onSupport(nullptr);
         else if (what == "Songs") l->onSoundtracks(nullptr);
         else if (what == "Vault") l->onSecretVault(nullptr);
+    } else if (name == "call:all") {
+        // Every server action the game has, with made-up ids, so the request recorder gets
+        // their exact bodies. Only with CADENCE_HTTP_REDIRECT (a fake-account home).
+        if (std::getenv("CADENCE_HTTP_REDIRECT")) {
+            auto glm = GameLevelManager::sharedState();
+            glm->uploadAccountComment("Hello from Cadence");
+            glm->uploadLevelComment(10565740, "Great level", 100);
+            glm->deleteLevelComment(901, 10565740);
+            glm->likeItem(LikeItemType::Level, 10565740, true, 0);
+            glm->likeItem(LikeItemType::Comment, 902, false, 10565740);
+            glm->likeItem(LikeItemType::AccountComment, 903, true, 21);
+            glm->rateStars(10565741, 7);
+            glm->rateDemon(10565742, 3, false);
+            glm->reportLevel(10565743);
+            glm->uploadFriendRequest(21, "hi from Cadence");
+            glm->acceptFriendRequest(22, 501);
+            glm->deleteSentFriendRequest(23);
+            glm->removeUserFromList(24, UserListType::Friends);
+            glm->removeUserFromList(25, UserListType::Blocked);
+            glm->uploadUserMessage(26, "Subject", "Body text");
+        }
+    } else if (name == "call:upload") {
+        // a made-up level uploaded to the recorder (uploadGJLevel21.php's exact body)
+        if (std::getenv("CADENCE_HTTP_REDIRECT")) {
+            auto level = GJGameLevel::create();
+            level->m_levelName = "Cadence Upload";
+            level->m_levelDesc = "A test";
+            level->m_levelString = "H4sIAAAAAAAAC6WQwQ3DMAhFF3IlPmBslFNm6AAMkBU6fG3jXqJWStULD54_Fpj3bdj2ztHNnl3h5o0M5uSCNzGVnSvOrcUOPOfcAhNs5tYF2VW5brGqsJQLpi_1wTxa6nY7_75OlqvPvwM2bX3RJE1Eu3K1cgr2PL4nM_Ns1Ai2rCrX9I3l2V1G3P2bz5JqbOk9gObNGcHKAQAA";
+            level->m_audioTrack = 0;
+            level->m_songID = 0;
+            level->m_levelVersion = 1;
+            level->m_levelLength = 0;
+            level->m_coins = 0;
+            level->m_starsRequested = 0;
+            level->m_workingTime = 120;
+            level->m_workingTime2 = 60;
+            level->m_isEditable = true;
+            level->m_levelType = GJLevelType::Editor;
+            GameLevelManager::sharedState()->uploadLevel(level);
+        }
+    } else if (name == "call:more") {
+        // the rest (getUserList's binding is wrong on this build: it stopped the first batch)
+        if (std::getenv("CADENCE_HTTP_REDIRECT")) {
+            auto glm = GameLevelManager::sharedState();
+            glm->getAccountComments(27, 0, 0);
+            glm->updateDescription(10565744, "A description");
+            glm->getGJRewards(0);
+            glm->getGJChallenges();
+            glm->getLeaderboardScores(LeaderboardType::Default, LeaderboardStat::Stars);
+            auto level = GJGameLevel::create();
+            level->m_levelID = 10565745;
+            glm->getLevelLeaderboard(level, LevelLeaderboardType::Global, LevelLeaderboardMode::Time);
+            glm->getLevelLeaderboard(level, LevelLeaderboardType::Friends, LevelLeaderboardMode::Points);
+        }
+    } else if (name.rfind("myprofile", 0) == 0) {
+        // the logged-in menu's profile button (MenuLayer::onMyProfile): your own ProfilePage.
+        // Fake-account homes only (re/home-fake) with CADENCE_HTTP_REDIRECT.
+        if (std::getenv("CADENCE_HTTP_REDIRECT")) {
+            if (auto menu = scene->getChildByType<MenuLayer>(0)) menu->onMyProfile(nullptr);
+        }
+        if (name.find("/then3label:") != std::string::npos) g_guiShotFrame = 300;
+    } else if (name.rfind("acct", 0) == 0) {
+        // acctRegister, acctHelp, acctMore, acctLogin: the Account page, then that button.
+        // (Never Save/Load: run these with a logged-out or fake-account home and
+        // CADENCE_HTTP_REDIRECT, so nothing can reach a real account.)
+        auto l = AccountLayer::create();
+        scene->addChild(l, 100);
+        l->showLayer(true);
+        auto what = name.substr(4);
+        // The actions below send requests: only with the local recorder standing in for the
+        // servers (CADENCE_HTTP_REDIRECT), never against the real ones.
+        bool recorded = std::getenv("CADENCE_HTTP_REDIRECT") != nullptr;
+        if (what == "Register") l->onRegister(nullptr);
+        else if (what == "Help") l->onHelp(nullptr);
+        else if (what == "More") l->onMore(nullptr);
+        else if (what == "Login") l->onLogin(nullptr);
+        else if (what == "Backup" && recorded) l->doBackup();
+        else if (what == "Sync" && recorded) l->doSync();
+        else if (what == "RegisterSubmit" && recorded) {
+            // fill the register form with made-up values and press Submit (onSubmit 0x3f6678)
+            l->onRegister(nullptr);
+            for (auto c : CCArrayExt<CCNode*>(scene->getChildren())) {
+                if (std::string(geode::cocos::getObjectName(c)) == "AccountRegisterLayer") {
+                    auto r = static_cast<AccountRegisterLayer*>(c);
+                    r->m_usernameField->setString("CadenceTest");
+                    r->m_passwordField->setString("test-pass-123");
+                    r->m_confirmPasswordField->setString("test-pass-123");
+                    r->m_emailField->setString("test@example.com");
+                    r->m_verifyEmailField->setString("test@example.com");
+                    reinterpret_cast<void (*)(AccountRegisterLayer*, CCObject*)>(geode::base::get() + 0x3f6678)(r, nullptr);
+                }
+            }
+        }
     } else if (name == "levels") {
         // press the main menu's Play button (its biggest item): LevelSelectLayer::create from the
         // bindings doesn't build the real layer on this platform
@@ -626,6 +719,20 @@ void openGui(std::string const& name) {
         g_guiItem = std::atoi(name.c_str() + 7);
         g_guiMore.clear();
         g_guiShotFrame = 300;
+    } else if (name.rfind("sharelevel", 0) == 0) {
+        // a verified editor level's page, then its Share button (EditLevelLayer::onShare):
+        // ShareLevelLayer. Fake-account homes with CADENCE_HTTP_REDIRECT.
+        auto level = GJGameLevel::create();
+        level->m_levelType = GJLevelType::Editor;
+        level->m_levelName = "Cadence Upload";
+        level->m_isVerified = 1;
+        level->m_isVerifiedRaw = true;
+        level->m_objectCount = 12;
+        level->m_levelString = "H4sIAAAAAAAAC6WQwQ3DMAhFF3IlPmBslFNm6AAMkBU6fG3jXqJWStULD54_Fpj3bdj2ztHNnl3h5o0M5uSCNzGVnSvOrcUOPOfcAhNs5tYF2VW5brGqsJQLpi_1wTxa6nY7_75OlqvPvwM2bX3RJE1Eu3K1cgr2PL4nM_Ns1Ai2rCrX9I3l2V1G3P2bz5JqbOk9gObNGcHKAQAA";
+        auto scene2 = EditLevelLayer::scene(level);
+        CCDirector::get()->replaceScene(scene2);
+        // (its Share button is pressed later with /thenframe:GJ_shareBtn_001.png, once the page
+        // is the running scene: a popup opened earlier lands on the scene being replaced)
     } else if (name.rfind("editlevel:", 0) == 0) {
         // editlevel:N[/M...]: a fresh editor level's page (EditLevelLayer), then presses as
         // creator: does (N = 0 is its Edit button: the editor)
@@ -651,7 +758,7 @@ void openGui(std::string const& name) {
     } else if (name.rfind("menu:", 0) == 0) {
         g_guiItem = std::atoi(name.c_str() + 5);
         g_guiShotFrame = 300;
-    } else if (name == "search") {
+    } else if (name.rfind("search", 0) == 0 && name.rfind("searchx", 0) != 0) {
         CCDirector::get()->replaceScene(LevelSearchLayer::scene(0));
     }
 }
@@ -750,6 +857,64 @@ void removeNotices() {
     for (auto a : alerts) a->removeFromParent();
 }
 
+/// Press the visible button whose sprite shows `want` (the newest top-level layer's).
+void pressFrame(std::string const& want) {
+        // .../thenframe:<frame>: press the visible button whose sprite shows <frame> (safer than
+        // an index: the walk order counts hidden items)
+
+        auto names = frameNames();
+        auto frameOf = [&](CCNode* nd) -> std::string {
+            if (auto sp = typeinfo_cast<CCSprite*>(nd); sp && sp->getTexture()) {
+                auto r = sp->getTextureRect();
+                auto it = names.find({sp->getTexture(), int(r.origin.x * 4), int(r.origin.y * 4), int(r.size.width * 4), int(r.size.height * 4)});
+                if (it != names.end()) return it->second;
+            }
+            return "";
+        };
+        CCMenuItemSpriteExtra* hit = nullptr;
+        std::function<void(CCNode*)> walk = [&](CCNode* nd) {
+            for (auto c : CCArrayExt<CCNode*>(nd->getChildren())) {
+                if (hit || !c->isVisible()) continue;
+                if (auto item = typeinfo_cast<CCMenuItemSpriteExtra*>(c)) {
+                    std::function<bool(CCNode*)> shows = [&](CCNode* n2) {
+                        if (frameOf(n2) == want) return true;
+                        for (auto k : CCArrayExt<CCNode*>(n2->getChildren())) if (shows(k)) return true;
+                        return false;
+                    };
+                    if (shows(item)) { hit = item; return; }
+                }
+                walk(c);
+            }
+        };
+        auto scene = CCDirector::get()->getRunningScene();
+        auto kids = scene ? scene->getChildren() : nullptr;
+        if (kids && kids->count()) walk(static_cast<CCNode*>(kids->objectAtIndex(kids->count() - 1)));
+        log::info("gui: then pressing the button showing {}: {}", want, hit ? "found" : "missing");
+        if (hit) hit->activate();
+    }
+
+/// Press the visible button whose label reads `text` (ButtonSprites on 9-slices).
+void pressLabel(std::string const& text) {
+    CCMenuItemSpriteExtra* hit = nullptr;
+    std::function<bool(CCNode*)> shows = [&](CCNode* n) {
+        if (auto l = typeinfo_cast<CCLabelBMFont*>(n); l && l->getString() && text == l->getString()) return true;
+        for (auto k : CCArrayExt<CCNode*>(n->getChildren())) if (shows(k)) return true;
+        return false;
+    };
+    std::function<void(CCNode*)> walk = [&](CCNode* nd) {
+        for (auto c : CCArrayExt<CCNode*>(nd->getChildren())) {
+            if (hit || !c->isVisible()) continue;
+            if (auto item = typeinfo_cast<CCMenuItemSpriteExtra*>(c); item && shows(item)) { hit = item; return; }
+            walk(c);
+        }
+    };
+    auto scene = CCDirector::get()->getRunningScene();
+    auto kids = scene ? scene->getChildren() : nullptr;
+    if (kids && kids->count()) walk(static_cast<CCNode*>(kids->objectAtIndex(kids->count() - 1)));
+    log::info("gui: then pressing the button reading {}: {}", text, hit ? "found" : "missing");
+    if (hit) hit->activate();
+}
+
 /// One frame of the gui sequence (called before each present).
 void stepGui() {
     if (g_guiFrame < 0 || g_guiIndex >= g_spec.guis.size()) return;
@@ -822,39 +987,25 @@ void stepGui() {
             else if (kind == "pause") ui->onPause(nullptr);
         }
     }
-    else if (g_guiFrame == lead + g_guiShotFrame - 40 && name.find("/thenframe:") != std::string::npos) {
+    else if (g_guiFrame == lead + g_guiShotFrame - (name.find("/then3label:") != std::string::npos ? 120 : 40) && name.find("/thenframe:") != std::string::npos) {
         // .../thenframe:<frame>: press the visible button whose sprite shows <frame> (safer than
         // an index: the walk order counts hidden items)
         auto want = name.substr(name.find("/thenframe:") + 11);
-        auto names = frameNames();
-        auto frameOf = [&](CCNode* nd) -> std::string {
-            if (auto sp = typeinfo_cast<CCSprite*>(nd); sp && sp->getTexture()) {
-                auto r = sp->getTextureRect();
-                auto it = names.find({sp->getTexture(), int(r.origin.x * 4), int(r.origin.y * 4), int(r.size.width * 4), int(r.size.height * 4)});
-                if (it != names.end()) return it->second;
-            }
-            return "";
-        };
-        CCMenuItemSpriteExtra* hit = nullptr;
-        std::function<void(CCNode*)> walk = [&](CCNode* nd) {
-            for (auto c : CCArrayExt<CCNode*>(nd->getChildren())) {
-                if (hit || !c->isVisible()) continue;
-                if (auto item = typeinfo_cast<CCMenuItemSpriteExtra*>(c)) {
-                    std::function<bool(CCNode*)> shows = [&](CCNode* n2) {
-                        if (frameOf(n2) == want) return true;
-                        for (auto k : CCArrayExt<CCNode*>(n2->getChildren())) if (shows(k)) return true;
-                        return false;
-                    };
-                    if (shows(item)) { hit = item; return; }
-                }
-                walk(c);
-            }
-        };
-        auto scene = CCDirector::get()->getRunningScene();
-        auto kids = scene ? scene->getChildren() : nullptr;
-        if (kids && kids->count()) walk(static_cast<CCNode*>(kids->objectAtIndex(kids->count() - 1)));
-        log::info("gui: then pressing the button showing {}: {}", want, hit ? "found" : "missing");
-        if (hit) hit->activate();
+        pressFrame(want.substr(0, want.find('/')));
+    }
+    else if (g_guiFrame == lead + g_guiShotFrame - 40 && name.find("/then3label:") != std::string::npos) {
+        // a third press (three-step paths: a page, a notice's OK, a button)
+        auto want = name.substr(name.find("/then3label:") + 12);
+        pressLabel(want.substr(0, want.find('/')));
+    }
+    else if (g_guiFrame == lead + g_guiShotFrame - (name.find("/then3label:") != std::string::npos ? 80 : 15) && name.find("/then2label:") != std::string::npos) {
+        auto want = name.substr(name.find("/then2label:") + 12);
+        pressLabel(want.substr(0, want.find('/')));
+    }
+    else if (g_guiFrame == lead + g_guiShotFrame - 15 && name.find("/then2frame:") != std::string::npos) {
+        // .../then2frame:<frame>: a second press, on what the first opened
+        auto want = name.substr(name.find("/then2frame:") + 12);
+        pressFrame(want.substr(0, want.find('/')));
     }
     else if (g_guiFrame == lead + g_guiShotFrame - 40 && name.find("/then:") != std::string::npos) {
         // .../edit:...:<id>/then:N: once the popup is up, press its Nth button (depth first)

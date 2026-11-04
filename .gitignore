@@ -29,3 +29,7 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# agents' git worktrees
+/.claude/worktrees/
+/.wrangler/

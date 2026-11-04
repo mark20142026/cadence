@@ -80,6 +80,8 @@ const PER_ROW: usize = 6;
 const ROWS: usize = 2;
 
 pub struct Editor {
+    /// The grid hidden (the top bar's grid button).
+    pub hide_grid: bool,
     /// Which local level (index in the saved list) this is, if saved.
     pub slot: Option<usize>,
     pub name: String,
@@ -119,6 +121,7 @@ pub struct Editor {
 impl Default for Editor {
     fn default() -> Editor {
         Editor {
+            hide_grid: false,
             slot: None,
             name: "Unnamed 0".into(),
             objects: Vec::new(),
@@ -391,7 +394,16 @@ impl Editor {
                 let id = self.selection().next().map_or(0, |o| o.id);
                 return EdEffect::EditObject(id);
             }
-            Btn::EdSide(_) => return EdEffect::Unported,
+            // the color button: the selection's colors (Edit Object on a plain object)
+            Btn::EdSide(19) if !self.selected.is_empty() => {
+                let id = self.selection().next().map_or(0, |o| o.id);
+                return EdEffect::EditObject(id);
+            }
+            // the grid button: show or hide the grid
+            Btn::EdSide(2) => self.hide_grid = !self.hide_grid,
+            // the wrench: the editor's options
+            Btn::EdSide(1) => return EdEffect::Options,
+            Btn::EdSide(_) => {}
             _ => {}
         }
         EdEffect::None
@@ -405,13 +417,13 @@ impl Editor {
         let unit = w / view.2;
         // the grid (DrawGridLayer): lines every 30 units, darker at the ground
         let x0 = (view.0 / 30.0).floor() * 30.0;
-        let mut gx = x0;
+        let mut gx = if self.hide_grid { f32::INFINITY } else { x0 };
         while gx < view.0 + view.2 {
             let (sx, _) = to_screen(gx, 0.0);
             c.rect(sx - 0.25, 0.0, 0.5, h, [0.0; 3], 0.35);
             gx += 30.0;
         }
-        let mut gy = (view.1 / 30.0).floor() * 30.0;
+        let mut gy = if self.hide_grid { f32::INFINITY } else { (view.1 / 30.0).floor() * 30.0 };
         while gy < view.1 + view.3 {
             let (_, sy) = to_screen(0.0, gy);
             c.rect(0.0, sy - 0.25, w, 0.5, [0.0; 3], 0.35);
@@ -600,7 +612,6 @@ pub enum EdEffect {
     Playtest,
     Music,
     Pause,
-    Unported,
     /// The Edit Group popup (`EditorUI::editGroup`)
     EditGroup,
     /// Edit Object (`EditorUI::editObject`) on the first selected object, by its id
@@ -609,6 +620,8 @@ pub enum EdEffect {
     Settings,
     /// Edit Special (`EditorUI::editObject2`) on the first selected object, by its id
     EditSpecial(u16),
+    /// The editor's options (the top bar's wrench)
+    Options,
 }
 
 /// The Z Layer buttons' values (`ZLayer`: B5 −5 … T4 11).

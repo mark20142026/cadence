@@ -68,6 +68,21 @@ const DIFFS: [(i32, f32); 8] = [(-1, -162.8), (1, -120.8), (2, -73.6), (3, -26.4
 const LENS: [(&str, f32); 6] = [("Tiny", -122.8), ("Short", -72.6), ("Medium", -13.4), ("Long", 40.7), ("XL", 79.6), ("Plat.", 119.7)];
 
 pub struct Browser {
+    /// The Rate Difficulty popup: the stars chosen (0 none).
+    pub rating: Option<u8>,
+    /// My Levels: the folder shown (0 all), the name filter and whether it's being typed, the
+    /// verified levels' slots, and the levels selected with Select All.
+    pub my_folder: u8,
+    pub my_find: Option<String>,
+    pub my_verified: Vec<usize>,
+    pub my_selected: bool,
+    /// Advanced Options (`gjapi::filter` bits) and whether their popup is open.
+    pub filters: u16,
+    pub filters_open: bool,
+    /// The next Play downloads the level again (the level page's Refresh).
+    pub refresh_next: bool,
+    /// Levels liked or disliked this session (`GameLevelManager::markItemAsLiked`).
+    pub liked: std::collections::HashSet<i64>,
     pub view: View,
     /// The search box.
     pub query: String,
@@ -145,6 +160,15 @@ pub struct Browser {
 impl Default for Browser {
     fn default() -> Browser {
         Browser {
+            rating: None,
+            my_folder: 0,
+            my_find: None,
+            my_verified: Vec::new(),
+            my_selected: false,
+            filters: 0,
+            filters_open: false,
+            liked: Default::default(),
+            refresh_next: false,
             view: View::Search,
             query: String::new(),
             diffs: [false; 8],
@@ -211,6 +235,17 @@ pub enum Effect {
     Leave,
     Alert(String, String),
     Sound(&'static str),
+    /// Write a comment on this level (`InfoLayer::onComment`): its id and your best percent there.
+    Comment(i64),
+    /// Ask before reporting this level (`InfoLayer::onReport`).
+    Report(i64),
+    /// My Levels' list changed (folder, find); Select All asks to delete them.
+    RefreshMine,
+    DeleteMine,
+    /// A saved level's Delete (asks first), Clone (into your levels) and Options.
+    Delete(i32),
+    Clone(i32),
+    LevelOptions(i32),
 }
 
 impl Browser {
@@ -278,9 +313,11 @@ impl Browser {
             _ => "top",
         };
         self.status = "Loading...".into();
-        self.spawn(move || match crate::online::scores(kind) {
-            Ok(s) => Msg::Scores(s),
-            Err(e) => Msg::Error(format!("Something went wrong ({e})")),
+        self.spawn(async move {
+            match crate::online::scores(kind).await {
+                Ok(s) => Msg::Scores(s),
+                Err(e) => Msg::Error(format!("Something went wrong ({e})")),
+            }
         });
     }
 
@@ -289,9 +326,11 @@ impl Browser {
         self.view = View::Gauntlets(0);
         if self.gauntlets.is_empty() && !self.busy() {
             self.status = "Loading...".into();
-            self.spawn(|| match crate::online::gauntlets() {
-                Ok(g) => Msg::Gauntlets(g),
-                Err(e) => Msg::Error(format!("Something went wrong ({e})")),
+            self.spawn(async move {
+                match crate::online::gauntlets().await {
+                    Ok(g) => Msg::Gauntlets(g),
+                    Err(e) => Msg::Error(format!("Something went wrong ({e})")),
+                }
             });
         }
     }
@@ -318,30 +357,47 @@ impl Browser {
 
     fn fetch_list(&mut self) {
         let s = self.search.clone();
+        if s.kind == -26 {
+            self.status = "Loading...".into();
+            self.lists.clear();
+            self.spawn(async move {
+                match crate::online::level_lists(0, &s.query, s.page).await {
+                    Ok((l, total)) => Msg::Lists(l, total),
+                    Err(e) => Msg::Error(format!("Something went wrong ({e})")),
+                }
+            });
+            return;
+        }
         if s.kind == -25 {
             self.status = "Loading...".into();
             self.lists.clear();
-            self.spawn(move || match crate::online::level_lists(6, "", s.page) {
-                Ok((l, total)) => Msg::Lists(l, total),
-                Err(e) => Msg::Error(format!("Something went wrong ({e})")),
+            self.spawn(async move {
+                match crate::online::level_lists(6, "", s.page).await {
+                    Ok((l, total)) => Msg::Lists(l, total),
+                    Err(e) => Msg::Error(format!("Something went wrong ({e})")),
+                }
             });
             return;
         }
         if s.kind == -10 {
             self.status = "Loading...".into();
             self.packs.clear();
-            self.spawn(move || match crate::online::map_packs(s.page) {
-                Ok((p, total)) => Msg::Packs(p, total),
-                Err(e) => Msg::Error(format!("Something went wrong ({e})")),
+            self.spawn(async move {
+                match crate::online::map_packs(s.page).await {
+                    Ok((p, total)) => Msg::Packs(p, total),
+                    Err(e) => Msg::Error(format!("Something went wrong ({e})")),
+                }
             });
             return;
         }
         self.status = "Loading...".into();
         self.results.clear();
-        self.spawn(move || match crate::online::search_page(&s) {
-            Ok(p) => Msg::Results(p),
-            Err(e) if e.contains("returned nothing") => Msg::Results(crate::online::Page::default()),
-            Err(e) => Msg::Error(format!("Something went wrong ({e})")),
+        self.spawn(async move {
+            match crate::online::search_page(&s).await {
+                Ok(p) => Msg::Results(p),
+                Err(e) if e.contains("returned nothing") => Msg::Results(crate::online::Page::default()),
+                Err(e) => Msg::Error(format!("Something went wrong ({e})")),
+            }
         });
     }
 
@@ -360,6 +416,7 @@ impl Browser {
             s.len = lens.join(",");
         }
         s.star = self.star;
+        s.filters = self.filters;
         s
     }
 
@@ -367,15 +424,23 @@ impl Browser {
     pub fn download_info(&mut self) {
         let Some(info) = self.info.clone() else { return };
         self.status = "Downloading...".into();
-        self.spawn(move || {
-            let data = match crate::online::download(info.id) {
-                Ok(d) => d,
-                Err(e) => return Msg::Error(format!("Download failed ({e})")),
+        // a saved level plays from its saved copy, unless Refresh asked for a new one
+        let refresh = std::mem::take(&mut self.refresh_next);
+        self.spawn(async move {
+            let data = match crate::saved::data(info.id).filter(|_| !refresh) {
+                Some(d) => d,
+                None => match crate::online::download_full(info.id).await {
+                    Ok((m, d)) => {
+                        crate::saved::save(&info, &d, m.get("27").is_some_and(|p| crate::saved::copyable(p)));
+                        d
+                    }
+                    Err(e) => return Msg::Error(format!("Download failed ({e})")),
+                },
             };
             let song = if info.custom_song > 0 {
                 match &info.song_url {
-                    Some(url) => match crate::online::song_file(info.custom_song, url) {
-                        Ok(p) => Some(p.to_string_lossy().into_owned()),
+                    Some(url) => match crate::online::song_file(info.custom_song, url).await {
+                        Ok(p) => Some(p),
                         Err(e) => {
                             crate::app::log(&format!("song {}: {e}", info.custom_song));
                             None
@@ -406,13 +471,13 @@ impl Browser {
             sfx_ids.dedup();
             // getGJSongInfo finds each song's URL
             for &id in song_ids.iter().filter(|&&id| id > 0 && id != info.custom_song) {
-                if let Err(e) = crate::online::song_file(id, "") {
+                if let Err(e) = crate::online::song_file(id, "").await {
                     crate::app::log(&format!("song {id}: {e}"));
                 }
             }
             // and the library sounds its SFX triggers play
             for &id in sfx_ids.iter().filter(|&&id| id > 0) {
-                if let Err(e) = crate::online::sfx_file(id) {
+                if let Err(e) = crate::online::sfx_file(id).await {
                     crate::app::log(&format!("sfx {id}: {e}"));
                 }
             }
@@ -429,7 +494,7 @@ impl Browser {
     /// Find and download level `id` right away (command line and screenshots).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn fetch_now(id: i32) -> Result<OnlineLevel, String> {
-        let info = crate::online::search(Kind::Search, &id.to_string(), 0)?.into_iter().find(|l| l.id == id).ok_or("not found")?;
+        let info = crate::net::block(crate::online::search(Kind::Search, &id.to_string(), 0))?.into_iter().find(|l| l.id == id).ok_or("not found")?;
         let mut b = Browser { info: Some(info), ..Browser::default() };
         b.download_info();
         while b.busy() {
@@ -440,18 +505,13 @@ impl Browser {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn spawn(&mut self, work: impl FnOnce() -> Msg + Send + 'static) {
-        let (tx, rx) = channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(work());
-        });
-        self.job = Some(rx);
+    fn spawn(&mut self, work: impl std::future::Future<Output = Msg> + Send + 'static) {
+        self.job = Some(crate::net::spawn(work));
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn spawn(&mut self, _work: impl FnOnce() -> Msg + Send + 'static) {
-        let _ = channel::<Msg>;
-        self.status = "Online levels need the relay (not on the web yet)".into();
+    fn spawn(&mut self, work: impl std::future::Future<Output = Msg> + 'static) {
+        self.job = Some(crate::net::spawn(work));
     }
 
     /// Fetch the posts' pictures one by one in the background.
@@ -465,41 +525,34 @@ impl Browser {
                 _ => None,
             })
             .collect();
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let (tx, rx) = channel();
-            std::thread::spawn(move || {
-                for file in files {
-                    match crate::online::news_image(&file) {
-                        Ok(image) => {
-                            if tx.send((file, image)).is_err() {
-                                return;
-                            }
+        // one by one, each sent as it arrives
+        let (tx, rx) = channel();
+        let _ = crate::net::spawn(async move {
+            for file in files {
+                match crate::online::news_image(&file).await {
+                    Ok(image) => {
+                        if tx.send((file, image)).is_err() {
+                            return;
                         }
-                        Err(e) => crate::app::log(&format!("news picture {file}: {e}")),
                     }
+                    Err(e) => crate::app::log(&format!("news picture {file}: {e}")),
                 }
-            });
-            self.news_picture_job = Some(rx);
-        }
-        #[cfg(target_arch = "wasm32")]
-        let _ = files;
+            }
+        });
+        self.news_picture_job = Some(rx);
     }
 
     /// Open the news and fetch the posts.
     pub fn open_news(&mut self) {
         self.news_page = Some(0);
         self.t = 0.0;
-        #[cfg(not(target_arch = "wasm32"))]
         if self.news.is_empty() {
-            let (tx, rx) = channel();
-            std::thread::spawn(move || {
-                let _ = tx.send(match crate::online::news() {
+            self.daily_job = Some(crate::net::spawn(async move {
+                match crate::online::news().await {
                     Ok(n) => Msg::News(n),
                     Err(e) => Msg::Error(e),
-                });
-            });
-            self.daily_job = Some(rx);
+                }
+            }));
         }
     }
 
@@ -508,17 +561,12 @@ impl Browser {
         self.quests_open = true;
         self.quests.clear();
         self.t = 0.0;
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let (tx, rx) = channel();
-            std::thread::spawn(move || {
-                let _ = tx.send(match crate::online::quests() {
-                    Ok((q, left)) => Msg::Quests(q, left),
-                    Err(e) => Msg::Error(e),
-                });
-            });
-            self.daily_job = Some(rx);
-        }
+        self.daily_job = Some(crate::net::spawn(async move {
+            match crate::online::quests().await {
+                Ok((q, left)) => Msg::Quests(q, left),
+                Err(e) => Msg::Error(e),
+            }
+        }));
     }
 
     /// Open the daily (0), weekly (1) or event (2) page and fetch its level.
@@ -527,17 +575,12 @@ impl Browser {
         self.daily_level = None;
         self.t = 0.0;
         self.event_line = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos() as usize / 1000);
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let (tx, rx) = channel();
-            std::thread::spawn(move || {
-                let _ = tx.send(match crate::online::daily(kind) {
-                    Ok((info, _, left)) => Msg::Daily(Box::new(info), left),
-                    Err(e) => Msg::Error(e),
-                });
-            });
-            self.daily_job = Some(rx);
-        }
+        self.daily_job = Some(crate::net::spawn(async move {
+            match crate::online::daily(kind).await {
+                Ok((info, _, left)) => Msg::Daily(Box::new(info), left),
+                Err(e) => Msg::Error(e),
+            }
+        }));
     }
 
     pub fn update(&mut self, dt: f32) {
@@ -705,12 +748,44 @@ impl Browser {
                 self.lens = [false; 6];
                 self.star = false;
             }
+            // the user search (`getGJUsers20.php`): the best match's profile
             Btn::OnlineUsers => {
-                return Effect::Alert("User Search".into(), "Searching for players needs the game's account servers, which Cadence leaves out.".into());
+                let query = self.query.trim().to_string();
+                if query.is_empty() {
+                    return Effect::None;
+                }
+                self.popup = Some(super::replay::Scene::Profile);
+                self.profile = None;
+                self.t = 0.0;
+                self.daily_job = Some(crate::net::spawn(async move {
+                    let id = crate::gjapi::identity();
+                    let found = match crate::net::post("getGJUsers20.php", &crate::gjapi::user_search_form(&id, &query, 0)).await {
+                        Ok(body) => crate::social::parse_users(&body).into_iter().find(|u| u.account_id > 0),
+                        Err(_) => None,
+                    };
+                    match found {
+                        Some(u) => match crate::online::profile(u.account_id).await {
+                            Ok(p) => Msg::Profile(Box::new(p)),
+                            Err(e) => Msg::Error(e),
+                        },
+                        None => Msg::Error("Nothing found".into()),
+                    }
+                }));
             }
-            Btn::OnlineFilters | Btn::OnlineLists => {
-                return Effect::Alert("Coming soon".into(), "This search option isn't in Cadence yet.".into());
+            // level lists by name
+            Btn::OnlineLists => {
+                let mut s = Search::new(-26);
+                s.query = self.query.trim().to_string();
+                self.search = s;
+                self.title = "Lists".into();
+                self.from_search = true;
+                self.view = View::List;
+                self.scroll = 0.0;
+                self.fetch_list();
             }
+            Btn::OnlineFilters => self.filters_open = true,
+            Btn::FilterToggle(i) => self.filters ^= 1 << i,
+            Btn::FilterClose => self.filters_open = false,
             Btn::LevelsPrev if self.search.page > 0 && !self.busy() => {
                 self.search.page -= 1;
                 self.scroll = 0.0;
@@ -723,13 +798,32 @@ impl Browser {
             }
             Btn::OnlineRefresh if !self.busy() && self.search.kind != -1 => self.fetch_list(),
             Btn::MyTool(k) => {
-                let (t, x) = match k {
-                    0 => ("My Server", "Uploading levels needs the game's servers, which Cadence never writes to."),
-                    1 => ("Import", "Importing level files isn't in Cadence yet."),
-                    2 => ("Backup", "Cadence keeps your levels in its own save file on this computer."),
-                    _ => ("Coming soon", "Folders, lists and search for your own levels aren't in Cadence yet."),
-                };
-                return Effect::Alert(t.into(), x.into());
+                match k {
+                    // your uploaded levels (search type 5 by your player id)
+                    0 => {
+                        let Some(user) = crate::gjapi::identity().account.map(|a| a.user_id) else {
+                            return Effect::Alert("My Server".into(), "You need an <cl>account</c> to see your uploaded levels.".into());
+                        };
+                        let mut s = Search::new(5);
+                        s.query = user.to_string();
+                        self.open_list(s, false);
+                        self.title = "My Levels".into();
+                    }
+                    1 => return Effect::Alert("Import".into(), "Drop a level file (<cy>.gmd</c>) onto the window to import it into your levels.".into()),
+                    2 => return Effect::Alert("Backup".into(), "Your levels are kept in Cadence's save on this device, and in your account's cloud save when you <cg>Save</c> from the Account page.".into()),
+                    3 => return Effect::Alert("My Lists".into(), "Lists group levels together. Make one from a level's page with the <cg>Lists</c> button.".into()),
+                    4 => {
+                        self.my_folder = (self.my_folder + 1) % 10;
+                        return Effect::RefreshMine;
+                    }
+                    5 => self.my_find = Some(self.my_find.take().map_or(String::new(), |_| String::new())),
+                    _ => {
+                        self.my_selected = !self.my_selected;
+                        if self.my_selected && !self.my_levels.is_empty() {
+                            return Effect::DeleteMine;
+                        }
+                    }
+                }
             }
             Btn::OnlineHelp => {
                 return Effect::Alert("Online Levels".into(), "Levels other players made, straight from the game's servers. Tap <cg>Get It</c> to see a level and play it.".into());
@@ -796,31 +890,63 @@ impl Browser {
                 }
                 self.popup = Some(super::replay::Scene::Profile);
                 self.profile = None;
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let (tx, rx) = channel();
-                    std::thread::spawn(move || {
-                        let _ = tx.send(match crate::online::profile(acc) {
-                            Ok(p) => Msg::Profile(Box::new(p)),
-                            Err(e) => Msg::Error(e),
-                        });
-                    });
-                    self.daily_job = Some(rx);
-                }
+                self.daily_job = Some(crate::net::spawn(async move {
+                    match crate::online::profile(acc).await {
+                        Ok(p) => Msg::Profile(Box::new(p)),
+                        Err(e) => Msg::Error(e),
+                    }
+                }));
             }
             Btn::InfoSide(4) => self.popup = Some(super::replay::Scene::Vote),
+            Btn::InfoSide(13) => self.rating = Some(0),
+            Btn::RateStar(n) => self.rating = Some(n),
+            Btn::RateCancel => self.rating = None,
+            // RateStarsLayer::onRate: rateGJStars211 (the stars suggested), then closes
+            Btn::RateSubmit => {
+                if let (Some(n), Some(l)) = (self.rating.filter(|n| *n > 0), &self.info) {
+                    let level = l.id as i64;
+                    let _ = crate::net::spawn(async move {
+                        let id = crate::gjapi::identity();
+                        let _ = crate::net::post("rateGJStars211.php", &crate::gjapi::rate_stars_form(&id, level, n as i32, &crate::gjapi::random_string(10))).await;
+                    });
+                    self.rating = None;
+                    return Effect::Alert("Rate Difficulty".into(), format!("You suggested <cy>{n}</c> star{} for this level.", if n == 1 { "" } else { "s" }));
+                }
+            }
+            // the level page's side buttons on a saved level: delete, refresh, clone, options,
+            // favorite, folder
+            Btn::InfoSide(k @ (0 | 1 | 6 | 7 | 9 | 10 | 11)) => {
+                let Some(l) = self.info.clone() else { return Effect::None };
+                let saved = crate::saved::get(l.id);
+                match (k, saved) {
+                    (_, None) if k != 1 => return Effect::Alert("Saved Levels".into(), "Play the level first: it's saved when it downloads.".into()),
+                    (0, _) => return Effect::Delete(l.id),
+                    (1, _) => {
+                        self.refresh_next = true;
+                        return Effect::Alert("Refresh".into(), "The level downloads again the next time you play it.".into());
+                    }
+                    (6, Some(s)) if s.copyable => return Effect::Clone(l.id),
+                    (6, Some(_)) => return Effect::Alert("Copy".into(), "The creator of this level doesn't allow copying it.".into()),
+                    (7, _) => return Effect::LevelOptions(l.id),
+                    (9, Some(s)) => {
+                        crate::saved::update(l.id, |x| x.favorite = !x.favorite);
+                        return Effect::Alert("Favorite".into(), if s.favorite { "Removed from your favorites." } else { "Added to your favorites." }.into());
+                    }
+                    (10, Some(s)) => {
+                        let folder = (s.folder + 1) % 10;
+                        crate::saved::update(l.id, |x| x.folder = folder);
+                        return Effect::Alert("Folder".into(), if folder == 0 { "Not in a folder.".to_string() } else { format!("Moved to folder <cy>{folder}</c>.") });
+                    }
+                    _ => return Effect::Alert("Lists".into(), "Make a list from <cg>My Lists</c> to add saved levels to it.".into()),
+                }
+            }
             Btn::InfoSide(k) => {
                 let (title, text) = match k {
-                    6 => ("Clone", "Copying levels to edit them comes with the level editor."),
-                    7 => ("Options", "Level options (low detail mode, the start position) come with saved levels."),
                     8 => ("Help", "Tap <cg>Play</c> to download and play the level. Its song downloads with it."),
-                    9 | 10 | 11 => ("Saved Levels", "Favorites, folders and lists come with saved levels, which Cadence doesn't keep yet."),
                     12 => ("Icon Kit", "Open the icon kit from the main menu."),
-                    0 => ("Delete", "The level isn't saved, so there is nothing to delete."),
-                    1 => ("Refresh", "The level is downloaded fresh each time you play it."),
                     2 => ("Level Info", ""),
-                    3 => ("Leaderboard", "Level leaderboards need an <cg>account</c>, and Cadence doesn't log in to the game's servers."),
-                    _ => ("Rate", "Liking and rating levels need an <cg>account</c>, and Cadence doesn't log in to the game's servers."),
+                    3 => ("Leaderboard", "Level leaderboards open from the level page's leaderboard button."),
+                    _ => ("Rate", "Rating levels is on the level page's like button."),
                 };
                 if k == 2 {
                     if let Some(l) = &self.info {
@@ -848,6 +974,64 @@ impl Browser {
             View::Gauntlets(p) => self.draw_gauntlets(c, ctx, p),
             View::Scores(t) => self.draw_scores(c, ctx, t),
         }
+        if self.view != View::Info && self.popup == Some(super::replay::Scene::Profile) {
+            self.draw_profile_over(c, ctx);
+        }
+        if self.filters_open {
+            self.draw_filters(c, ctx);
+        }
+    }
+
+    /// `RateStarsLayer` ("Rate Difficulty"): 1–10 stars, the chosen one green, Submit / Cancel.
+    fn draw_rating(&self, c: &mut Canvas, ctx: &mut Ctx) {
+        let (w, h) = (c.width, c.height);
+        let (cx, cy) = (w * 0.5, h * 0.5);
+        let chosen = self.rating.unwrap_or(0);
+        ctx.buttons.clear();
+        c.rect(0.0, 0.0, w, h, [0.0; 3], 150.0 / 255.0);
+        c.nine_slice("GJ_square01.png", cx, cy, 360.0, 200.0, Look::default());
+        c.text("goldFont", "Rate Difficulty", cx, cy + 75.0, Look::scaled(0.8));
+        for i in 0..10u8 {
+            let x = cx - 92.0 + 46.0 * (i % 5) as f32;
+            let y = if i < 5 { cy + 30.0 } else { cy - 5.0 };
+            let f = ctx.factor(Btn::RateStar(i + 1));
+            c.nine_slice(if chosen == i + 1 { "GJ_button_01.png" } else { "GJ_button_04.png" }, x, y, 28.8 * f, 24.0 * f, Look::default());
+            c.text("bigFont", &(i + 1).to_string(), x - 0.8, y + 1.6, Look::scaled(0.4 * f));
+            ctx.area(Btn::RateStar(i + 1), x, y, 28.8, 24.0);
+        }
+        let (w1, w2) = (super::login::button_width(c, "Cancel"), super::login::button_width(c, "Submit"));
+        let total = w1 + 15.0 + w2;
+        for (id, text, x, bw) in [(Btn::RateCancel, "Cancel", cx - total * 0.5 + w1 * 0.5, w1), (Btn::RateSubmit, "Submit", cx + total * 0.5 - w2 * 0.5, w2)] {
+            let f = ctx.factor(id);
+            c.nine_slice("GJ_button_01.png", x, cy - 65.0, bw * f, 31.5 * f, Look::default());
+            c.text("goldFont", text, x, cy - 63.0, Look::scaled(f));
+            ctx.area(id, x, cy - 65.0, bw, 31.5);
+        }
+    }
+
+    /// `MoreSearchLayer` ("Advanced Options"): the filters as check boxes, two columns.
+    fn draw_filters(&self, c: &mut Canvas, ctx: &mut Ctx) {
+        const NAMES: [&str; 10] = ["Uncompleted", "Completed", "Featured", "Original", "2-Player", "Coins", "No Star", "Epic", "Legendary", "Mythic"];
+        let (w, h) = (c.width, c.height);
+        let (cx, cy) = (w * 0.5, h * 0.5);
+        ctx.buttons.clear();
+        c.rect(0.0, 0.0, w, h, [0.0; 3], 150.0 / 255.0);
+        c.nine_slice("GJ_square01.png", cx, cy, 440.0, 290.0, Look::default());
+        c.text("goldFont", "Advanced Options", cx, cy + 120.0, Look::scaled(0.8));
+        for (i, name) in NAMES.iter().enumerate() {
+            let x = cx - 165.0 + 200.0 * (i / 5) as f32;
+            let y = cy + 75.0 - 37.0 * (i % 5) as f32;
+            let on = self.filters & (1 << i) != 0;
+            let f = ctx.factor(Btn::FilterToggle(i as u8));
+            c.sprite(if on { "GJ_checkOn_001.png" } else { "GJ_checkOff_001.png" }, x, y, Look::scaled(0.8 * f));
+            ctx.area(Btn::FilterToggle(i as u8), x, y, 30.0, 30.0);
+            c.text("bigFont", name, x + 22.0, y, Look::scaled(0.5).anchor(0.0, 0.5));
+        }
+        let bw = super::login::button_width(c, "OK");
+        let f = ctx.factor(Btn::FilterClose);
+        c.nine_slice("GJ_button_01.png", cx, cy - 120.0, bw * f, 31.5 * f, Look::default());
+        c.text("goldFont", "OK", cx, cy - 118.0, Look::scaled(f));
+        ctx.area(Btn::FilterClose, cx, cy - 120.0, bw, 31.5);
     }
 
     /// `LevelSearchLayer::init` (0x6154b8).
@@ -1149,7 +1333,8 @@ impl Browser {
                 c.rect(lx, y0, 356.0, y1 - y0, shade.map(|v| v / 255.0), 1.0);
                 if y + 45.0 > ly && y + 45.0 < top {
                     c.text("bigFont", name, lx + 20.0, y + 55.0, Look::scaled(0.7).anchor(0.0, 0.5));
-                    c.text("goldFont", "Unverified", lx + 22.0, y + 28.0, Look::scaled(0.5).anchor(0.0, 0.5));
+                    let verified = self.my_levels.get(i).is_some_and(|(slot, _)| self.my_verified.contains(slot));
+                    c.text("goldFont", if verified { "Verified" } else { "Unverified" }, lx + 22.0, y + 28.0, Look::scaled(0.5).anchor(0.0, 0.5));
                     button_sprite(c, ctx, Btn::MyLevel(i as u8), "View", "bigFont", "GJ_button_01.png", lx + 314.0, y + 45.0, 66.0, 30.0, 0.6, false);
                 }
             }
@@ -1286,6 +1471,13 @@ impl Browser {
         {
             ctx.button(c, Btn::InfoSide(k as u8), icon, cx + 254.5, cy + y, Look::default(), 1.2);
         }
+        // an unrated level can be rated (RateStarsLayer), under the like button
+        if l.stars == 0 {
+            ctx.button(c, Btn::InfoSide(13), "GJ_rateDiffBtn_001.png", cx + 254.5, cy - 120.0, Look::default(), 1.2);
+        }
+        if self.rating.is_some() {
+            self.draw_rating(c, ctx);
+        }
         // the song
         let (sx, sy) = (cx, 45.0);
         // CustomSongWidget: GJ_square01 for a custom song (captured), the dark box otherwise
@@ -1331,6 +1523,42 @@ impl Browser {
             let start = c.mark();
             self.draw_popup(c, ctx, scene, l);
             super::open_anim(c, start, self.t - self.popup_since.1);
+        }
+    }
+
+    /// Post a comment on a level (`uploadGJComment21.php`), then reload its comments.
+    pub fn post_comment(&mut self, level: i64, text: String, percent: i32) {
+        self.comments = None;
+        self.daily_job = Some(crate::net::spawn(async move {
+            let id = crate::gjapi::identity();
+            if let Some(form) = crate::gjapi::comment_upload_form(&id, level, &text, percent) {
+                let _ = crate::net::post("uploadGJComment21.php", &form).await;
+            }
+            match crate::online::comments(level as i32, 0, false).await {
+                Ok((c, _)) => Msg::Comments(c),
+                Err(_) => Msg::Comments(Vec::new()),
+            }
+        }));
+    }
+
+    /// Another player's `ProfilePage` over whatever is open (your friends and requests lists).
+    pub fn open_profile(&mut self, account: i64) {
+        self.popup = Some(super::replay::Scene::Profile);
+        self.profile = None;
+        self.t = 0.0;
+        self.daily_job = Some(crate::net::spawn(async move {
+            match crate::online::profile(account).await {
+                Ok(p) => Msg::Profile(Box::new(p)),
+                Err(e) => Msg::Error(e),
+            }
+        }));
+    }
+
+    /// That profile, drawn outside the online screens.
+    pub fn draw_profile_over(&self, c: &mut Canvas, ctx: &mut Ctx) {
+        if self.popup == Some(super::replay::Scene::Profile) {
+            ctx.buttons.clear();
+            self.draw_popup(c, ctx, super::replay::Scene::Profile, &LevelInfo::default());
         }
     }
 
@@ -1452,24 +1680,46 @@ impl Browser {
         match (scene, i) {
             (Scene::Info, 5) | (Scene::Info, 7) => {
                 if let Some(l) = &self.info {
-                    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
                     let id = l.id;
                     self.comments = None;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        let (tx, rx) = channel();
-                        std::thread::spawn(move || {
-                            let _ = tx.send(match crate::online::comments(id, 0, false) {
-                                Ok((c, _)) => Msg::Comments(c),
-                                Err(_) => Msg::Comments(Vec::new()),
-                            });
-                        });
-                        self.daily_job = Some(rx);
-                    }
+                    self.daily_job = Some(crate::net::spawn(async move {
+                        match crate::online::comments(id, 0, false).await {
+                            Ok((c, _)) => Msg::Comments(c),
+                            Err(_) => Msg::Comments(Vec::new()),
+                        }
+                    }));
                 }
             }
-            (Scene::Info, 2) | (Scene::Info, 3) | (Scene::Vote, _) => {
-                return Effect::Alert("Account".into(), "Commenting, reporting and rating need an <cg>account</c>, and Cadence never writes to the game's servers.".into());
+            // InfoLayer's comment and report buttons
+            (Scene::Info, 2) => {
+                if crate::gjapi::linked_account().is_none_or(|(_, ok)| !ok) {
+                    return Effect::Alert("Account".into(), "You need an <cl>account</c> to comment.".into());
+                }
+                if let Some(l) = &self.info {
+                    return Effect::Comment(l.id as i64);
+                }
+            }
+            (Scene::Info, 3) => {
+                if let Some(l) = &self.info {
+                    return Effect::Report(l.id as i64);
+                }
+            }
+            // LikeItemLayer: like (1) or dislike (2), once per level (likes need no account)
+            (Scene::Vote, 1 | 2) => {
+                if let Some(l) = &self.info {
+                    let (id, like) = (l.id as i64, i == 1);
+                    self.popup = None;
+                    if !self.liked.insert(id) {
+                        return Effect::Alert("Liked".into(), "You have already liked or disliked this level.".into());
+                    }
+                    let _ = crate::net::spawn(async move {
+                        let id_ = crate::gjapi::identity();
+                        let _ = crate::net::post("likeGJItem211.php", &crate::gjapi::like_form(&id_, id, like, 1, 0, &crate::gjapi::random_string(10))).await;
+                    });
+                    if let Some(info) = self.info.as_mut() {
+                        info.likes += if like { 1 } else { -1 };
+                    }
+                }
             }
             (Scene::Info, 0) => {
                 if let Some(l) = &self.info {
@@ -1752,8 +2002,14 @@ impl Browser {
                 self.quests_open = false;
                 self.daily_job = None;
             }
+            // DailyLevelPage::onTheSafe: the past dailies (search type 21), weeklies (22) or
+            // events (23)
             Btn::DailySafe => {
-                return Effect::Alert("The Safe".into(), "Past daily and weekly levels are kept in the <cy>Safe</c>. It needs the game's servers' level history, which isn't in Cadence yet.".into());
+                let kind = 21 + self.daily.unwrap_or(0).clamp(0, 2);
+                self.daily = None;
+                self.daily_job = None;
+                self.open_list(Search::new(kind), false);
+                self.title = "The Safe".into();
             }
             Btn::DailyPlay if !self.busy() => {
                 if let Some(l) = self.daily_level.clone() {

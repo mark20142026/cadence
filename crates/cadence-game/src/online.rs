@@ -1,12 +1,12 @@
 //! Online levels, read-only: search and download from the game's level servers (the requests the
 //! real game makes: `getGJLevels21.php`, `downloadGJLevel22.php`), and custom songs from the URLs
 //! the server gives. Nothing is uploaded and nothing is stored except Cadence's own song cache.
-//! Native only; the web build goes through the relay (not yet).
+//! Requests go through `net` (the relay on the web).
 
 use std::collections::HashMap;
 
 /// One level from a search.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct LevelInfo {
     pub id: i32,
     pub name: String,
@@ -105,11 +105,14 @@ pub struct Search {
     pub star: bool,
     /// `demonFilter` with the demon difficulty alone: 1 easy … 5 extreme (0: all demons)
     pub demon_filter: u8,
+    /// Advanced Options (`gjapi::filter` bits) and the levels you've completed, for them.
+    pub filters: u16,
+    pub completed: String,
 }
 
 impl Search {
     pub fn new(kind: i32) -> Search {
-        Search { kind, query: String::new(), diff: "-".into(), len: "-".into(), page: 0, star: false, demon_filter: 0 }
+        Search { kind, query: String::new(), diff: "-".into(), len: "-".into(), page: 0, star: false, demon_filter: 0, filters: 0, completed: String::new() }
     }
 }
 
@@ -136,8 +139,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    fn code(self) -> i32 {
+        fn code(self) -> i32 {
         match self {
             Kind::Search => 0,
             Kind::MostDownloaded => 1,
@@ -152,7 +154,6 @@ impl Kind {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const SECRET: &str = "Wmfd2893gb7";
 
 /// `a:b:c:d` → {a: b, c: d}.
@@ -284,27 +285,24 @@ pub fn parse_levels(body: &str) -> Vec<LevelInfo> {
 }
 
 /// Search the servers (page 0, 10 levels a page).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn search(kind: Kind, query: &str, page: u32) -> Result<Vec<LevelInfo>, String> {
+pub async fn search(kind: Kind, query: &str, page: u32) -> Result<Vec<LevelInfo>, String> {
     let mut s = Search::new(kind.code());
     s.query = query.into();
     s.page = page;
-    Ok(search_page(&s)?.levels)
+    Ok(search_page(&s).await?.levels)
 }
 
 /// One page of a search, with the totals.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn search_page(s: &Search) -> Result<Page, String> {
-    let tail = crate::gjapi::search_tail(s.kind, &s.query, &s.diff, &s.len, s.page, 0, s.star, s.demon_filter);
-    let body = crate::gjapi::request("getGJLevels21.php", &tail)?;
+pub async fn search_page(s: &Search) -> Result<Page, String> {
+    let tail = crate::gjapi::search_tail_filtered(s.kind, &s.query, &s.diff, &s.len, s.page, 0, s.star, s.demon_filter, s.filters, &s.completed);
+    let body = crate::gjapi::request("getGJLevels21.php", &tail).await?;
     Ok(parse_page(&body))
 }
 
 /// Download a level's whole response: (key → value of the level, level data).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn download_full(id: i32) -> Result<(HashMap<String, String>, Vec<u8>), String> {
+pub async fn download_full(id: i32) -> Result<(HashMap<String, String>, Vec<u8>), String> {
     let id = id.to_string();
-    let body = crate::gjapi::post_raw("downloadGJLevel22.php", &crate::gjapi::download_form(&crate::gjapi::identity(), id.parse().unwrap_or(0), true, &crate::gjapi::random_string(10))).and_then(|b| if b.trim() == "-1" || b.trim().is_empty() { Err("the server returned nothing".to_string()) } else { Ok(b) })?;
+    let body = crate::net::post("downloadGJLevel22.php", &crate::gjapi::download_form(&crate::gjapi::identity(), id.parse().unwrap_or(0), true, &crate::gjapi::random_string(10))).await.and_then(|b| if b.trim() == "-1" || b.trim().is_empty() { Err("the server returned nothing".to_string()) } else { Ok(b) })?;
     let first = body.split('#').next().unwrap_or("");
     let m = pairs(first, ":");
     let data = m.get("4").map(|s| s.clone().into_bytes()).filter(|s| !s.is_empty()).ok_or("no level data")?;
@@ -312,10 +310,9 @@ pub fn download_full(id: i32) -> Result<(HashMap<String, String>, Vec<u8>), Stri
 }
 
 /// Download a level: its level data (key 4: base64 + gzip, what `decode_level_bytes` reads).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn download(id: i32) -> Result<Vec<u8>, String> {
+pub async fn download(id: i32) -> Result<Vec<u8>, String> {
     let id = id.to_string();
-    let body = crate::gjapi::post_raw("downloadGJLevel22.php", &crate::gjapi::download_form(&crate::gjapi::identity(), id.parse().unwrap_or(0), true, &crate::gjapi::random_string(10))).and_then(|b| if b.trim() == "-1" || b.trim().is_empty() { Err("the server returned nothing".to_string()) } else { Ok(b) })?;
+    let body = crate::net::post("downloadGJLevel22.php", &crate::gjapi::download_form(&crate::gjapi::identity(), id.parse().unwrap_or(0), true, &crate::gjapi::random_string(10))).await.and_then(|b| if b.trim() == "-1" || b.trim().is_empty() { Err("the server returned nothing".to_string()) } else { Ok(b) })?;
     let first = body.split('#').next().unwrap_or("");
     let m = pairs(first, ":");
     m.get("4").map(|s| s.clone().into_bytes()).filter(|s| !s.is_empty()).ok_or_else(|| "no level data".into())
@@ -323,14 +320,13 @@ pub fn download(id: i32) -> Result<Vec<u8>, String> {
 
 /// Today's daily (0), weekly (1) or event (2) level (`getGJDailyLevel.php`, then the level as id
 /// −1/−2/−3), its data and the seconds until the next one.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn daily(kind: i32) -> Result<(LevelInfo, Vec<u8>, i64), String> {
+pub async fn daily(kind: i32) -> Result<(LevelInfo, Vec<u8>, i64), String> {
     let ty = kind.to_string();
     // the schedule (`index|seconds left`); the servers may answer −1 and still have the level
-    let body = crate::gjapi::request("getGJDailyLevel.php", &format!("&type={ty}&secret={SECRET}")).unwrap_or_default();
+    let body = crate::gjapi::request("getGJDailyLevel.php", &format!("&type={ty}&secret={SECRET}")).await.unwrap_or_default();
     let left = body.split('|').nth(1).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
     let id = (-1 - kind).to_string();
-    let resp = crate::gjapi::post_raw("downloadGJLevel22.php", &crate::gjapi::download_form(&crate::gjapi::identity(), id.parse().unwrap_or(0), true, &crate::gjapi::random_string(10))).and_then(|b| if b.trim() == "-1" || b.trim().is_empty() { Err("the server returned nothing".to_string()) } else { Ok(b) })?;
+    let resp = crate::net::post("downloadGJLevel22.php", &crate::gjapi::download_form(&crate::gjapi::identity(), id.parse().unwrap_or(0), true, &crate::gjapi::random_string(10))).await.and_then(|b| if b.trim() == "-1" || b.trim().is_empty() { Err("the server returned nothing".to_string()) } else { Ok(b) })?;
     let sections: Vec<&str> = resp.split('#').collect();
     let m = pairs(sections.first().copied().unwrap_or(""), ":");
     let data = m.get("4").map(|s| s.clone().into_bytes()).filter(|s| !s.is_empty()).ok_or("no level data")?;
@@ -348,7 +344,7 @@ pub fn daily(kind: i32) -> Result<(LevelInfo, Vec<u8>, i64), String> {
     }
     let custom = m.get("35").and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
     if custom > 0 && !songs.contains_key(&custom.to_string()) {
-        if let Ok(song) = song_info(custom) {
+        if let Ok(song) = song_info(custom).await {
             songs.insert(custom.to_string(), song);
         }
     }
@@ -356,16 +352,10 @@ pub fn daily(kind: i32) -> Result<(LevelInfo, Vec<u8>, i64), String> {
 }
 
 /// A custom song's fields (`getGJSongInfo.php`: 1 id, 2 name, 4 artist, 5 size, 10 url).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn song_info(id: i32) -> Result<HashMap<String, String>, String> {
+pub async fn song_info(id: i32) -> Result<HashMap<String, String>, String> {
     let id = id.to_string();
-    let body = crate::gjapi::request("getGJSongInfo.php", &format!("&songID={id}&secret={SECRET}"))?;
+    let body = crate::gjapi::request("getGJSongInfo.php", &format!("&songID={id}&secret={SECRET}")).await?;
     Ok(pairs(body.trim_end_matches("~:~"), "~|~"))
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn daily(_kind: i32) -> Result<(LevelInfo, Vec<u8>, i64), String> {
-    Err("online levels need the relay (not on the web yet)".into())
 }
 
 /// A map pack (`getGJMapPacks21.php`): 1 id, 2 name, 3 level ids, 4 stars, 5 coins,
@@ -414,22 +404,15 @@ pub fn parse_packs(body: &str) -> (Vec<MapPack>, u32) {
     (packs, total)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub fn map_packs(page: u32) -> Result<(Vec<MapPack>, u32), String> {
+pub async fn map_packs(page: u32) -> Result<(Vec<MapPack>, u32), String> {
     let page = page.to_string();
-    let body = crate::gjapi::request("getGJMapPacks21.php", &format!("&page={page}&secret={SECRET}"))?;
+    let body = crate::gjapi::request("getGJMapPacks21.php", &format!("&page={page}&secret={SECRET}")).await?;
     Ok(parse_packs(&body))
 }
 
-#[cfg(target_arch = "wasm32")]
-pub fn map_packs(_page: u32) -> Result<(Vec<MapPack>, u32), String> {
-    Err("online levels need the relay (not on the web yet)".into())
-}
-
 /// The gauntlets (`getGJGauntlets21.php`, special=1): (type, level ids).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn gauntlets() -> Result<Vec<(i32, String)>, String> {
-    let body = crate::gjapi::request("getGJGauntlets21.php", &format!("&secret={SECRET}&special=1&vkey={}", crate::gjapi::BINARY_VERSION))?;
+pub async fn gauntlets() -> Result<Vec<(i32, String)>, String> {
+    let body = crate::gjapi::request("getGJGauntlets21.php", &format!("&secret={SECRET}&special=1&vkey={}", crate::gjapi::BINARY_VERSION)).await?;
     Ok(body
         .split('#')
         .next()
@@ -441,11 +424,6 @@ pub fn gauntlets() -> Result<Vec<(i32, String)>, String> {
             (m.get("1").and_then(|v| v.parse().ok()).unwrap_or(0), m.get("3").cloned().unwrap_or_default())
         })
         .collect())
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn gauntlets() -> Result<Vec<(i32, String)>, String> {
-    Err("online levels need the relay (not on the web yet)".into())
 }
 
 /// A leaderboard row (`getGJScores20.php`): 1 name, 2 player id, 3 stars, 4 demons, 6 rank,
@@ -494,15 +472,9 @@ pub fn parse_scores(body: &str) -> Vec<Score> {
 }
 
 /// `type`: top, relative (global, around you), creators; friends needs an account.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn scores(kind: &str) -> Result<Vec<Score>, String> {
-    let body = crate::gjapi::request("getGJScores20.php", &format!("&type={kind}&count=100&stat=0&secret={SECRET}"))?;
+pub async fn scores(kind: &str) -> Result<Vec<Score>, String> {
+    let body = crate::gjapi::request("getGJScores20.php", &format!("&type={kind}&count=100&stat=0&secret={SECRET}")).await?;
     Ok(parse_scores(&body))
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn scores(_kind: &str) -> Result<Vec<Score>, String> {
-    Err("online levels need the relay (not on the web yet)".into())
 }
 
 /// A level list (`getGJLevelLists.php`): 1 id, 2 name, 3 description, 7 difficulty,
@@ -548,29 +520,22 @@ pub fn parse_lists(body: &str) -> (Vec<LevelList>, u32) {
     (lists, total)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub fn level_lists(kind: i32, query: &str, page: u32) -> Result<(Vec<LevelList>, u32), String> {
+pub async fn level_lists(kind: i32, query: &str, page: u32) -> Result<(Vec<LevelList>, u32), String> {
     let (ty, page) = (kind.to_string(), page.to_string());
-    let body = crate::gjapi::request("getGJLevelLists.php", &format!("&str={}&type={ty}&page={page}&secret={SECRET}", crate::gjapi::field(query)))?;
+    let body = crate::gjapi::request("getGJLevelLists.php", &format!("&str={}&type={ty}&page={page}&secret={SECRET}", crate::gjapi::field(query))).await?;
     Ok(parse_lists(&body))
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn level_lists(_kind: i32, _query: &str, _page: u32) -> Result<(Vec<LevelList>, u32), String> {
-    Err("online levels need the relay (not on the web yet)".into())
 }
 
 /// The three quests (`getGJChallenges.php`): (type 1 orbs / 2 coins / 3 stars, amount,
 /// diamonds, name) and the seconds until new ones. The request and answer are XORed with
 /// "19847" and base64'd behind 5 salt characters (`GameLevelManager::getGJChallenges`).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn quests() -> Result<(Vec<(i32, i32, i32, String)>, i64), String> {
+pub async fn quests() -> Result<(Vec<(i32, i32, i32, String)>, i64), String> {
     fn xor(data: &[u8]) -> Vec<u8> {
         data.iter().enumerate().map(|(i, b)| b ^ b"19847"[i % 5]).collect()
     }
     // getGJChallenges: the base string, `&world=%i&gdl=%i&secret=%s&chk=%s`
     let chk = crate::gjapi::random_chk("19847");
-    let body = crate::gjapi::request("getGJChallenges.php", &format!("&world=0&gdl=0&secret={SECRET}&chk={chk}"))?;
+    let body = crate::gjapi::request("getGJChallenges.php", &format!("&world=0&gdl=0&secret={SECRET}&chk={chk}")).await?;
     let data = body.split('|').next().unwrap_or("");
     let data = data.get(5..).ok_or("short answer")?;
     let raw = cadence_core::codec::base64_decode(data).map_err(|e| e.to_string())?;
@@ -586,11 +551,6 @@ pub fn quests() -> Result<(Vec<(i32, i32, i32, String)>, i64), String> {
         })
         .collect();
     Ok((quests, left))
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn quests() -> Result<(Vec<(i32, i32, i32, String)>, i64), String> {
-    Err("online levels need the relay (not on the web yet)".into())
 }
 
 /// One news post (`/news/news.dat` on the game's content server: base64 + gzip of
@@ -649,15 +609,9 @@ pub fn parse_news(data: &str) -> Vec<News> {
         .collect()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub fn news() -> Result<Vec<News>, String> {
-    let resp = ureq::get("https://geometrydashfiles.b-cdn.net/news/news.dat").call().map_err(|e| e.to_string())?;
-    Ok(parse_news(&resp.into_string().map_err(|e| e.to_string())?))
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn news() -> Result<Vec<News>, String> {
-    Err("needs the relay".into())
+pub async fn news() -> Result<Vec<News>, String> {
+    let bytes = crate::net::get("https://geometrydashfiles.b-cdn.net/news/news.dat").await?;
+    Ok(parse_news(&String::from_utf8_lossy(&bytes)))
 }
 
 /// A level comment (`getGJComments21.php`): "2~text~3~player~4~likes~9~age~10~percent..." then
@@ -696,17 +650,11 @@ pub fn parse_comments(body: &str) -> (Vec<Comment>, u32) {
 }
 
 /// A level's comments, page `page` (mode 0 recent, 1 most liked).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn comments(level: i32, page: u32, liked: bool) -> Result<(Vec<Comment>, u32), String> {
+pub async fn comments(level: i32, page: u32, liked: bool) -> Result<(Vec<Comment>, u32), String> {
     let (id, page) = (level.to_string(), page.to_string());
     let mode = if liked { "1" } else { "0" };
-    let body = crate::gjapi::request("getGJComments21.php", &format!("&page={page}&total=0&secret={SECRET}&mode={mode}&levelID={id}&count=20"))?;
+    let body = crate::gjapi::request("getGJComments21.php", &format!("&page={page}&total=0&secret={SECRET}&mode={mode}&levelID={id}&count=20")).await?;
     Ok(parse_comments(&body))
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn comments(_level: i32, _page: u32, _liked: bool) -> Result<(Vec<Comment>, u32), String> {
-    Err("needs the relay".into())
 }
 
 /// A player's profile (`getGJUserInfo20.php` keys) and their posts.
@@ -729,13 +677,21 @@ pub struct Profile {
     pub posts: Vec<(String, i64, String)>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub fn profile(account: i64) -> Result<Profile, String> {
+pub async fn profile(account: i64) -> Result<Profile, String> {
     let id = account.to_string();
-    let body = crate::gjapi::request("getGJUserInfo20.php", &format!("&targetAccountID={id}&secret={SECRET}"))?;
-    let m = pairs(&body, ":");
+    let body = crate::gjapi::request("getGJUserInfo20.php", &format!("&targetAccountID={id}&secret={SECRET}")).await?;
+    let mut p = profile_from(&body);
+    if let Ok(body) = crate::gjapi::request("getGJAccountComments20.php", &format!("&accountID={id}&page=0&total=0&secret={SECRET}")).await {
+        p.posts = crate::social::parse_posts(&body).into_iter().map(|c| (c.text, c.likes, c.age)).collect();
+    }
+    Ok(p)
+}
+
+/// A `getGJUserInfo20.php` answer's fields.
+pub fn profile_from(body: &str) -> Profile {
+    let m = pairs(body, ":");
     let int = |k: &str| m.get(k).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
-    let mut p = Profile {
+    Profile {
         name: m.get("1").cloned().unwrap_or_default(),
         stars: int("3"),
         moons: int("52"),
@@ -749,26 +705,7 @@ pub fn profile(account: i64) -> Result<Profile, String> {
         color2: int("11") as usize,
         icons: [int("21"), int("22"), int("23"), int("24"), int("25"), int("26"), int("43"), int("53"), int("54")].map(|v| v.max(1) as u32),
         posts: Vec::new(),
-    };
-    if let Ok(body) = crate::gjapi::request("getGJAccountComments20.php", &format!("&accountID={id}&page=0&total=0&secret={SECRET}")) {
-        p.posts = body
-            .split('#')
-            .next()
-            .unwrap_or("")
-            .split('|')
-            .filter(|c| !c.is_empty())
-            .map(|c| {
-                let m = pairs(c, "~");
-                (b64_text(m.get("2").map_or("", |s| s.as_str())), m.get("4").and_then(|v| v.parse().ok()).unwrap_or(0), m.get("9").cloned().unwrap_or_default())
-            })
-            .collect();
     }
-    Ok(p)
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn profile(_account: i64) -> Result<Profile, String> {
-    Err("needs the relay".into())
 }
 
 /// Cadence's own cache folder (never the game's).
@@ -778,26 +715,71 @@ pub fn cache_dir() -> std::path::PathBuf {
     home.join("Library/Application Support/Cadence/songs")
 }
 
-/// A news picture (`news_9_3_b903b61e.jpg` from the news data), downloaded once from the news
-/// CDN and decoded (JPEG or PNG) to RGBA.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn news_image(file: &str) -> Result<crate::assets::Image, String> {
+/// The name the audio plays a downloaded custom song by: its file in the song cache on the
+/// desktop, `net/songs/<id>.mp3` in the page's sound store on the web.
+pub fn song_name(id: i32) -> String {
+    #[cfg(not(target_arch = "wasm32"))]
+    return cache_dir().join(format!("{id}.mp3")).to_string_lossy().into_owned();
+    #[cfg(target_arch = "wasm32")]
+    return format!("net/songs/{id}.mp3");
+}
+
+/// The same for a library sound effect (`s<id>.ogg`).
+pub fn sfx_name(id: i32) -> String {
+    #[cfg(not(target_arch = "wasm32"))]
+    return cache_dir().with_file_name("sfx").join(format!("s{id}.ogg")).to_string_lossy().into_owned();
+    #[cfg(target_arch = "wasm32")]
+    return format!("net/sfx/s{id}.ogg");
+}
+
+/// Whether a downloaded song or sound (by its `song_name` / `sfx_name`) is there to play.
+pub fn have(name: &str) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    return std::path::Path::new(name).exists();
+    #[cfg(target_arch = "wasm32")]
+    return crate::audio::web_has_file(name);
+}
+
+/// Keep a downloaded song or sound under its name.
+fn store(name: &str, bytes: Vec<u8>) -> Result<(), String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let path = std::path::Path::new(name);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(path, bytes).map_err(|e| e.to_string())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::audio::web_add_file(name, &bytes);
+        Ok(())
+    }
+}
+
+/// A news picture (`news_9_3_b903b61e.jpg` from the news data), downloaded from the news CDN
+/// (once, on the desktop) and decoded (JPEG or PNG) to RGBA.
+pub async fn news_image(file: &str) -> Result<crate::assets::Image, String> {
     if file.is_empty() || file.contains('/') || file.contains("..") {
         return Err(format!("bad news image name {file:?}"));
     }
-    let dir = cache_dir().with_file_name("news");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(file);
-    let bytes = match std::fs::read(&path) {
-        Ok(b) => b,
-        Err(_) => {
-            let resp = ureq::get(&format!("https://geometrydashfiles.b-cdn.net/news/{file}")).call().map_err(|e| e.to_string())?;
-            let mut b = Vec::new();
-            std::io::Read::read_to_end(&mut resp.into_reader(), &mut b).map_err(|e| e.to_string())?;
-            let _ = std::fs::write(&path, &b);
-            b
+    let url = format!("https://geometrydashfiles.b-cdn.net/news/{file}");
+    #[cfg(not(target_arch = "wasm32"))]
+    let bytes = {
+        let dir = cache_dir().with_file_name("news");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join(file);
+        match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => {
+                let b = crate::net::get(&url).await?;
+                let _ = std::fs::write(&path, &b);
+                b
+            }
         }
     };
+    #[cfg(target_arch = "wasm32")]
+    let bytes = crate::net::get(&url).await?;
     if file.ends_with(".png") {
         return crate::assets::decode_png(bytes, file);
     }
@@ -808,41 +790,21 @@ pub fn news_image(file: &str) -> Result<crate::assets::Image, String> {
     Ok(crate::assets::Image { width: w as u32, height: h as u32, rgba })
 }
 
-#[cfg(target_arch = "wasm32")]
-pub fn news_image(_file: &str) -> Result<crate::assets::Image, String> {
-    Err("needs the relay".into())
-}
-
 /// A sound effect from the game's SFX library (`/sfx/s<id>.ogg` on the files CDN, the one
-/// `sfxlibrary.dat` lists), downloaded once.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn sfx_file(id: i32) -> Result<std::path::PathBuf, String> {
-    let dir = cache_dir().with_file_name("sfx");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(format!("s{id}.ogg"));
-    if path.exists() {
-        return Ok(path);
+/// `sfxlibrary.dat` lists), downloaded once; its `sfx_name`.
+pub async fn sfx_file(id: i32) -> Result<String, String> {
+    let name = sfx_name(id);
+    if !have(&name) {
+        store(&name, crate::net::get(&format!("https://geometrydashfiles.b-cdn.net/sfx/s{id}.ogg")).await?)?;
     }
-    let resp = ureq::get(&format!("https://geometrydashfiles.b-cdn.net/sfx/s{id}.ogg")).call().map_err(|e| e.to_string())?;
-    let mut bytes = Vec::new();
-    std::io::Read::read_to_end(&mut resp.into_reader(), &mut bytes).map_err(|e| e.to_string())?;
-    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-    Ok(path)
+    Ok(name)
 }
 
-#[cfg(target_arch = "wasm32")]
-pub fn sfx_file(_id: i32) -> Result<std::path::PathBuf, String> {
-    Err("needs the relay".into())
-}
-
-/// A custom song's file, downloading it once (from the URL the search gave).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn song_file(id: i32, url: &str) -> Result<std::path::PathBuf, String> {
-    let dir = cache_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(format!("{id}.mp3"));
-    if path.exists() {
-        return Ok(path);
+/// A custom song, downloaded once (from the URL the search gave); its `song_name`.
+pub async fn song_file(id: i32, url: &str) -> Result<String, String> {
+    let name = song_name(id);
+    if have(&name) {
+        return Ok(name);
     }
     // a list entry without a usable URL (no scheme): ask getGJSongInfo for the song's own
     let looked_up;
@@ -850,14 +812,11 @@ pub fn song_file(id: i32, url: &str) -> Result<std::path::PathBuf, String> {
         url
     } else {
         crate::app::log(&format!("song {id}: list URL {url:?} has no scheme, asking getGJSongInfo"));
-        looked_up = song_info(id)?.get("10").map(|u| percent_decode(u)).filter(|u| u.contains("://")).ok_or("the song has no download URL")?;
+        looked_up = song_info(id).await?.get("10").map(|u| percent_decode(u)).filter(|u| u.contains("://")).ok_or("the song has no download URL")?;
         &looked_up
     };
-    let resp = ureq::get(url).call().map_err(|e| e.to_string())?;
-    let mut bytes = Vec::new();
-    std::io::Read::read_to_end(&mut resp.into_reader(), &mut bytes).map_err(|e| e.to_string())?;
-    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-    Ok(path)
+    store(&name, crate::net::get(url).await?)?;
+    Ok(name)
 }
 
 #[cfg(test)]
@@ -877,27 +836,6 @@ mod tests {
     }
 }
 
-// The web build reaches the servers through the relay (not deployed yet): these say so.
-#[cfg(target_arch = "wasm32")]
-pub fn search(_kind: Kind, _query: &str, _page: u32) -> Result<Vec<LevelInfo>, String> {
-    Err("online levels need the relay (not on the web yet)".into())
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn search_page(_s: &Search) -> Result<Page, String> {
-    Err("online levels need the relay (not on the web yet)".into())
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn download(_id: i32) -> Result<Vec<u8>, String> {
-    Err("online levels need the relay (not on the web yet)".into())
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn song_file(_id: i32, _url: &str) -> Result<std::path::PathBuf, String> {
-    Err("online levels need the relay (not on the web yet)".into())
-}
-
 /// With CADENCE_SEARCH="query|query|…": search the servers (most downloaded first) and print
 /// each level's id, objects, downloads and name (for finding test levels).
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -908,7 +846,7 @@ mod search_probe {
         for q in queries.split('|') {
             let mut s = super::Search::new(0);
             s.query = q.into();
-            match super::search_page(&s) {
+            match crate::net::block(super::search_page(&s)) {
                 Ok(p) => {
                     for l in p.levels {
                         eprintln!("{q:>14} | {:>10} | {:>8} obj | {:>9} dl | {}", l.id, l.objects, l.downloads, l.name);
@@ -931,7 +869,7 @@ mod save_levels {
     fn save() {
         let (Ok(ids), Ok(dir)) = (std::env::var("CADENCE_SAVE_LEVELS"), std::env::var("CADENCE_SAVE_DIR_LEVELS")) else { return };
         for id in ids.split(',').filter_map(|v| v.trim().parse::<i32>().ok()) {
-            match super::download(id) {
+            match crate::net::block(super::download(id)) {
                 Ok(bytes) => {
                     std::fs::write(format!("{dir}/{id}.txt"), &bytes).unwrap();
                     eprintln!("{id}: {} bytes", bytes.len());

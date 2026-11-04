@@ -46,6 +46,14 @@ pub fn base64_encode_url(data: &[u8]) -> String {
     URL_SAFE.encode(data)
 }
 
+/// Gzip `data` (what the game's saves and cloud backups hold, before base64).
+pub fn gzip(data: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let _ = e.write_all(data);
+    e.finish().unwrap_or_default()
+}
+
 /// Inflate gzip (`1f 8b`) or zlib data; anything else is returned unchanged.
 pub fn inflate(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
     let mut out = Vec::with_capacity(data.len() * 8);
