@@ -4240,7 +4240,7 @@ impl Ui {
                         let focused = self.trig_focus.as_ref().filter(|f| f.0 == key);
                         // decimals show two places, like the game's inputs ("0.50")
                         // a decimal field (its default has a point) always shows two places
-                        let decimal = defaults.iter().any(|d| d.0 == key && d.1.contains('.')) || replay::label_at(scene, x, y).is_some_and(|t| t.contains('.'));
+                        let decimal = replay::is_decimal(scene, key) || defaults.iter().any(|d| d.0 == key && d.1.contains('.'));
                         let text = match focused {
                             Some((_, t)) => format!("{t}_"),
                             None => match value(key).parse::<f32>() {

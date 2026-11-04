@@ -151,7 +151,7 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       song type, 2-player, [x] the channels' colors with the picker), [x] music in the
       editor, [x] trigger popups for the triggers without one (64 more, 126 in all),
       [x] Edit Special popups (1594 1704 1751 2063 2902 2903 3027), [ ] the particle
-      editor's fields (2065), [ ] decimal inputs shown as "1.00",
+      editor's fields (2065), [x] decimal inputs shown as "1.00" (D lines),
       [x] the color popups' picker drags (hue ring, saturation/brightness square → keys 7/8/9),
       [ ] trigger popups' sliders (each trigger's own slider ↔ value mapping).
 - [ ] Online menus: [x] User Search, [x] Lists search, [x] Advanced Options (filters;
@@ -159,6 +159,10 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       favorite / folder (saved levels kept), [x] My Levels My Server / Import (.gmd drop) /
       folders / find / select all, [x] The Safe. [ ] My Lists (level lists of your own),
       [x] Import on the web (a .gmd dropped on the page while playing).
+- [ ] Currencies: orbs, diamonds, keys, shards earned like the game's (GameStatsManager's
+      awards per level / chest / quest), then quests' progress and Claim, the Paths
+      (shards unlock and level them), the shops buying with orbs/diamonds, the chest
+      opening animation (RewardUnlockLayer).
 - [x] Icon kit: the effects pages (trails, death effects). [ ] ship fire / animations pages,
       [ ] the chosen death effect used when dying (PlayerObject::playDeathEffect 0x1a176c:
       2314 lines, per effect: playerExplosion_NN frames, delays, scales, circle waves, particles).

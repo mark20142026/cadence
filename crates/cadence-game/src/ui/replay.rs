@@ -381,12 +381,9 @@ pub fn draw_where(c: &mut Canvas, ctx: &mut Ctx, scene: Scene, keep: &dyn Fn(cha
     }
 }
 
-/// The captured text of the label at a point (an input's value as the game showed it).
-pub fn label_at(scene: Scene, x: f32, y: f32) -> Option<&'static str> {
-    scene.source().lines().find_map(|l| {
-        let w: Vec<&str> = l.splitn(13, ' ').collect();
-        (w.first() == Some(&"T") && (f(w.get(2)) - x).abs() < 2.0 && (f(w.get(3)) - y).abs() < 4.0).then(|| w.get(12).copied()).flatten()
-    })
+/// Whether a popup's input shows decimals (a D line: the game showed "1.00").
+pub fn is_decimal(scene: Scene, key: u16) -> bool {
+    scene.source().lines().any(|l| l.strip_prefix("D ").and_then(|k| k.trim().parse::<u16>().ok()) == Some(key))
 }
 
 /// Whether a layout draws this frame.

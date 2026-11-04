@@ -7,6 +7,7 @@ each input, toggle and slider edits, in screen points. This appends, for `ui/rep
   K key x y w h        a toggle (CCMenuItemToggler)
   L key x y min max    a slider (its thumb's track is 0..1 between min and max)
   V key value          the value the popup showed for a fresh trigger
+  D key                a decimal input (the game showed its value with a point: "1.00")
 Hidden nodes (other pages) are left out."""
 import sys
 
@@ -33,11 +34,18 @@ def main():
         elif w[0] in ("min", "max", "value") and len(w) == 3:
             {"min": mins, "max": maxs, "value": values}[w[0]][int(w[1])] = w[2]
     out = []
+    decimal = set()
     for line in open(layout_path).read().split("\n"):
         f = line.split()
+        if f and f[0] == "D":
+            decimal.add(int(f[1]))
+            continue
         if f and f[0] == "T":
             x, y = float(f[2]), float(f[3])
-            if any(abs(x - ix) <= iw / 2 and abs(y - iy) <= ih / 2 - 4 for _, ix, iy, iw, ih in inputs):
+            inside = [k for k, ix, iy, iw, ih in inputs if abs(x - ix) <= iw / 2 and abs(y - iy) <= ih / 2 - 4]
+            if inside:
+                if "." in " ".join(f[12:]):
+                    decimal.update(inside)
                 continue
         if line:
             out.append(line)
@@ -49,6 +57,8 @@ def main():
         out.append(f"L {key} {x:.2f} {y:.2f} {mins.get(key, '0')} {maxs.get(key, '1')}")
     for key, v in sorted(values.items()):
         out.append(f"V {key} {v}")
+    for key in sorted(decimal):
+        out.append(f"D {key}")
     open(layout_path, "w").write("\n".join(out) + "\n")
     print(f"{layout_path}: {len(inputs)} inputs, {len(toggles)} toggles, {len(sliders)} sliders, {len(values)} values")
 
