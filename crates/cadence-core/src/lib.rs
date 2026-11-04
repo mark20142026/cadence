@@ -11,6 +11,7 @@ pub mod easing;
 pub mod enter;
 pub mod gradients;
 pub mod groups;
+pub mod keyframes;
 pub mod level;
 pub mod objects;
 pub mod order;

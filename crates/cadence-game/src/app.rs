@@ -1743,7 +1743,8 @@ impl App {
                 // emitters, text, counters...) use an editor button as their sprite, which the
                 // game never shows in play. Text, counters and particle emitters draw something
                 // else instead (not ported yet).
-                if !in_editor && v.sprites.first().is_some_and(|s| s.frame.starts_with("edit_")) && obj.id() != 914 {
+                // Keyframe objects (3032) are the editor's markers of an animation path.
+                if !in_editor && ((v.sprites.first().is_some_and(|s| s.frame.starts_with("edit_")) && obj.id() != 914) || obj.id() == 3032) {
                     continue;
                 }
                 // Hidden objects (key 135, m_isHide) collide but are never drawn.

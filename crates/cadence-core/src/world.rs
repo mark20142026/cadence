@@ -285,6 +285,8 @@ pub struct World {
     /// Advanced follow (advfollow.rs), and what it follows besides groups: player 2 and the
     /// camera (the drivers tell the world, `observe`).
     pub adv: crate::advfollow::AdvFollow,
+    /// Keyframe animations (keyframes.rs).
+    pub keyframes: crate::keyframes::Keyframes,
     pub player2_pos: Option<(f32, f32)>,
     pub camera_pos: (f32, f32),
 }
@@ -464,8 +466,25 @@ impl World {
                 | crate::groups::Action::Reverse
                 | crate::groups::Action::Enter { .. }
                 | crate::groups::Action::EnterStop { .. }
-                | crate::groups::Action::KeyframeAnim { .. }
                 | crate::groups::Action::Effect { .. } => {}
+                crate::groups::Action::KeyframeAnim { order } => {
+                    // the animated group, and the keyframe objects' groups
+                    if let Some(raw) = level.objects.get(order as usize) {
+                        if let Some(g) = raw.get_i32(51).filter(|&g| g > 0) {
+                            moving_groups.insert(g);
+                            members.entry(g).or_default();
+                        }
+                        if let Some(g) = raw.get_i32(76).filter(|&g| g > 0) {
+                            members.entry(g).or_default();
+                        }
+                    }
+                    for o in level.objects.iter().filter(|o| o.id() == 3032) {
+                        if let Some(g) = o.get_i32(51).filter(|&g| g > 0) {
+                            moving_groups.insert(g);
+                            members.entry(g).or_default();
+                        }
+                    }
+                }
                 crate::groups::Action::AdvFollow { order } | crate::groups::Action::AdvFollowEdit { order } => {
                     // the followed group and the moved group
                     if let Some(raw) = level.objects.get(order as usize) {
@@ -714,6 +733,7 @@ impl World {
             restored: Vec::new(),
             restore_count: 0,
             adv: crate::advfollow::AdvFollow::new(level),
+            keyframes: crate::keyframes::Keyframes::new(level),
             player2_pos: None,
             camera_pos: (0.0, 0.0),
         };
@@ -854,7 +874,7 @@ impl World {
                 self.set_level_pos(order as usize, pos, 0.0);
             }
         }
-        if self.triggers.commands.is_empty() {
+        if self.triggers.commands.is_empty() && self.keyframes.commands.is_empty() {
             self.process_adv_follow();
             self.process_area_moves();
             return;
@@ -910,6 +930,40 @@ impl World {
                     m.2 += dy;
                 }
                 None => moves.push((cmd.spec.group, dx, dy)),
+            }
+        }
+        // keyframe commands (mode 5 in prepareMoveActions): a move into the group's sum, a turn
+        // and a scale about the group's main object
+        if !self.keyframes.commands.is_empty() {
+            let mut spawns = Vec::new();
+            for k in self.keyframe_step(dt as f64) {
+                if k.mv != (0.0, 0.0) {
+                    match moves.iter_mut().find(|m| m.0 == k.group) {
+                        Some(m) => {
+                            m.1 += k.mv.0 as f64;
+                            m.2 += k.mv.1 as f64;
+                        }
+                        None => moves.push((k.group, k.mv.0 as f64, k.mv.1 as f64)),
+                    }
+                }
+                if k.turn != 0.0 {
+                    match turns.iter_mut().find(|t| t.0 == k.group && t.1 == k.group) {
+                        Some(t) => t.2 += k.turn,
+                        None => turns.push((k.group, k.group, k.turn, false)),
+                    }
+                }
+                if let Some((rx, ry)) = k.scale {
+                    scales.push((k.group, k.group, rx as f32, ry as f32, false));
+                }
+                spawns.extend(k.spawns);
+            }
+            if !spawns.is_empty() {
+                let actions: Vec<_> = spawns
+                    .into_iter()
+                    .map(|(group, delay)| (crate::groups::Action::Spawn { group, delay, ordered: false, remap: 0 }, Vec::new()))
+                    .collect();
+                let actions = self.triggers.expand_public(actions, &self.enabled);
+                self.apply(actions);
             }
         }
         for (group, center, rx, ry, only_move) in scales {
@@ -1669,7 +1723,7 @@ impl World {
                     crate::groups::Action::EnterStop { channel, mode, effect_id } => self.enter.stop(channel, mode, effect_id),
                     crate::groups::Action::AdvFollow { order } => self.adv_fire(order),
                     crate::groups::Action::AdvFollowEdit { order } => self.adv_edit(order),
-                    crate::groups::Action::KeyframeAnim { .. } => {}
+                    crate::groups::Action::KeyframeAnim { order } => self.keyframe_fire(order),
                 }
             }
         }

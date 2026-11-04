@@ -1053,18 +1053,31 @@ fn rects(level: &str) -> Result<(), Box<dyn std::error::Error>> {
 fn features(level: &str) -> Result<(), Box<dyn std::error::Error>> {
     use cadence_core::objects::{self, ObjectType};
     use std::collections::BTreeMap;
-    let level_path = format!("{}/levels/{}.txt", gd_resources(), level);
-    let level = LevelString::parse(&decode_level_bytes(&std::fs::read(&level_path)?)?);
+    // a main level's id, or a level file (a downloaded level or a raw level string)
+    let level_path = if std::path::Path::new(level).is_file() { level.to_string() } else { format!("{}/levels/{}.txt", gd_resources(), level) };
+    let bytes = std::fs::read(&level_path)?;
+    let text = String::from_utf8_lossy(&bytes);
+    let level = if text.contains(";1,") && !text.trim_start().starts_with("H4sI") { LevelString::parse(&text) } else { LevelString::parse(&decode_level_bytes(&bytes)?) };
     let handled_kinds = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29, 32, 34, 35, 37, 38, 47];
-    let handled_triggers = [
+    // every trigger the world, the camera or the order walk runs (groups.rs, camera.rs,
+    // order.rs), and the editor-only / inert ones (1931 end and 3655 do nothing in play, 2016
+    // camera guide and 3642 BPM are editor guides)
+    let mut handled_triggers = vec![
         29, 30, 31, 104, 105, 200, 201, 202, 203, 221, 717, 718, 743, 744, 899, 900, 901, 915, 1049, 1268, 1334,
         1346, 1347, 1611, 1616, 1913, 1914, 1916, 1935, 2899, 2900, 2902, 3600,
+        1595, 1612, 1613, 1811, 1812, 1814, 1815, 1816, 1817, 1818, 1819, 1912, 1917, 1931, 1932, 1934, 2015, 2016,
+        2062, 2063, 2066, 2067, 2068, 2901, 2925, 3016, 3022, 3023, 3024, 3032, 3033, 3602, 3603, 3604, 3605, 3606,
+        3607, 3608, 3609, 3612, 3613, 3614, 3615, 3617, 3618, 3619, 3620, 3640, 3641, 3642, 3655, 3660, 3661, 3662,
+        3663,
     ];
+    handled_triggers.extend(3006..=3010);
+    handled_triggers.extend(3017..=3021);
+    handled_triggers.extend(3029..=3031);
     // Triggers that only change how things look or sound (enter effects 22–28 and 55–59, trail
     // 32/33, pulse 1006, alpha 1007, gradient 2903, shaders 2904–2924, middle ground 2999,
     // background/ground/middle-ground swaps 3029–3031, sound effects 3602/3603): listed apart,
     // they don't affect the physics.
-    let mut visual_triggers = vec![22, 23, 24, 25, 26, 27, 28, 32, 33, 55, 56, 57, 58, 59, 1006, 1007, 1520, 1585];
+    let mut visual_triggers = vec![22, 23, 24, 25, 26, 27, 28, 32, 33, 55, 56, 57, 58, 59, 1006, 1007, 1520, 1585, 1915];
     visual_triggers.extend(2903..=2924);
     visual_triggers.extend([2999, 3029, 3030, 3031, 3602, 3603]);
     let mut kinds: BTreeMap<i32, (usize, BTreeMap<i32, usize>)> = BTreeMap::new();
