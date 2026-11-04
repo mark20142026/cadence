@@ -804,7 +804,7 @@ void openGui(std::string const& name) {
         }
     } else if (name == "colors") {
         CCDirector::get()->replaceScene(GJGarageLayer::scene());
-        g_guiTab = 100;  // open the paint page once the kit is up
+        g_guiTab = 200;  // open the paint page once the kit is up
     } else if (name.rfind("garage", 0) == 0) {
         CCDirector::get()->replaceScene(GJGarageLayer::scene());
         g_guiTab = name.size() > 6 ? std::atoi(name.c_str() + 6) : -1;
@@ -816,7 +816,7 @@ void openGui(std::string const& name) {
             for (auto k : {"16", "17", "18", "19", "20", "23", "24", "25", "26", "27"}) GameStatsManager::sharedState()->setStat(k, 40);
         }
         CCDirector::get()->replaceScene(GJGarageLayer::scene());
-        g_guiTab = 101;  // open the shards page once the kit is up
+        g_guiTab = 201;  // open the shards page once the kit is up
     } else if (name == "towerinner") {
         CCDirector::get()->replaceScene(LevelAreaInnerLayer::scene(false));
     } else if (name.rfind("shop", 0) == 0) {
@@ -1062,8 +1062,8 @@ void stepGui() {
     else if (g_guiFrame == lead + 90 && g_guiTab >= 0) {
         if (auto garage = CCDirector::get()->getRunningScene()->getChildByType<GJGarageLayer>(0)) {
             // GJGarageLayer::onPaint (0x2e4cb0; not exported here)
-            if (g_guiTab == 100) reinterpret_cast<void (*)(GJGarageLayer*, CCObject*)>(geode::base::get() + 0x2e4cb0)(garage, nullptr);
-            else if (g_guiTab == 101) garage->onShards(nullptr);
+            if (g_guiTab == 200) reinterpret_cast<void (*)(GJGarageLayer*, CCObject*)>(geode::base::get() + 0x2e4cb0)(garage, nullptr);
+            else if (g_guiTab == 201) garage->onShards(nullptr);
             else garage->selectTab(static_cast<IconType>(g_guiTab));
         }
         g_guiTab = -1;
@@ -1082,6 +1082,49 @@ void stepGui() {
         log::info("gui: {} menu items, pressing {}", items.size(), g_guiItem);
         if (g_guiItem < int(items.size())) items[g_guiItem]->activate();
         g_guiItem = -1;
+    }
+    else if (g_guiLate >= 60 && name.find("/probe:") != std::string::npos
+             && (g_guiFrame == lead + g_guiShotFrame - g_guiLate + 10 || g_guiFrame == lead + g_guiShotFrame - g_guiLate + 30 || g_guiFrame == lead + g_guiShotFrame - 2)) {
+        // .../probe:N/late:M: every visible text input of the newest layer set to 100 + its
+        // index, every toggle whose index has bit N flipped, then OK, then the selected
+        // object's save string (.probe) — which value each field of a popup writes
+        int bit = std::atoi(name.c_str() + name.find("/probe:") + 7);
+        auto lel = CCDirector::get()->getRunningScene()->getChildByType<LevelEditorLayer>(0);
+        auto kids = CCDirector::get()->getRunningScene()->getChildren();
+        CCNode* top = kids && kids->count() ? static_cast<CCNode*>(kids->objectAtIndex(kids->count() - 1)) : nullptr;
+        if (g_guiFrame == lead + g_guiShotFrame - g_guiLate + 10 && top) {
+            std::vector<CCTextInputNode*> inputs;
+            std::vector<CCMenuItemToggler*> toggles;
+            std::function<void(CCNode*)> walk = [&](CCNode* nd) {
+                for (auto c : CCArrayExt<CCNode*>(nd->getChildren())) {
+                    if (!c->isVisible()) continue;
+                    if (auto t = typeinfo_cast<CCTextInputNode*>(c)) inputs.push_back(t);
+                    if (auto t = typeinfo_cast<CCMenuItemToggler*>(c)) toggles.push_back(t);
+                    walk(c);
+                }
+            };
+            walk(top);
+            FILE* out = std::fopen((path + ".fields").c_str(), "w");
+            for (size_t i = 0; i < inputs.size(); i++) {
+                auto w = inputs[i]->convertToWorldSpaceAR({0, 0});
+                inputs[i]->setString(std::to_string(100 + i));
+                if (inputs[i]->m_delegate) inputs[i]->m_delegate->textChanged(inputs[i]);
+                if (out) std::fprintf(out, "input %zu %.1f %.1f\n", i, w.x, w.y);
+            }
+            for (size_t i = 0; i < toggles.size(); i++) {
+                auto w = toggles[i]->convertToWorldSpaceAR({0, 0});
+                if (out) std::fprintf(out, "toggle %zu %.1f %.1f %d\n", i, w.x, w.y, int((i >> bit) & 1));
+                if ((i >> bit) & 1) toggles[i]->activate();
+            }
+            if (out) std::fclose(out);
+        } else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate + 30) {
+            pressLabel("OK");
+        } else if (lel && lel->m_editorUI->m_selectedObject) {
+            if (FILE* out = std::fopen((path + ".probe").c_str(), "w")) {
+                std::fprintf(out, "%s\n", std::string(lel->m_editorUI->m_selectedObject->getSaveString(lel)).c_str());
+                std::fclose(out);
+            }
+        }
     }
     else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - 2 && name.find("/toggleall") != std::string::npos) {
         // every toggle of the newest popup, one at a time: its position, then the selected

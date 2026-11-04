@@ -219,21 +219,56 @@ impl Garage {
         }
 
         match self.view {
-            View::Icons => self.draw_icons(c, ctx, set),
+            View::Icons => self.draw_icons(c, ctx, set, p),
             // the color page is a popup over the kit
             View::Colors(which) => {
                 let mut under = Vec::new();
-                self.draw_icons(c, &mut Ctx { press: ctx.press, buttons: &mut under }, set);
+                self.draw_icons(c, &mut Ctx { press: ctx.press, buttons: &mut under }, set, p);
                 draw_colors(c, ctx, set, which);
             }
         }
     }
 
-    fn draw_icons(&self, c: &mut Canvas, ctx: &mut Ctx, set: &IconSet) {
+    fn draw_icons(&self, c: &mut Canvas, ctx: &mut Ctx, set: &IconSet, p: &Progress) {
         let (w, h) = (c.width, c.height);
         let (cx, cy) = (w * 0.5, h * 0.5);
         c.sprite("GJ_unlockTxt_001.png", cx, cy - 3.0, Look::default());
         c.nine_slice("square02_001.png", cx, cy - 65.0, 385.0, 100.0, Look::default().rgb([0, 0, 0]).alpha(75));
+        // the special tab: trails, ship fires and the items, a row each; the death effects'
+        // tab ends with Explode
+        if KINDS[self.kind].0 == "streak" {
+            for id in 1..=KINDS[self.kind].2 {
+                let (x, y) = (cx - 165.0 + (id - 1) as f32 * 30.0, cy - 35.0);
+                c.sprite(&format!("player_special_{id:02}_001.png"), x, y, Look::scaled(0.8));
+                ctx.area(Btn::GarageIcon((id - 1) as u8), x, y, 28.0, 28.0);
+                if set.ids[self.kind] == id {
+                    c.sprite("GJ_select_001.png", x, y, Look::scaled(0.85));
+                }
+            }
+            let fire = p.number("shipfire", 1.0) as u32;
+            for id in 1..=6u32 {
+                let (x, y) = (cx - 165.0 + (id - 1) as f32 * 30.0, cy - 65.0);
+                c.sprite(&format!("shipfireIcon_{id:02}_001.png"), x, y, Look::scaled(0.8));
+                ctx.area(Btn::GarageFire(id as u8), x, y, 28.0, 28.0);
+                if fire == id {
+                    c.sprite("GJ_select_001.png", x, y, Look::scaled(0.85));
+                }
+            }
+            for (k, id) in [18u32, 19, 20].into_iter().enumerate() {
+                let (x, y) = (cx - 165.0 + k as f32 * 30.0, cy - 95.0);
+                c.sprite(&format!("gjItem_{id:02}_001.png"), x, y, Look::scaled(0.8));
+                ctx.area(Btn::GarageItem(id as u8), x, y, 28.0, 28.0);
+                if p.flag(&format!("item {id}")) {
+                    c.sprite("GJ_select_001.png", x, y, Look::scaled(0.85));
+                }
+            }
+            return;
+        }
+        if KINDS[self.kind].0 == "explosion" {
+            let on = p.var("deathexplode", true);
+            ctx.button(c, Btn::GarageExplode, if on { "GJ_checkOn_001.png" } else { "GJ_checkOff_001.png" }, cx - 165.0, cy - 95.0, Look::scaled(0.6), 1.3);
+            c.text("goldFont", "Explode", cx - 146.5, cy - 95.0, Look::scaled(0.5).anchor(0.0, 0.5));
+        }
         let first = self.page * PER_PAGE + 1;
         let last = KINDS[self.kind].2;
         for slot in 0..PER_PAGE {

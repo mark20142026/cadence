@@ -433,6 +433,9 @@ pub enum Btn {
     PartZoom(u8),
     PartCopy,
     PartPaste,
+    GarageFire(u8),
+    GarageItem(u8),
+    GarageExplode,
     DailySafe,
     DailyPlay,
     // editor::Editor
@@ -2637,6 +2640,25 @@ impl Ui {
             Btn::RewardCollect => self.unlock = None,
             Btn::KeysClose => self.keys = None,
             Btn::ShardsClose => self.shards_page = None,
+            // the icon kit's special tab: the ship's fire, the items; the death effects' Explode
+            Btn::GarageFire(n) => {
+                self.progress.set_number("shipfire", n as f32);
+                self.progress.save();
+            }
+            Btn::GarageItem(n) => {
+                let f = format!("item {n}");
+                if self.progress.flag(&f) {
+                    self.progress.flags.remove(&f);
+                } else {
+                    self.progress.set_flag(&f);
+                }
+                self.progress.save();
+            }
+            Btn::GarageExplode => {
+                let on = self.progress.var("deathexplode", true);
+                self.progress.set_var("deathexplode", !on);
+                self.progress.save();
+            }
             // the particle editor's C / P: its settings kept for another particle object
             Btn::PartCopy => {
                 if let Some(pe) = &self.particle_ed {
