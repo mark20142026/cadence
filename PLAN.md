@@ -119,57 +119,35 @@ Added the same day:
 
 Mark: every item the README listed as missing gets done for 0.0.2. Tick items here as they land.
 
-- [x] Web online play: Cloudflare Worker relay (pass-through, no logging, CORS) + requests as
-      async (`net::post`): desktop runs them on a thread, the browser through the relay.
-- [ ] Accounts in the menus:
-      [x] register, account help, cloud Load/Save (merge, values only go up)
-      [x] main-menu profile button; own profile (stats, icons, posts: post/delete/like),
-          Friends (+ blocked), Friend Requests (received/sent: accept, remove), Account
-          Settings (update), message to a player (legacy uploadGJMessage20)
-      [x] level page: like/dislike, comment (with your best %), report
-      [x] chests: state, timers, open (orbs/diamonds into Cadence's stats)
-      [x] level upload: Share popup (request stars, notify), verify by completing from the
-          level's page, empty/unverified/account checks, update keeps the id; [ ] its Options
-          (unlisted / friends only) and "!" buttons
-      [x] rate difficulty (unrated levels: 1–10 stars → rateGJStars211), [x] user search,
-      [ ] rate demon,
-          comment history, quests claim, the chest-opening animation (RewardUnlockLayer),
-          [x] Messages (the legacy "Old Messages": list, read, reply, delete, sent);
-          [ ] the newer threads page (getGJThreads answer format), [ ] notifications' rows
-          (the page and its states are there), Following / Muted lists, level leaderboards (getGJLevelScores211's
-          chk: salt yPg6pUrtWn0J + s7, values and key not pinned yet)
-- [x] Triggers (agent, merged): Advanced Follow + Edit + Re-target, Keyframes, enter effects
-      (3017–3023, 1915, old 22–28/55–59), Gameplay Offset, Camera Edge/Mode, Reverse, Random,
-      Area Stop, Reset, Persistent Item, Progress, BG Effect, BG/MG speed, Touch, Spawn Particle,
-      Checkpoint, Edit SFX/Song; 1931/3655 confirmed inert; 2016/3642 editor-only. Checked
-      against real-game traces (advanced follow, keyframes, enter effects, camera, reverse).
-      [x] the game's random rolls (fast_rand, traced with a fixed seed), [x] camera key 370,
-      [x] area tint HSV mode (enter tint's was ported), [x] area triggers fire by position,
-      [x] the 2016/3642 guide overlays in the editor. Still open: group parents/linked objects
-      in advanced follow & area, keyframe curves / reference-only / closed loops, edit
-      SFX/song speed and proximity.
-- [ ] Editor: [x] pause menu options (settings, export, auto-save, get audio, …), [x] edit
-      tools (grid, wrench, color), [x] level page tools, [x] level settings buttons (font,
-      song type, 2-player, [x] the channels' colors with the picker), [x] music in the
-      editor, [x] trigger popups for the triggers without one (64 more, 126 in all),
-      [x] Edit Special popups (1594 1704 1751 2063 2902 2903 3027), [ ] the particle
-      editor's fields (2065), [x] decimal inputs shown as "1.00" (D lines),
-      [x] the color popups' picker drags (hue ring, saturation/brightness square → keys 7/8/9),
-      [ ] trigger popups' sliders (each trigger's own slider ↔ value mapping).
-- [ ] Online menus: [x] User Search, [x] Lists search, [x] Advanced Options (filters;
-      [ ] layout from a capture), [x] level page Clone / Options / Delete / Refresh /
-      favorite / folder (saved levels kept), [x] My Levels My Server / Import (.gmd drop) /
-      folders / find / select all, [x] The Safe. [ ] My Lists (level lists of your own),
-      [x] Import on the web (a .gmd dropped on the page while playing).
-- [ ] Currencies: orbs, diamonds, keys, shards earned like the game's (GameStatsManager's
-      awards per level / chest / quest), then quests' progress and Claim, the Paths
-      (shards unlock and level them), the shops buying with orbs/diamonds, the chest
-      opening animation (RewardUnlockLayer).
-- [x] Icon kit: the effects pages (trails, death effects). [ ] ship fire / animations pages,
-      [x] the chosen death effect used when dying (PlayerObject::playDeathEffect 0x1a176c:
-      all 20 checked against real captures, `CADENCE_CHECK_DEATH`).
-- [x] Odds: the flying-corridor camera (cadence_core::camera's corridor slide-in and static y,
-      ported from the decompile), platformer slope angle (m_slopeAngle from the slope ridden;
-      verify_all unchanged at 111/126, [x] platformer-slope trace recorded: re/traces/pfslope,
-      [ ] it differs from step 259: uphill the real speed falls faster, see JOURNAL).
-- [ ] Each piece checked against the real game (harness in corner mode only), tests, docs.
+- [x] Web online play: Cloudflare Worker relay + async requests (`net.rs`).
+- [x] Accounts: register, account help, cloud Load/Save (merge), profile button, own profile and
+      posts, Friends / Blocked / Following / Muted (getGJUserList20 types 0–3), follow /
+      unfollow / mute, Friend Requests, Account Settings, Old Messages (list, read, reply,
+      delete, sent), likes, comments, reports, rate stars / demon, level upload with Share
+      (options, rules), comment history, quests, chests, level leaderboards (getGJLevelScores211,
+      chk pinned from a recorded request), Scores ranked by stat.
+- [x] Currencies: orbs, diamonds (stat 13 total, 29 to spend), keys, shards; shops (all 283
+      store items, Buy Item popup, GS_6); Paths of Power (unlock, active path, ranks, chest);
+      chests open with RewardUnlockLayer; Treasure Room (5 pages, 634 chests, bonuses, gold
+      chest, ropes to the shops); Shards of Power (4 pages); achievement banners; gauntlet
+      chests.
+- [x] Keybindings: the game's 214 actions in its tabs, defaults, Edit Keybind capture, search,
+      export / import / reset; play and the editor follow them.
+- [x] Editor: pause menu options, edit tools, level page tools, level settings (channels with
+      the picker), music, 126 trigger popups with their sliders, Edit Special popups, the
+      particle editor (all four tabs, probed in the real game), decimal inputs, guide overlays
+      (2016 / 3642), Edit Object / Edit Special do nothing on objects without them (grayed in
+      the game).
+- [x] Online menus: User Search, Lists search, Advanced Options, level page tools, My Levels
+      tools, The Safe, web import.
+- [x] Icon kit: trails, ship fires, the special items, death effects (1–20, ported and checked
+      frame by frame) with Explode.
+- [x] Triggers: advanced follow, keyframes, enter effects, the game's random generator, camera
+      key 370 (portals), area HSV, area triggers by position.
+- [ ] Still open (in progress): the newer threads messaging (getGJThreads and its popups) and
+      notifications (getGJNotifications) — their answer formats aren't pinned (no real account
+      to record against); My Lists (level lists of your own: LevelListLayer, uploadGJLevelList);
+      the simulation agent's items (platformer slope deceleration, keyframe curves / reference /
+      loops, group parents in advanced follow and areas, Edit SFX/Song speed and proximity, dual
+      mode player 2 death and the death fade, ship fire in play, Explode off, camera mode 370,
+      player-color blocks under area HSV).

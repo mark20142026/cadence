@@ -1016,3 +1016,39 @@ untouched), home re/home (re/home-anon for the editor).
   pass; cam370 matches every position but its ship start's visual rotation at step 0 (as other
   ship-start levels); pfslope fails as above). `cargo test --workspace --release` green (53 core,
   47 game).
+
+## 2026-11-04/05 — v0.0.2: shops, paths, chests, treasure room, keybindings, particle editor
+
+- Shops: `ui/shop.rs` — all 283 items from `GameStatsManager::createStoreItems` (insertion
+  order = the shop's order), eight a page; `PurchaseItemPopup` (captured) for Mana Orbs (stat
+  14) or Diamond Shards (stat 29, the spendable diamonds; 13 stays the total); bought items
+  darkened in the shop's color (`darkenStoreItem`'s table) and kept like `GS_6`. The community
+  shop's room is `CCSpriteWithHue`: a hue turn in the sprite shader (`Look::hue`, 1000 + degrees
+  in the triangle-flag slot); the real pixels are the channels turned by exactly −120°.
+- Paths of Power (`ui/paths.rs`): store items 121–130 (25,000 orbs, "unlock" wording), path
+  stats 30–39 up to 1000, the active path (`trySelectActivePath`), ranks = the path
+  achievements' rewards, the chest at 1000 (`pr_N`, dumped). Harness `dump:chests` writes every
+  special and treasure-room chest; `chests_table.rs` is generated from it.
+- `RewardUnlockLayer` (`ui/reward.rs`): drop with bounce, shakes, open, rewards out one by one,
+  the sounds at their times; `AchievementBar` banners for newly unlocked achievements.
+- Treasure Room (`ui/treasure.rs`, `scenes/treasure0–4.txt` built from five captures): tiers
+  cost 1/5/10/25/50/100 keys, bonuses at 50/100/200 opened, the gold chest (stat 43), ropes to
+  the shops. The door opens at 5 keys.
+- Keybindings (`ui/keybinds.rs`): `dump:keybinds` gave the 214 actions, names and default
+  chords; the tab table is `actionsToShow`'s at 0x1008fa5d8. Capture popup, settings popup
+  (Export / Import / Reset). Play and the editor go through the bindings.
+- Shards of Power (`ui/shards.rs`): the shard achievements (5/15/35/65/100) are the icons.
+- Trigger popups' sliders: the n-th L line runs along the n-th groove (the L coordinates from
+  the keys dump are not the groove's).
+- Particle editor (`ui/particle.rs`): the harness `probe:N` sets every input to 100 + index and
+  flips the toggles with bit N, presses OK and reads the object back — the field map for all
+  four tabs (Extra: 41–44, 59–62, 68–71; toggles 52–56, 58, 63–67; keys 146/147/123/214/211).
+- Level leaderboards: the chk is account, level, percent, attempt time, clicks, attempts, three
+  zeros (time / plat / points on classic levels), the daily id, then `yPg6pUrtWn0J` + s7, xor
+  "39673" — pinned with a recorded request whose fields were all different
+  (`CADENCE_LB_VALUES`).
+- Following / Muted are `getGJUserList20` types 2 / 3; follow, unfollow and mute have their own
+  endpoints (strings at 0x1008… next to `getGJFollowing.php`).
+- Harness: `/late:N`, `@last` for frame presses, `/then3frame:`, presses skip achievement
+  banners, `paths…`, `shop…$`, `shards$`, `secretrewards/…`, `keys:add/edit/settings`,
+  `/toggleall`, `/probe:N`, `dump:chests`, `dump:keybinds`.

@@ -8,29 +8,34 @@ or endorsed by RobTop Games.
 
 ## Status
 
-Early development (v0.0.x). What works:
+Early development (v0.0.2). What works:
 
 - The main levels and The Tower play with the original physics: player positions match the real
   game step for step on the recorded routes (`tools/verify_all.sh`).
-- The menus: level select, settings (all pages), icon kit, shops, vaults (with their codes),
-  achievements, stats, news.
-- Online levels: search (with the demon difficulty filter), the quick searches, map packs,
-  gauntlets, lists, the daily/weekly/event levels, level pages, comments, profiles,
-  leaderboards. Every request is built like the game's own, byte for byte (checked against
-  requests recorded from the real game).
-- Accounts (in progress): logging in works (Settings → Account → Log in; GJP2 only, the password
-  is never stored or sent). Likes, comments, uploads and reward claims are built and tested
-  against the real game's requests but not yet in the menus; cloud Save/Load stay off until
-  Cadence's progress can be written in the game's save format. Writes will be opt-in.
+- The menus: level select, settings (all pages), keybindings (every action of the game,
+  rebindable, export / import), icon kit (with the trails, ship fires and death effects pages),
+  shops (buy with Mana Orbs and Diamond Shards), Paths of Power, Shards of Power, the Treasure
+  Room (chests opened with keys), vaults (with their codes), achievements (with their banners),
+  stats, news, quests.
+- Currencies earned like the game's: orbs, diamonds, keys, shards; chests open with the game's
+  animation.
+- Online levels: search (all filters), the quick searches, map packs, gauntlets (with their
+  chests), lists, the daily/weekly/event levels, level pages, comments, profiles, leaderboards
+  (global and per level). Every request is built like the game's own, byte for byte (checked
+  against requests recorded from the real game).
+- Accounts: log in (GJP2 only, the password is never stored), register, cloud Save / Load
+  (merging, values only go up), your profile and posts, friends, requests, following, blocked,
+  messages, likes, comments, reports, ratings, level upload. Writes are opt-in.
+- Online play in the browser, through a small relay (`relay/`, a Cloudflare Worker that only
+  passes requests on).
+- The level editor: build/edit/delete, the object tabs, groups, colors, every trigger's popup
+  (sliders included), the particle editor, level settings, playtest, music, export/import
+  (`.gmd`), saving your own levels.
+- 2.0–2.2 triggers, including advanced follow, keyframes, enter effects, random, area triggers.
+- Death effects 1–20 as the game plays them.
 - Performance: on 15 of the heaviest online levels Cadence holds 60 FPS with identical
   pictures, where the original drops frames on 7 of them, and uses about a quarter less CPU
   and less memory on most (see [BENCHMARKS.md](BENCHMARKS.md)).
-- The level editor: build/edit/delete, the object tabs, groups, colors, trigger settings for
-  60+ triggers, level settings, playtest, saving your own levels (in Cadence's own save).
-- Most 2.0–2.2 triggers (move, rotate, scale, follow, spawn, toggle, count, pickup, item
-  compare/edit, timers, collision, area effects, camera, shaders, song/SFX, UI, …).
-
-Not yet: advanced follow, keyframes, several editor tools, the account screens, online play on the web (needs a small relay server).
 
 ## Running it
 
