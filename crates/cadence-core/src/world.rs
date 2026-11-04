@@ -2039,6 +2039,92 @@ pub fn transform_rect(
 mod tests {
     use super::*;
 
+    fn act(world: &mut World, a: crate::groups::Action) {
+        world.apply(vec![(a, Vec::new())]);
+    }
+
+    #[test]
+    fn small_triggers() {
+        use crate::groups::Action;
+        let level = LevelString::parse("kA13,0,kA22,1;1,1,2,300,3,105,57,5;1,1614,2,400,3,105,57,6,80,3;1,3006,2,0,3,0,51,5,225,4;1,5,2,700,3,105,57,7;1,3618,2,0,3,0,51,6");
+        let mut w = World::from_level(&level);
+        // area stop: the area effects with that effect id go
+        act(&mut w, Action::Area(crate::area::AreaSpec::from_raw(&level.objects[2], 2)));
+        assert_eq!(w.area.effects.len(), 1);
+        act(&mut w, Action::AreaStop { id: 3 });
+        assert_eq!(w.area.effects.len(), 1);
+        act(&mut w, Action::AreaStop { id: 4 });
+        assert!(w.area.effects.is_empty());
+        // BG effect off survives a restart; BG / MG speed (|v| > 999: the default)
+        act(&mut w, Action::BgEffect { on: false });
+        act(&mut w, Action::ArtSpeed { mg: false, x: 0.5, y: 1000.0 });
+        assert_eq!(w.bg_speed, (0.5, 0.1));
+        // persistent items keep their count across restarts
+        act(&mut w, Action::Pickup { item: 3, count: 4, set: true });
+        act(&mut w, Action::Persistent { item: 3, on: true, all: false, reset: false, timer: false });
+        act(&mut w, Action::Pickup { item: 9, count: 2, set: true });
+        w.reset();
+        assert!(w.bg_effect_off);
+        assert_eq!(w.bg_speed, (0.1, 0.1));
+        assert_eq!(w.triggers.items.get(&3), Some(&4));
+        assert_eq!(w.triggers.items.get(&9), None);
+        // reset trigger: a taken collectible can be taken again
+        w.enabled[1] = false;
+        act(&mut w, Action::Reset { group: 6 });
+        assert!(w.enabled[1]);
+        // progress (platformer): at least the old value unless adding, 0..99
+        act(&mut w, Action::Progress { value: 40, add: false, item: None, counter: 0 });
+        act(&mut w, Action::Progress { value: 20, add: false, item: None, counter: 0 });
+        assert_eq!(w.platformer_progress, 40);
+        act(&mut w, Action::Progress { value: 150, add: true, item: None, counter: 0 });
+        assert_eq!(w.platformer_progress, 139);
+        // reverse: applied to the coming step
+        act(&mut w, Action::Reverse);
+        w.pre_step((0.0, 0.0));
+        assert!(w.reverse_now);
+        w.pre_step((0.0, 0.0));
+        assert!(!w.reverse_now);
+    }
+
+    #[test]
+    fn touch_triggers_toggle_on_presses() {
+        use crate::groups::Action;
+        let level = LevelString::parse("kA13,0;1,5,2,300,3,105,57,5;1,1595,2,0,3,0,51,5;1,1049,2,0,3,0,51,5");
+        let mut w = World::from_level(&level);
+        // flip on each press
+        act(&mut w, Action::Touch { group: 5, hold: false, mode: 0, only: 0, dual: false });
+        assert!(!w.player_button(true, false));
+        assert!(!w.enabled[0]);
+        w.player_button(false, false);
+        assert!(!w.enabled[0]);
+        w.player_button(true, false);
+        assert!(w.enabled[0]);
+        // hold mode "on": on while held, off on release; player-2-only ones ignore player 1
+        let mut w = World::from_level(&level);
+        act(&mut w, Action::Touch { group: 5, hold: true, mode: 1, only: 1, dual: false });
+        w.player_button(true, false);
+        assert!(w.enabled[0]);
+        w.player_button(true, true);
+        assert!(w.enabled[0]);
+        w.player_button(false, true);
+        assert!(!w.enabled[0]);
+        // dual mode keeps player 1's presses from the player
+        let mut w = World::from_level(&level);
+        act(&mut w, Action::Touch { group: 5, hold: false, mode: 2, only: 0, dual: true });
+        assert!(w.player_button(true, false));
+        assert!(!w.enabled[0]);
+    }
+
+    #[test]
+    fn random_trigger_spawns_one_of_two() {
+        let level = LevelString::parse("kA13,0;1,1912,2,0,3,0,51,5,71,6,10,100;1,1049,2,0,3,0,51,7,62,1,57,5;1,5,2,300,3,105,57,7");
+        let mut w = World::from_level(&level);
+        // chance 100: always group 5, whose spawn-triggered toggle turns group 7 off
+        let fired = w.triggers.expand_public(vec![(crate::groups::Action::Chance { a: 5, b: 6, chance: 100.0 }, Vec::new())], &w.enabled.clone());
+        w.apply(fired);
+        assert!(!w.enabled[2]);
+    }
+
     #[test]
     fn first_spike_of_stereo_madness() {
         let level = LevelString::parse("kA13,0;1,8,2,525,3,15;1,1,2,0,3,0,57,1;");

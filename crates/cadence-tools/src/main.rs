@@ -260,6 +260,9 @@ fn watch(spec_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
     let mut outs: Vec<String> = vec![String::new(); groups.len()];
+    // enter effects as `PlayLayer::updateVisibility` applies them (per step here): the drawn
+    // position, opacity and scale
+    let mut locks = vec![cadence_core::enter::EnterLock::default(); level.objects.len()];
     for step in 0..spec.steps {
         player.begin_step(&world);
         for &(down, button) in inputs.get(&step).map(|v| v.as_slice()).unwrap_or(&[]) {
@@ -276,7 +279,35 @@ fn watch(spec_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 let (x, y) = world.level_position(i);
                 let o = &level.objects[i];
                 let rot = o.get_f32(6).unwrap_or(0.0) + world.turned[i];
-                line.push_str(&format!(",{}:{}:{}:{}:real={}:{}", o.id(), x as f32, y as f32, rot, x, y));
+                let scale = o.get_f32(32).unwrap_or(1.0);
+                let sx = o.get_f32(128).unwrap_or(scale) * world.scaled[i].0;
+                let sy = o.get_f32(129).unwrap_or(scale) * world.scaled[i].1;
+                let eo = cadence_core::enter::EnterObject {
+                    x: x as f32,
+                    y: y as f32,
+                    margin: cadence_core::objects::info(o.canonical_id()).map_or(15.0, |inf| inf.width * 0.5) * sx.abs(),
+                    channel: o.get_i32(343).unwrap_or(0).clamp(0, 100),
+                    ignore_enter: o.get(67) == Some("1"),
+                    ignore_fade: o.get(64) == Some("1"),
+                    ui: false,
+                    no_scale: false,
+                    seed: i as u32,
+                };
+                let z = if player.camera.zoom > 0.0 { player.camera.zoom } else { 1.0 };
+                let view = cadence_core::enter::EnterView { left: player.camera.x, width: view_w / z, cam_y: player.camera.y, win_h: 320.0 };
+                let e = world.enter.apply(&eo, &view, &mut locks[i]);
+                line.push_str(&format!(
+                    ",{}:{}:{}:{}:real={}:{}:op={}:sc={}:{}",
+                    o.id(),
+                    x as f32 + e.dx,
+                    y as f32 + e.dy,
+                    rot + e.rotation,
+                    x,
+                    y,
+                    (e.opacity * 255.0).round() as i32,
+                    sx * e.scale.0,
+                    sy * e.scale.1
+                ));
             }
             outs[k].push_str(&line);
             outs[k].push('\n');

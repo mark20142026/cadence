@@ -1171,6 +1171,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gameplay_offset_edges_and_mode_parse() {
+        let level = LevelString::parse("kA13,0;1,5,2,1600,3,300,57,30;1,2901,2,200,3,0,28,200.7,101,1,58,1;1,2062,2,400,3,0,164,2,51,30;1,2925,2,10,3,0,111,1,112,1,114,2,113,0.5");
+        let t = CameraTriggers::from_level(&level);
+        let w = crate::world::World::from_level(&level);
+        let acts: Vec<CameraAction> = (0..3).filter_map(|i| t.action(i, &w)).collect();
+        assert!(acts.contains(&CameraAction::GameplayOffset { x: Some(200), y: None, no_zoom: (true, false) }));
+        assert!(acts.contains(&CameraAction::Edge { side: 2, target: Some(Some(0)) }));
+        // padding clamped to 0..1, easing to 1..40
+        assert!(acts.contains(&CameraAction::CameraMode { free: true, padding: Some((1.0, 1.0)) }));
+        let mut c = Camera::new();
+        c.apply(CameraAction::GameplayOffset { x: Some(200), y: None, no_zoom: (true, false) }, 569.0);
+        assert_eq!(c.gameplay_offset, [200, 75]);
+        assert_eq!(c.gameplay_no_zoom, [true, false]);
+        c.apply(CameraAction::Edge { side: 2, target: Some(Some(0)) }, 569.0);
+        assert_eq!(c.edges[1], Some(Some(0)));
+        c.apply(CameraAction::Edge { side: 2, target: None }, 569.0);
+        assert_eq!(c.edges[1], None);
+    }
+
+    #[test]
     fn camera_rotate_sets_adds_and_snaps() {
         let mut c = Camera::new();
         c.apply(CameraAction::Rotate { degrees: 90.0, add: false, snap: false, duration: 0.0, easing: 0, rate: 2.0 }, 569.0);
