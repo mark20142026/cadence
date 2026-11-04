@@ -1689,6 +1689,14 @@ class $modify(TracePlay, PlayLayer) {
             // Player 2 dying in dual mode ends the attempt too: both rows for this step.
             record(m_player1, g_stepDt);
             record(player, g_stepDt, g_out2);
+            if (!g_spec.deathShots.empty()) {
+                // deathshot frames for player 2's death too (its explosion, player 1's exit copy)
+                std::fprintf(g_out, "# end death p2 step=%d updates=%d\n", g_step, g_updates);
+                std::fclose(g_out);
+                g_out = nullptr;
+                g_deathFrame = 0;
+                return;
+            }
             finish("death");
         }
     }

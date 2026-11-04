@@ -79,12 +79,13 @@ fn player_draws(
     colors: ([f32; 3], [f32; 3]),
     icons: &crate::ui::garage::IconSet,
     rig: Option<&[crate::anim::Part]>,
+    alpha: f32,
     draws: &mut Vec<Draw>,
 ) {
     let frame_size = |name: &str| sheets.frames.get(name).map(|f| f.source_size);
     let mut push = |name: &str, transform: Affine, color: [f32; 3]| {
         if let Some(frame) = sheets.frames.get(name) {
-            let instance = sprite_instance(frame, atlas(frame.sheet), transform, false, false, tint(color, 1.0));
+            let instance = sprite_instance(frame, atlas(frame.sheet), transform, false, false, tint(color, alpha));
             draws.push(Draw { sheet: frame.sheet, blend: Blend::Normal, instance });
         }
     };
@@ -140,6 +141,67 @@ fn player_draws(
         push(&dome, centered(&dome, body, x, y, scale), [1.0; 3]);
         push(&main, centered(&main, body, x, y, scale), c1);
         push(&extra, centered(&extra, body, x, y, scale), [1.0; 3]);
+    }
+}
+
+/// `GJBaseGameLayer::playExitDualEffect` (0xe5200): a copy of the player that didn't die
+/// (a `SimplePlayer` of its icon, colors and rotation) fades out over 0.4 s while it moves 124.63
+/// screen units back, shrinks to 0.1 and turns 180° (all linear, starting a frame late like every
+/// cocos2d action), with a 10 → 30 ring in its main color following it. The copy sits on the
+/// unmirrored screen layer (the game flips its x scale and rotation when the view is mirrored);
+/// drawn in level space it keeps the player's own.
+/// The exit-dual ring's z (it's added to the layer at z 0 over the copy; any z under the T
+/// layers that no death wave uses marks it).
+const EXIT_DUAL_WAVE_Z: i32 = 100;
+
+struct ExitDual {
+    player: Player,
+    colors: ([f32; 3], [f32; 3]),
+    from: (f32, f32),
+    dx: f32,
+    turn: f32,
+    rotation: f32,
+    scale: f32,
+    end_scale: f32,
+    elapsed: Option<f32>,
+}
+
+impl ExitDual {
+    const DURATION: f32 = 0.4;
+
+    fn new(p: &Player, colors: ([f32; 3], [f32; 3]), zoom: f32, mirrored: bool) -> ExitDual {
+        let mut player = p.clone();
+        player.dual = None;
+        ExitDual {
+            colors,
+            from: (p.x, p.y),
+            dx: -124.632034 / zoom,
+            turn: if mirrored { -180.0 } else { 180.0 },
+            rotation: p.rotation,
+            scale: p.scale,
+            end_scale: 0.1 / zoom,
+            elapsed: None,
+            player,
+        }
+    }
+
+    fn step(&mut self, dt: f32) {
+        self.elapsed = Some(self.elapsed.map_or(0.0, |t| t + dt));
+    }
+
+    fn progress(&self) -> f32 {
+        (self.elapsed.unwrap_or(0.0) / Self::DURATION).min(1.0)
+    }
+
+    /// The copy as drawn now (position, rotation, scale) and its opacity.
+    fn state(&self) -> (Player, f32) {
+        let k = self.progress();
+        let mut p = self.player.clone();
+        p.x = self.from.0 + self.dx * k;
+        p.y = self.from.1;
+        p.rotation = self.rotation + self.turn * k;
+        p.scale = self.scale + (self.end_scale - self.scale) * k;
+        (p, 1.0 - k)
     }
 }
 
@@ -643,6 +705,12 @@ struct Game {
     direction: [bool; 2],
     direction_sent: [bool; 2],
     death_timer: f32,
+    /// playDeathEffect's `CCFadeTo(0.05, 0)` on the player that died (tag 4): None until the
+    /// first frame after the death (cocos2d's first action step is at elapsed 0), then the
+    /// action's elapsed time.
+    death_fade: Option<f32>,
+    /// `GJBaseGameLayer::playExitDualEffect` for the player that didn't die in dual mode.
+    exit_dual: Option<ExitDual>,
     audio: Box<dyn Audio>,
     /// The level's song and where it starts (`kA13`, seconds).
     song: Option<(String, f32)>,
@@ -1066,6 +1134,8 @@ impl Game {
         self.colors = self.colors_start.clone();
         self.fx.reset();
         self.death_timer = 0.0;
+        self.death_fade = None;
+        self.exit_dual = None;
         self.step_count = 0;
         self.effects.clear();
         self.player_fx.reset();
@@ -1191,6 +1261,9 @@ impl Game {
         self.world.epoch = cadence_core::world::World::next_epoch();
         self.player = cp.player;
         self.player.dead = false;
+        self.player.second_died = false;
+        self.death_fade = None;
+        self.exit_dual = None;
         self.player.set_button(self.holding, &self.world);
         self.colors = cp.colors;
         self.camera = cp.camera;
@@ -1424,7 +1497,23 @@ impl Game {
     /// default in practice mode unless option 0100 shows them there), see `crate::death`. All of
     /// it sits at the player's position, sized by the vehicle size (× 0.9 when it's at least 1).
     fn on_death(&mut self) {
-        let p = &self.player;
+        // `PlayLayer::destroyPlayer`: the player that died explodes (player 2 in dual mode when
+        // it was its death, with the colors swapped); the other one leaves with the exit-dual
+        // effect and is hidden (`playerDestroyed(other, true)`).
+        let second = self.player.second_died && self.player.dual.is_some();
+        let (p, pcol) = match (second, self.player.dual.as_deref()) {
+            (true, Some(p2)) => (p2.clone(), (self.pcol.1, self.pcol.0)),
+            _ => (self.player.clone(), self.pcol),
+        };
+        if let Some(other) = if second { Some(&self.player) } else { self.player.dual.as_deref() } {
+            let colors = if second { self.pcol } else { (self.pcol.1, self.pcol.0) };
+            self.exit_dual = Some(ExitDual::new(other, colors, self.camera.zoom, self.player.mirrored));
+            // The ring: CCCircleWave(10 → 30, 0.4 s) in the main color, outlined, following
+            // the copy (`followObject`).
+            let wave = CircleWave { outline: true, z: EXIT_DUAL_WAVE_Z, first_tick: true, ..CircleWave::new((other.x, other.y), 10.0, 30.0, 0.4, colors.0) };
+            self.effects.waves.push(wave);
+        }
+        let p = &p;
         let at = (p.x, p.y);
         let size = if p.size >= 1.0 { p.size * 0.9 } else { p.size };
         let mut effect = self.icons.ids[10];
@@ -1433,7 +1522,7 @@ impl Game {
         }
         let seed = self.effects.next_seed();
         let defs = |name: &str| self.particle_defs.get(name).cloned();
-        let Some(death) = crate::death::play(effect, at, size, self.pcol, &mut self.effects.rng, seed, &defs) else { return };
+        let Some(death) = crate::death::play(effect, at, size, pcol, &mut self.effects.rng, seed, &defs) else { return };
         self.effects.emitters.push(death.emitter);
         self.effects.waves.extend(death.waves);
         self.effects.deaths.extend(death.sprite);
@@ -1443,7 +1532,6 @@ impl Game {
         // The icon shatter (unless the "no explode shatter" option, game variable 0153, is on):
         // a (size·40)² capture cut into 2–3 × 2–3 pieces (5% of the time one column, 5% one
         // row), flying at the player's speed · 0.72 (vx 0.5v ± v, vy 6 ± 3, 1.4 s).
-        let p = &self.player;
         let rng = &mut self.effects.rng;
         let (r1, r2, r3) = (rng.unit(), rng.unit(), rng.unit());
         let mut rows = (r2 * 2.0) as u32 + 2;
@@ -1503,6 +1591,14 @@ impl Game {
         }
         self.player_fx.update(dt as f32);
         if self.player.dead {
+            self.death_fade = Some(self.death_fade.map_or(0.0, |t| t + dt as f32));
+            if let Some(e) = &mut self.exit_dual {
+                e.step(dt as f32);
+                let (copy, _) = e.state();
+                for w in self.effects.waves.iter_mut().filter(|w| w.z == EXIT_DUAL_WAVE_Z) {
+                    w.center = (copy.x, copy.y);
+                }
+            }
             self.death_timer += dt as f32;
             if self.death_timer > if self.opts.faster_reset { 0.5 } else { 1.0 } {
                 self.reset();
@@ -1866,6 +1962,8 @@ impl App {
             direction: [false; 2],
             direction_sent: [false; 2],
             death_timer: 0.0,
+            death_fade: None,
+            exit_dual: None,
             audio,
             song,
             bg_pos: [0.0; 2],
@@ -2167,7 +2265,7 @@ impl App {
         if let Some(sh) = game.effects.shatters.iter_mut().find(|s| s.sheet.is_none()) {
             let mut icon = Vec::new();
             let half = sh.size * 0.5;
-            player_draws(sheets, &|s| renderer.atlas_size(s), &game.player, (half, half), game.player.rotation, game.pcol, &game.icons, rig_parts.as_deref(), &mut icon);
+            player_draws(sheets, &|s| renderer.atlas_size(s), &game.player, (half, half), game.player.rotation, game.pcol, &game.icons, rig_parts.as_deref(), 1.0, &mut icon);
             let px = (sh.size * points_to_pixels).round() as u32;
             sh.sheet = Some(renderer.capture(&icon, (0.0, 0.0, sh.size, sh.size), px));
         }
@@ -2994,8 +3092,18 @@ impl App {
                 push_particles(e, sheet, &mut draws);
             }
         }
-        // Player: each sprite centered on its own frame size (cocos2d content size).
-        if !p.dead {
+        // Player: each sprite centered on its own frame size (cocos2d content size). After a
+        // death the player that died fades out over 0.05 s (playDeathEffect's CCFadeTo, a frame
+        // late); in dual mode the other one is hidden and its exit copy drawn instead.
+        let death_alpha = if p.dead { 1.0 - (game.death_fade.unwrap_or(0.0) / 0.05).min(1.0) } else { 1.0 };
+        let second_died = p.dead && p.second_died && p.dual.is_some();
+        if let Some((copy, a)) = game.exit_dual.as_ref().filter(|_| p.dead && !game.editor).map(|e| e.state()) {
+            if 0.0 < a {
+                let colors = game.exit_dual.as_ref().map(|e| e.colors).unwrap_or(game.pcol);
+                player_draws(sheets, &|s| renderer.atlas_size(s), &copy, (copy.x, copy.y), copy.rotation, colors, &game.icons, None, a, &mut draws);
+            }
+        }
+        if !p.dead || 0.0 < death_alpha {
             let (mut px, mut py, mut rot) = (p.x, p.y, p.rotation);
             if let Some(t) = game.end_time {
                 // playEndAnimationToPos: a 1 s cubic Bézier (ease-in 1.2) through
@@ -3030,12 +3138,14 @@ impl App {
             } else {
                 p
             };
-            if !game.editor && !game.world.player_hidden {
-                player_draws(sheets, &|s| renderer.atlas_size(s), p, (px, py), rot, game.pcol, &game.icons, rig, &mut draws);
+            let a1 = if p.dead { if second_died { 0.0 } else { death_alpha } } else { 1.0 };
+            if !game.editor && !game.world.player_hidden && 0.0 < a1 {
+                player_draws(sheets, &|s| renderer.atlas_size(s), p, (px, py), rot, game.pcol, &game.icons, rig, a1, &mut draws);
             }
             // Dual mode: player 2, with the two colors swapped (the game's default).
-            if let Some(p2) = p.dual.as_ref().filter(|_| !game.editor) {
-                player_draws(sheets, &|s| renderer.atlas_size(s), p2, (p2.x, p2.y), p2.rotation, (game.pcol.1, game.pcol.0), &game.icons, rig, &mut draws);
+            let a2 = if p.dead { if second_died { death_alpha } else { 0.0 } } else { 1.0 };
+            if let Some(p2) = p.dual.as_ref().filter(|_| !game.editor && 0.0 < a2) {
+                player_draws(sheets, &|s| renderer.atlas_size(s), p2, (p2.x, p2.y), p2.rotation, (game.pcol.1, game.pcol.0), &game.icons, rig, a2, &mut draws);
             }
         }
         if let Some(sheet) = square_sheet {
@@ -4037,5 +4147,28 @@ pub fn run(files: Box<dyn Files>, audio: Box<dyn Audio>, level_id: i32, quality:
     {
         use winit::platform::web::EventLoopExtWebSys;
         event_loop.spawn_app(app);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The real game's exit-dual copy (re/traces/dualdeath, player 2 died, zoom 1): six frames
+    /// after the death the copy is 25.965 back, at scale 0.8125, turned 37.5 degrees, opacity 201.
+    #[test]
+    fn exit_dual_copy_matches_the_capture() {
+        let mut p = Player::default();
+        p.x = 682.883;
+        p.y = 105.0;
+        let mut e = ExitDual::new(&p, ([0.5; 3], [1.0; 3]), 1.0, false);
+        for _ in 0..6 {
+            e.step(1.0 / 60.0);
+        }
+        let (copy, a) = e.state();
+        assert!((copy.x - (682.883 - 25.965)).abs() < 0.01, "{}", copy.x);
+        assert!((copy.scale - 0.8125).abs() < 1e-4);
+        assert!((copy.rotation - 37.5).abs() < 1e-3);
+        assert_eq!((a * 255.0) as i32, 201);
     }
 }

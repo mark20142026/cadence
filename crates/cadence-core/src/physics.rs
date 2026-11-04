@@ -203,6 +203,9 @@ pub struct Player {
     partner: Option<(Mode, bool)>,
     /// This player is player 2.
     is_second: bool,
+    /// The death was player 2's (dual mode): `PlayLayer::destroyPlayer` explodes the player
+    /// that died, the other one leaves with the exit-dual effect.
+    pub second_died: bool,
     /// The robot's hold boost timer (`m_accelerationOrSpeed`): up to 1.5, +dt·0.1 per held step.
     robot_boost: f64,
     /// Launched by a pad since the last jump (`m_touchedPad`): no robot hold boost.
@@ -525,6 +528,7 @@ impl Default for Player {
             mode_portal_y: 0.0,
             partner: None,
             is_second: false,
+            second_died: false,
             robot_boost: 1.5,
             touched_pad: false,
             rect_cache: None,
@@ -946,6 +950,9 @@ impl Player {
         if p2.dead {
             // (Player 1's rotation on that last step: the game sometimes keeps the old one —
             // order of its rotation and collision passes in dual mode, not modelled.)
+            if !self.dead {
+                self.second_died = true;
+            }
             self.dead = true;
         }
         if p2.dual_request.take() == Some(None) {
