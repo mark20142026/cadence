@@ -33,6 +33,10 @@ pub const SINGLE_IMAGES: &[&str] = &["game_bg_01_001", "groundSquare_01_001"];
 pub const PARTICLE_TEXTURE: &str = "square.png";
 /// The regular trail's texture (trail 1), shipped in one resolution.
 pub const STREAK_TEXTURE: &str = "streak_01_001.png";
+/// The ship fires' streak textures (fires 2–6: 9, 10, 6, 16 and 5 frames), single images.
+pub fn ship_fire_files() -> impl Iterator<Item = String> {
+    [(2u32, 9u32), (3, 10), (4, 6), (5, 16), (6, 5)].into_iter().flat_map(|(k, n)| (1..=n).map(move |i| format!("shipfire{k:02}_{i:03}.png")))
+}
 /// The default icon colors: main (green) and secondary (cyan).
 
 
@@ -150,6 +154,78 @@ fn player_draws(
 /// cocos2d action), with a 10 → 30 ring in its main color following it. The copy sits on the
 /// unmirrored screen layer (the game flips its x scale and rotation when the view is mirrored);
 /// drawn in level space it keeps the player's own.
+/// Ship fires 2–6 (the icon kit's special tab; GameManager `m_playerShipFire`, 1 = the plain
+/// particle fire): `PlayerObject::setupStreak` (0x3677b8) adds a `CCMotionStreak` (min segment
+/// 1, white, SRC_ALPHA ONE) at z −3 whose texture `PlayerObject::update` swaps every step to
+/// `shipfireNN_MMM.png` for `m_totalTime` (FUN_100365034: fire 2 nine frames and 3 ten at 1/32 s,
+/// 4 six and 6 five at 1/24 s, 5 sixteen at 1/20 s). `PlayerObject::setPosition` puts it at the
+/// ship sprite (0, −5 in the player's turned layer) plus a per-fire offset (FUN_1003654d0, x
+/// mirrored going left). Fade and stroke by speed and size (FUN_100364938, below). The
+/// particle fire stays as it is.
+struct ShipFire {
+    key: (u32, f32, f32),
+    streak: crate::trail::MotionStreak,
+    pos: (f32, f32),
+    visible: bool,
+    time: f32,
+}
+
+impl ShipFire {
+    fn new(kind: u32, speed: f32, size: f32) -> ShipFire {
+        let (fade, stroke) = Self::fade_stroke(kind, speed, size);
+        ShipFire { key: (kind, speed, size), streak: crate::trail::MotionStreak::new(fade, 1.0, stroke), pos: (0.0, 0.0), visible: false, time: 0.0 }
+    }
+
+    /// FUN_100364938(speed, size, fire): the fade time and stroke width; setupStreak's own
+    /// values (0x1008e5a30 / 0x1008e5a44) where the speed matches none of the five.
+    fn fade_stroke(kind: u32, speed: f32, size: f32) -> (f32, f32) {
+        let k: f32 = if size != 1.0 { 0.5 } else { 1.0 };
+        let base = [(0.0636f32, 22.0f32), (0.1278, 28.6), (0.105, 28.6), (0.09, 18.7), (0.096, 27.0)];
+        let i = [0.7f32, 0.9, 1.1, 1.3, 1.6].iter().position(|&s| s == speed);
+        let Some(i) = i else { return base[(kind - 2) as usize] };
+        let (fade, stroke) = match kind {
+            2 => (k * [0.12f32, 0.115, 0.11, 0.108, 0.106][i] * 0.6, k * [14.0f32, 16.0, 18.0, 20.0, 22.0][i]),
+            3 => (k * [0.15f32, 0.148, 0.146, 0.144, 0.142][i] * 0.9, k * [12.0f32, 14.0, 16.0, 18.0, 22.0][i] * 1.3),
+            4 => (k * [0.145f32, 0.152, 0.155, 0.151, 0.15][i] * 0.7, k * [12.0f32, 14.0, 16.0, 18.0, 22.0][i] * 1.3),
+            5 => (k * 0.15 * 0.6, k * [12.0f32, 14.0, 15.0, 16.0, 17.0][i] * 1.1),
+            _ => (k * [0.15f32, 0.151, 0.152, 0.155, 0.16][i] * 0.6, k * [12.0f32, 14.0, 15.0, 16.0, 18.0][i] * 1.5),
+        };
+        let f = [1.3f32, 1.2, 1.1, 1.05, 1.0][i];
+        (fade * f, stroke * f)
+    }
+
+    /// Where the streak's node is: the ship sprite plus the fire's offset, through the player's
+    /// rotation, scale and gravity flip.
+    fn anchor(p: &Player, kind: u32) -> (f32, f32) {
+        let (ox, oy) = match kind {
+            2 => (-8.0f32, -3.0f32),
+            3 => (-8.0, -3.5),
+            4 | 5 => (-14.0, -3.0),
+            6 => (-14.0, -2.5),
+            _ => (0.0, 0.0),
+        };
+        let ox = if p.going_left { -ox } else { ox };
+        let flip = if p.upside_down { -1.0 } else { 1.0 };
+        let t = node_transform(p.x, p.y, p.rotation, p.scale, p.scale * flip, 0.0, 0.0, 0.0, 0.0);
+        let (x, y) = (ox, -5.0 + oy);
+        (t[0] * x + t[2] * y + t[4], t[1] * x + t[3] * y + t[5])
+    }
+
+    /// The streak texture for fire `kind` at `time` seconds (FUN_100365034).
+    fn frame(kind: u32, time: f32) -> String {
+        let (dur, count) = match kind {
+            2 => (0.03125f32, 9),
+            3 => (0.03125, 10),
+            4 => (0.041666668, 6),
+            5 => (0.05, 16),
+            _ => (0.041666668, 5),
+        };
+        let n = (time / dur) as i32;
+        let i = n - (n / count) * count;
+        format!("shipfire{kind:02}_{:03}.png", i + 1)
+    }
+}
+
 /// The exit-dual ring's z (it's added to the layer at z 0 over the copy; any z under the T
 /// layers that no death wave uses marks it).
 const EXIT_DUAL_WAVE_Z: i32 = 100;
@@ -740,6 +816,8 @@ struct Game {
     /// (the trail follows a frame behind).
     trail: crate::trail::MotionStreak,
     trail_pos: (f32, f32),
+    /// Ship fires 2–6 (`m_shipStreak`, see `ShipFire`); None for the default fire (1).
+    ship_fire: Option<ShipFire>,
     wave_trail: crate::trail::WaveTrail,
     /// The level's background and ground art (kA6 / kA7, 0 = 1): `game_bg_NN_001`,
     /// `groundSquare_NN_001` and, for grounds 8+, its second layer `_2` (ground 2 color).
@@ -934,6 +1012,38 @@ impl Game {
         self.trail.update(1.0 / 60.0, self.trail_pos);
         let down = if self.player.mode == Mode::Ship { -10.74 } else { 0.0 };
         self.trail_pos = (self.player.x, self.player.y + down);
+        self.step_ship_fire();
+    }
+
+    /// The chosen ship fire's streak, one frame: it follows the ship (`PlayerObject::setPosition`
+    /// moves it only in ship mode; `toggleFlyMode` shows it only there, never in platformer),
+    /// a frame behind like the regular trail; its fade and stroke follow the speed and size
+    /// (`updateTimeMod` / `togglePlayerScale`).
+    fn step_ship_fire(&mut self) {
+        let kind = self.opts.ship_fire;
+        if kind < 2 {
+            self.ship_fire = None;
+            return;
+        }
+        let p = &self.player;
+        let key = (kind, p.speed, p.size);
+        if self.ship_fire.as_ref().is_none_or(|f| f.key != key) {
+            self.ship_fire = Some(ShipFire::new(kind, p.speed, p.size));
+        }
+        let ship = p.mode == Mode::Ship && !p.platformer.on && !p.dead;
+        let at = ShipFire::anchor(p, kind);
+        let Some(f) = self.ship_fire.as_mut() else { return };
+        if ship && !f.visible {
+            f.streak.reset();
+            f.pos = at;
+        }
+        f.visible = ship;
+        f.streak.active = ship;
+        f.streak.update(1.0 / 60.0, f.pos);
+        if ship {
+            f.pos = at;
+        }
+        f.time = p.total_time as f32;
     }
 
     /// The middle ground's node scale (`updateCameraBGArt` 0x10f978): (1 − (1 − zoom)·0.3)·1.2.
@@ -1132,6 +1242,7 @@ impl Game {
         self.coins_taken.clear();
         self.trail.reset();
         self.trail.active = false;
+        self.ship_fire = None;
         self.wave_trail.clear();
         // A direction held into the new attempt is pressed again on its first step.
         self.direction_sent = [false; 2];
@@ -2001,6 +2112,7 @@ impl App {
             attempt: 1,
             trail: crate::trail::MotionStreak::new(0.3, 5.0, 10.0),
             trail_pos: (0.0, 0.0),
+            ship_fire: None,
             wave_trail: crate::trail::WaveTrail::default(),
             bg_image: bg_name(art_default[0]),
             ground_image: ground_names(art_default[1]).0,
@@ -3058,6 +3170,26 @@ impl App {
                 }
             }
         }
+        // The ship fire's streak (z −3, under the regular trail): white, additive, its texture
+        // for the player's time.
+        if let Some(f) = game.ship_fire.as_ref().filter(|f| f.visible) {
+            if let Some(frame) = sheets.frames.get(ShipFire::frame(f.key.0, f.time).as_str()) {
+                let (aw, ah) = renderer.atlas_size(frame.sheet);
+                let uv = |u: f32, v: f32| {
+                    if frame.rotated {
+                        ((frame.tex_x + v * frame.tex_h) / aw, (frame.tex_y + u * frame.tex_w) / ah)
+                    } else {
+                        ((frame.tex_x + u * frame.tex_w) / aw, (frame.tex_y + (1.0 - v) * frame.tex_h) / ah)
+                    }
+                };
+                for (p, t, alpha) in f.streak.triangles() {
+                    let corners = t.map(|(u, v)| uv(u, v));
+                    let m = [p[1].0 - p[0].0, p[1].1 - p[0].1, p[2].0 - p[0].0, p[2].1 - p[0].1, p[0].0, p[0].1];
+                    let uvs = [corners[0].0, corners[0].1, corners[1].0, corners[1].1, corners[2].0, corners[2].1, corners[2].0, corners[2].1];
+                    draws.push(Draw { sheet: frame.sheet, blend: Blend::Additive, instance: Instance { m, _pad: [1.0, 0.0], uv: uvs, color: [1.0, 1.0, 1.0, alpha] } });
+                }
+            }
+        }
         // The regular trail (z −2, under the player): player color 2, additive, streak_01.
         if let Some(frame) = sheets.frames.get(STREAK_TEXTURE) {
             let atlas = renderer.atlas_size(frame.sheet);
@@ -3468,6 +3600,11 @@ impl App {
         for single in [PARTICLE_TEXTURE, STREAK_TEXTURE] {
             if let Err(e) = sheets.load_unscaled(files, single) {
                 log(&format!("{single}: {e}"));
+            }
+        }
+        for fire in ship_fire_files() {
+            if let Err(e) = sheets.load_unscaled(files, &fire) {
+                log(&format!("{fire}: {e}"));
             }
         }
         self.ui.fonts = crate::ui::load_assets(files, &mut sheets).fonts;

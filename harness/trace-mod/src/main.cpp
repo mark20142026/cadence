@@ -90,6 +90,7 @@ struct Spec {
     std::vector<std::pair<int, std::string>> deathShots;   // deathshot <frame> <path>: frames after
                                                            // player 1 dies ("%d" = the attempt)
     int iconCube = -1, iconColor1 = -1, iconColor2 = -1;   // playericon <cube> <color1> <color2> (glow off)
+    int shipFire = 0;                                      // shipfire N: GameManager m_playerShipFire (memory only)
     long long fastSeed = -1;                               // fastseed N: fast_srand(N) after every reset
 };
 
@@ -168,6 +169,7 @@ bool loadSpec() {
         }
         else if (cmd == "fastseed") in >> g_spec.fastSeed;
         else if (cmd == "playericon") in >> g_spec.iconCube >> g_spec.iconColor1 >> g_spec.iconColor2;
+        else if (cmd == "shipfire") in >> g_spec.shipFire;
         else if (cmd == "watchgroup") {
             int group = 0;
             std::string path;
@@ -217,6 +219,7 @@ void startAttempt() {
         gm->setPlayerDeathEffect(g_spec.deathEffects[g_attempt]);
     }
     for (auto& [key, on] : g_spec.gameVars) gm->setGameVariable(key.c_str(), on);
+    if (g_spec.shipFire > 0) gm->m_playerShipFire = g_spec.shipFire;
     if (g_spec.iconCube > 0) {
         gm->setPlayerFrame(g_spec.iconCube);
         gm->setPlayerColor(g_spec.iconColor1);

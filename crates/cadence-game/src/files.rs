@@ -67,6 +67,7 @@ pub fn needed_files(suffix: &str) -> Vec<String> {
     }
     out.push(crate::app::PARTICLE_TEXTURE.to_string());
     out.push(crate::app::STREAK_TEXTURE.to_string());
+    out.extend(crate::app::ship_fire_files());
     out.push("Robot_AnimDesc.plist".to_string());
     out.push("Spider_AnimDesc.plist".to_string());
     out.extend(crate::animobj::FILES.iter().map(|f| f.to_string()));
