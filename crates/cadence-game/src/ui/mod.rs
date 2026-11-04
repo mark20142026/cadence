@@ -2506,6 +2506,18 @@ impl Ui {
                         })
                     }
                     online::Effect::Clone(id) => self.clone_saved(id),
+                    online::Effect::GauntletChest(kind) => {
+                        let key = format!("g_{kind}");
+                        if let Some((_, items)) = chests_table::SPECIAL.iter().find(|s| s.0 == key) {
+                            self.progress.set_flag(&format!("gauntlet {kind}"));
+                            for &(item, k, id, n) in items.iter() {
+                                paths::add_reward(&mut self.progress, item, k, id, n);
+                            }
+                            self.progress.save();
+                            self.sounds.push("chestClick.ogg");
+                            self.unlock = Some(reward::Unlock { chest: 2, items: items.to_vec(), t: 0.0 });
+                        }
+                    }
                     online::Effect::RefreshMine => {
                         self.online.my_levels = self.my_levels();
                         self.online.my_verified = self.my_verified();
@@ -3922,6 +3934,10 @@ impl Ui {
         }
         if let Some(w) = self.writer.as_mut() {
             w.t += dt;
+        }
+        if self.screen == Screen::Online && matches!(self.online.view, online::View::Gauntlets(_)) {
+            self.online.beaten = self.progress.levels.iter().filter(|(_, l)| l.best >= 100).map(|(id, _)| *id).collect();
+            self.online.gauntlets_claimed = self.progress.flags.iter().filter_map(|f| f.strip_prefix("gauntlet ")?.parse().ok()).collect();
         }
         if let Some(u) = self.unlock.as_mut() {
             let before = u.t;

@@ -116,6 +116,10 @@ pub struct Browser {
     /// The gauntlets (type, level ids), and whether the list shows one of them.
     pub gauntlets: Vec<(i32, String)>,
     pub from_gauntlet: bool,
+    /// The levels you've beaten and the gauntlets whose chest you've claimed (kept current by
+    /// the menus from your progress), for the cards' "N/5" and their chests.
+    pub beaten: std::collections::HashSet<i32>,
+    pub gauntlets_claimed: std::collections::HashSet<i32>,
     gauntlet_page: usize,
     pub scores: Vec<crate::online::Score>,
     /// Top Lists (search kind −25), and whether the level list came from one.
@@ -193,6 +197,8 @@ impl Default for Browser {
             from_pack: false,
             gauntlets: Vec::new(),
             from_gauntlet: false,
+            beaten: Default::default(),
+            gauntlets_claimed: Default::default(),
             gauntlet_page: 0,
             scores: Vec::new(),
             lists: Vec::new(),
@@ -250,6 +256,8 @@ pub enum Effect {
     Delete(i32),
     Clone(i32),
     LevelOptions(i32),
+    /// A gauntlet beaten: open its chest (`g_N`).
+    GauntletChest(i32),
 }
 
 impl Browser {
@@ -323,6 +331,12 @@ impl Browser {
                 Err(e) => Msg::Error(format!("Something went wrong ({e})")),
             }
         });
+    }
+
+    /// A gauntlet's levels beaten, of how many.
+    fn gauntlet_done(&self, levels: &str) -> (usize, usize) {
+        let ids: Vec<i32> = levels.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+        (ids.iter().filter(|id| self.beaten.contains(id)).count(), ids.len())
     }
 
     /// The gauntlets.
@@ -835,6 +849,10 @@ impl Browser {
             Btn::ScoreTab(t) if !self.busy() => self.open_scores(t),
             Btn::GauntletCard(i) => {
                 if let Some((kind, levels)) = self.gauntlets.get(i as usize).cloned() {
+                    let (done, count) = self.gauntlet_done(&levels);
+                    if done == count && count > 0 && !self.gauntlets_claimed.contains(&kind) {
+                        return Effect::GauntletChest(kind);
+                    }
                     if let View::Gauntlets(p) = self.view {
                         self.gauntlet_page = p;
                     }
@@ -1311,10 +1329,12 @@ impl Browser {
                 c.text("bigFont", name, x + dx, y + 94.0 + dy, tint(look, 0.7));
                 c.text("bigFont", "Gauntlet", x + dx, y + 75.0 + dy, tint(look, 0.45));
                 c.sprite(island, x + dx, y + 16.0 + dy, Look { scale: (f, f), ..look });
-                let count = levels.split(',').filter(|v| !v.is_empty()).count();
-                c.text("bigFont", &format!("0/{count}"), x + dx, y - 24.0 + dy, Look { scale: (0.4 * f, 0.4 * f), ..look });
+                let (done, count) = self.gauntlet_done(levels);
+                c.text("bigFont", &format!("{done}/{count}"), x + dx, y - 24.0 + dy, Look { scale: (0.4 * f, 0.4 * f), ..look });
                 c.text("goldFont", "Reward", x + dx, y - 47.0 + dy, Look { scale: (0.45 * f, 0.45 * f), ..look });
-                c.sprite("chest_02_02_001.png", x + dx, y - 78.5 + dy, Look { scale: (0.4 * f, 0.4 * f), ..look });
+                // the chest: opened once claimed
+                let chest = if self.gauntlets_claimed.contains(kind) { "chest_02_04_001.png" } else { "chest_02_02_001.png" };
+                c.sprite(chest, x + dx, y - 78.5 + dy, Look { scale: (0.4 * f, 0.4 * f), ..look });
             }
             ctx.area(id, x, y, 110.0, 234.0);
         }
