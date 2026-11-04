@@ -85,6 +85,11 @@ struct Spec {
     std::string debugRect;                                 // collisions and mode switches here
     std::vector<std::pair<int, std::string>> watchGroups;  // (group, path): positions every step
     int watchMax = 4;                                      // objects per watched group (watchmax N)
+    std::vector<int> deathEffects;                         // deatheffect N: per attempt (0 = the save's)
+    std::vector<std::pair<int, std::string>> deathShots;   // deathshot <frame> <path>: frames after
+                                                           // player 1 dies ("%d" = the attempt)
+    int iconCube = -1, iconColor1 = -1, iconColor2 = -1;   // playericon <cube> <color1> <color2> (glow off)
+    long long fastSeed = -1;                               // fastseed N: fast_srand(N) after every reset
 };
 
 Spec g_spec;
@@ -93,6 +98,7 @@ bool g_launched = false;
 size_t g_attempt = 0;
 PlayLayer* g_layer = nullptr;  // the PlayLayer of the current attempt; null while switching
 int g_step = 0;
+int g_deathFrame = -1;  // deathshot: rendered frames since player 1 died (-1: alive)
 int g_loopIndex = 0;  // which of the frame's `speed` updates is running
 int g_updates = 0;
 FILE* g_out = nullptr;
@@ -141,6 +147,20 @@ bool loadSpec() {
             g_spec.guis.emplace_back(name, path);
         }
         else if (cmd == "watchmax") in >> g_spec.watchMax;
+        else if (cmd == "deatheffect") {
+            int effect = 0;
+            in >> effect;
+            g_spec.deathEffects.resize(g_spec.attempts.size(), 0);
+            g_spec.deathEffects.back() = effect;
+        }
+        else if (cmd == "deathshot") {
+            int frame = 0;
+            std::string path;
+            in >> frame >> path;
+            g_spec.deathShots.emplace_back(frame, path);
+        }
+        else if (cmd == "fastseed") in >> g_spec.fastSeed;
+        else if (cmd == "playericon") in >> g_spec.iconCube >> g_spec.iconColor1 >> g_spec.iconColor2;
         else if (cmd == "watchgroup") {
             int group = 0;
             std::string path;
@@ -183,6 +203,18 @@ GJGameLevel* loadLevel();
 void startAttempt() {
     g_step = 0;
     g_updates = 0;
+    g_deathFrame = -1;
+    // the icon and death effect to play with (in memory only: the run never saves)
+    auto gm = GameManager::get();
+    if (g_attempt < g_spec.deathEffects.size() && g_spec.deathEffects[g_attempt] > 0) {
+        gm->setPlayerDeathEffect(g_spec.deathEffects[g_attempt]);
+    }
+    if (g_spec.iconCube > 0) {
+        gm->setPlayerFrame(g_spec.iconCube);
+        gm->setPlayerColor(g_spec.iconColor1);
+        gm->setPlayerColor2(g_spec.iconColor2);
+        gm->setPlayerGlow(false);
+    }
     auto scene = PlayLayer::scene(loadLevel(), false);
     CCDirector::get()->replaceScene(scene);
     // PlayLayer::get() still returns the old layer until the scene switch happens next frame.
@@ -1076,7 +1108,21 @@ void stepGui() {
         auto colon = spec.find(':');
         std::string kind = spec.substr(0, colon);
         int id = colon == std::string::npos ? 1 : std::atoi(spec.c_str() + colon + 1);
-        if (auto lel = CCDirector::get()->getRunningScene()->getChildByType<LevelEditorLayer>(0)) {
+        auto lel = CCDirector::get()->getRunningScene()->getChildByType<LevelEditorLayer>(0);
+        if (lel && kind == "string") {
+            // edit:string:<file>: the objects of a level string file (`1,<id>,2,<x>,3,<y>,...;`),
+            // nothing selected, with the BPM guides shown (GameManager's showBPMMarkers)
+            std::ifstream file(spec.substr(colon + 1));
+            std::stringstream text;
+            text << file.rdbuf();
+            lel->createObjectsFromString(text.str(), true, true);
+            GameManager::get()->m_showBPMMarkers = true;
+            lel->m_editorUI->deselectAll();
+            // the view 150 higher, so what's above the ground shows between the bars
+            lel->m_objectLayer->setPositionY(lel->m_objectLayer->getPositionY() - 150.f);
+            lel = nullptr;
+        }
+        if (lel) {
             auto ui = lel->m_editorUI;
             auto obj = lel->createObject(id, {165.f, 105.f}, false);
             ui->selectObject(obj, true);
@@ -1210,7 +1256,7 @@ class $modify(TraceBase, GJBaseGameLayer) {
     }
 
     void processCommands(float dt, bool isHalfTick, bool isLastTick) {
-        if (!recording(this)) {
+        if (!recording(this) || g_deathFrame >= 0) {
             GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
             return;
         }
@@ -1541,6 +1587,38 @@ class $modify(TraceView, CCEGLView) {
             saveFrame(g_spec.endPath);
             _exit(0);
         }
+        if (g_active && g_layer && g_deathFrame >= 0) {
+            int last = 0;
+            for (auto& [frame, path] : g_spec.deathShots) {
+                last = std::max(last, frame);
+                if (frame != g_deathFrame) continue;
+                std::string out = path;
+                if (auto at = out.find("%d"); at != std::string::npos) out.replace(at, 2, std::to_string(g_attempt));
+                saveFrame(out);
+                dumpParticles(g_layer, out + ".particles", g_deathFrame);
+                // the circle waves' fields (CCCircleWave: radius +0x14c, opacity +0x150, color
+                // +0x154, outline +0x160, line width +0x164, opacity mod +0x168)
+                if (FILE* f = std::fopen((out + ".waves").c_str(), "w")) {
+                    std::function<void(CCNode*)> walk = [&](CCNode* n) {
+                        if (std::string(typeid(*n).name()).find("CCCircleWave") != std::string::npos) {
+                            auto raw = reinterpret_cast<unsigned char*>(n);
+                            auto rf = [&](size_t off) { float v; std::memcpy(&v, raw + off, sizeof v); return v; };
+                            auto ri = [&](size_t off) { int v; std::memcpy(&v, raw + off, sizeof v); return v; };
+                            std::fprintf(f, "z=%d radius=%.3f opacity=%.3f color=%d,%d,%d outline=%d width=%d opmod=%.3f center=%.3f,%.3f\n",
+                                n->getZOrder(), rf(0x14c), rf(0x150), raw[0x154], raw[0x155], raw[0x156], ri(0x160), ri(0x164),
+                                rf(0x168), rf(0x158), rf(0x15c));
+                        }
+                        for (auto c : CCArrayExt<CCNode*>(n->getChildren())) walk(c);
+                    };
+                    walk(g_layer->m_objectLayer);
+                    std::fclose(f);
+                }
+            }
+            if (g_deathFrame++ >= last) {
+                g_deathFrame = -1;
+                finish("death");
+            }
+        }
         if (g_active && g_layer && !g_spec.screenshots.empty() && g_step >= g_spec.screenshots.front().first) {
             auto [target, path] = g_spec.screenshots.front();
             g_spec.screenshots.erase(g_spec.screenshots.begin());
@@ -1577,6 +1655,13 @@ class $modify(TraceView, CCEGLView) {
 };
 
 class $modify(TracePlay, PlayLayer) {
+    // fastseed: the random triggers' generator from a known seed (the game seeds it from the
+    // clock here)
+    void resetLevel() {
+        PlayLayer::resetLevel();
+        if (g_active && g_spec.fastSeed >= 0) GameToolbox::fast_srand(uint64_t(g_spec.fastSeed));
+    }
+
     void destroyPlayer(PlayerObject* player, GameObject* object) {
         // bench: the player can't die (the start's anti-cheat check still goes through)
         if (g_active && (g_spec.benchSecs > 0 || g_spec.noclip) && object != m_anticheatSpike) return;
@@ -1590,6 +1675,14 @@ class $modify(TracePlay, PlayLayer) {
                 std::fprintf(g_out, "# killer id=%d type=%d pos=%.9g,%.9g rect=%.9g,%.9g,%.9g,%.9g rot=%.9g uid=%d\n",
                     object->m_objectID, int(object->m_objectType), pos.x, pos.y, r.origin.x, r.origin.y,
                     r.size.width, r.size.height, object->getRotation(), object->m_uniqueID);
+            }
+            if (!g_spec.deathShots.empty()) {
+                // keep rendering (actions at the spec's dt) for the death effect's frames
+                std::fprintf(g_out, "# end death step=%d updates=%d\n", g_step, g_updates);
+                std::fclose(g_out);
+                g_out = nullptr;
+                g_deathFrame = 0;
+                return;
             }
             finish("death");
         } else if (recording(this) && g_out && player == m_player2 && player->m_isDead && g_out2) {

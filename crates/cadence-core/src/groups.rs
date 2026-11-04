@@ -675,7 +675,7 @@ pub struct GroupTriggers {
     remaps: Vec<Vec<(i32, i32)>>,
     /// Advanced random triggers' (group, weight) lists, and the random state.
     randoms: Vec<Vec<(i32, i32)>>,
-    rng: u32,
+    rng: crate::fastrand::FastRand,
     /// Triggers an ordered spawn queued: (seconds left, action, the trigger's groups).
     delayed_actions: Vec<(f64, Action, Vec<i32>)>,
     /// Item counters (`GJEffectManager::countForItem`) and armed count triggers.
@@ -686,8 +686,13 @@ pub struct GroupTriggers {
 }
 
 impl GroupTriggers {
+    /// Seed the random triggers' `fast_rand` (`fast_srand`).
+    pub fn reseed(&mut self, seed: u64) {
+        self.rng = crate::fastrand::FastRand::new(seed);
+    }
+
     pub fn new(level: &LevelString) -> GroupTriggers {
-        let mut out = GroupTriggers { remaps: vec![Vec::new()], rng: 0x9e37_79b9, ..GroupTriggers::default() };
+        let mut out = GroupTriggers { remaps: vec![Vec::new()], rng: crate::fastrand::FastRand::new(0x9e37_79b9), ..GroupTriggers::default() };
         for (order, raw) in level.objects.iter().enumerate() {
             let t = match Trigger::parse(raw, order as u32) {
                 Some(mut t) => {
@@ -900,30 +905,28 @@ impl GroupTriggers {
                         }
                     }
                     Action::Random { table } => {
-                        // a weighted pick (xorshift: the game's own random sequence isn't ported)
+                        // RandTriggerGameObject::getRandomGroupID (0x161e14): k = the
+                        // weights' sum · fast_rand_0_1, rounded half away from zero; the first
+                        // entry whose running sum reaches k (none when k is past them all)
                         let list = self.randoms.get(table as usize).cloned().unwrap_or_default();
-                        let total: i32 = list.iter().map(|c| c.1.max(0)).sum();
-                        if total > 0 {
-                            self.rng ^= self.rng << 13;
-                            self.rng ^= self.rng >> 17;
-                            self.rng ^= self.rng << 5;
-                            let mut pick = (self.rng % total as u32) as i32;
+                        if !list.is_empty() {
+                            let total = list.iter().map(|c| c.1).sum::<i32>() as f32;
+                            let k = (self.rng.unit() * total).round() as i32;
+                            let mut sum = 0;
                             for (group, weight) in list {
-                                if pick < weight.max(0) {
-                                    next.push((Action::Spawn { group, delay: 0.0, ordered: false, remap: 0 }, origin.clone(), offset));
+                                sum += weight;
+                                if sum >= k {
+                                    if group > 0 {
+                                        next.push((Action::Spawn { group, delay: 0.0, ordered: false, remap: 0 }, origin.clone(), offset));
+                                    }
                                     break;
                                 }
-                                pick -= weight.max(0);
                             }
                         }
                     }
                     Action::Chance { a, b, chance } => {
-                        // fast_rand_0_1() · 100 ≤ chance: the game's own random sequence isn't
-                        // ported (xorshift)
-                        self.rng ^= self.rng << 13;
-                        self.rng ^= self.rng >> 17;
-                        self.rng ^= self.rng << 5;
-                        let r = (self.rng >> 8) as f32 / (1u32 << 24) as f32;
+                        // fast_rand_0_1() · 100 ≤ chance (the game's generator, own seed)
+                        let r = self.rng.unit();
                         let group = if r * 100.0 <= chance { a } else { b };
                         if group > 0 {
                             next.push((Action::Spawn { group, delay: 0.0, ordered: false, remap: 0 }, origin.clone(), offset));

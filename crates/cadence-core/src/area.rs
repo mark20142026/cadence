@@ -42,13 +42,15 @@ pub struct AreaSpec {
     /// out): set when the trigger uses any of them.
     pub unsupported: bool,
     /// 3006 move, 3007 rotate (270 degrees), 3008 scale (233/234), 3009 fade (286 opacity),
-    /// 3010 tint (260 channel, 265 amount, 65 main only, 66 detail only; 278 HSV mode isn't
-    /// ported: it tints toward the channel's color like the plain mode).
+    /// 3010 tint (260 channel, 265 amount, 65 main only, 66 detail only; 278 HSV mode: the
+    /// HSV 49 scaled by the area's weight instead of a channel).
     pub kind: i32,
     pub tint_channel: i32,
     pub tint: f32,
     pub tint_main_only: bool,
     pub tint_detail_only: bool,
+    pub tint_hsv_mode: bool,
+    pub tint_hsv: crate::triggers::Hsv,
     pub rotation: f32,
     pub scale: (f32, f32),
     pub opacity: f32,
@@ -84,6 +86,8 @@ impl AreaSpec {
             tint: f(265),
             tint_main_only: on(65),
             tint_detail_only: on(66),
+            tint_hsv_mode: on(278),
+            tint_hsv: raw.get(49).map(crate::triggers::Hsv::parse).unwrap_or(crate::triggers::Hsv::IDENTITY),
             rotation: f(270),
             scale: (raw.get_f32(233).unwrap_or(1.0), raw.get_f32(234).unwrap_or(1.0)),
             opacity: f(286),
@@ -111,6 +115,10 @@ pub struct AreaState {
     /// Area tints (`processAreaTintGroupAction`): (channel, share of its color, tint main,
     /// tint detail); the newest tint of the step wins. Channel 0 is none.
     pub tint: Vec<(i32, f32, bool, bool)>,
+    /// Area tints in HSV mode (278, `processAreaTintGroupAction` 0xfaafc): the trigger's HSV
+    /// times the weight (`getMultipliedHSV(1 − v)`) applied to the object's color, (main,
+    /// detail) as for `tint`.
+    pub tint_hsv: Vec<Option<(crate::triggers::Hsv, bool, bool)>>,
     /// Objects with a visual effect last step (cleared before the next).
     touched: Vec<usize>,
 }
@@ -125,6 +133,7 @@ impl AreaState {
             turn: vec![0.0; n],
             scale: vec![(1.0, 1.0); n],
             tint: vec![(0, 0.0, false, false); n],
+            tint_hsv: vec![None; n],
             ..Default::default()
         }
     }
@@ -238,6 +247,7 @@ impl World {
             self.area.turn[i] = 0.0;
             self.area.scale[i] = (1.0, 1.0);
             self.area.tint[i].0 = 0;
+            self.area.tint_hsv[i] = None;
         }
         if self.area.effects.is_empty() {
             return;
@@ -312,7 +322,14 @@ impl World {
                         }
                         // multipliedColorValue((1 − tint) + tint·v, channel, own): the channel's
                         // share is tint·(1 − v)
-                        3010 => self.area.tint[i] = (a.tint_channel, (a.tint * k).clamp(0.0, 1.0), !a.tint_detail_only, !a.tint_main_only),
+                        3010 if a.tint_hsv_mode => {
+                            self.area.tint[i].0 = 0;
+                            self.area.tint_hsv[i] = Some((a.tint_hsv.multiplied(k), !a.tint_detail_only, !a.tint_main_only));
+                        }
+                        3010 => {
+                            self.area.tint[i] = (a.tint_channel, (a.tint * k).clamp(0.0, 1.0), !a.tint_detail_only, !a.tint_main_only);
+                            self.area.tint_hsv[i] = None;
+                        }
                         _ => continue,
                     }
                     self.area.touched.push(i);

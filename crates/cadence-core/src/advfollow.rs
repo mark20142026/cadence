@@ -186,7 +186,7 @@ pub struct AdvFollow {
     history: std::collections::HashMap<i32, std::collections::VecDeque<(f32, f32)>>,
     /// The targets that need a history (followed with a delay).
     pub delayed_targets: Vec<i32>,
-    rng: u32,
+    rng: crate::fastrand::FastRand,
 }
 
 /// A stable value in [−1, 1] for an object's `k`-th variance (`m_varianceValues`).
@@ -248,15 +248,17 @@ impl AdvFollow {
         let mut delayed: Vec<i32> = specs.values().filter(|s| !s.edit && !s.retarget && (s.delay.0 > 0.0 || s.delay.1 != 0.0)).map(|s| s.follow).collect();
         delayed.sort_unstable();
         delayed.dedup();
-        AdvFollow { specs: std::sync::Arc::new(specs), delayed_targets: delayed, rng: 0x1234_5678, ..Default::default() }
+        AdvFollow { specs: std::sync::Arc::new(specs), delayed_targets: delayed, rng: crate::fastrand::FastRand::new(0x1234_5678), ..Default::default() }
     }
 
-    /// `GameToolbox::fast_rand_0_1` (its own sequence isn't ported).
+    /// Seed its `fast_rand` (`fast_srand`).
+    pub fn reseed(&mut self, seed: u64) {
+        self.rng = crate::fastrand::FastRand::new(seed);
+    }
+
+    /// `GameToolbox::fast_rand_0_1` (the game's generator; the game seeds it from the clock).
     fn rand01(&mut self) -> f32 {
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 17;
-        self.rng ^= self.rng << 5;
-        (self.rng >> 8) as f32 / (1u32 << 24) as f32
+        self.rng.unit()
     }
 
     /// `triggerAdvancedFollowCommand`: a new instance, or the same trigger's restarted.

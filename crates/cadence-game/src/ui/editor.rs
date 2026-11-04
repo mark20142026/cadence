@@ -82,6 +82,9 @@ const ROWS: usize = 2;
 pub struct Editor {
     /// The grid hidden (the top bar's grid button).
     pub hide_grid: bool,
+    /// GameManager's `showBPMMarkers` (saved as such, off unless toggled with the edit tab's
+    /// `edit_eBPMBtn`): BPM triggers (3642) draw their beat lines.
+    pub show_bpm_markers: bool,
     /// Which local level (index in the saved list) this is, if saved.
     pub slot: Option<usize>,
     pub name: String,
@@ -122,6 +125,7 @@ impl Default for Editor {
     fn default() -> Editor {
         Editor {
             hide_grid: false,
+            show_bpm_markers: false,
             slot: None,
             name: "Unnamed 0".into(),
             objects: Vec::new(),
@@ -432,6 +436,7 @@ impl Editor {
         // the start line (x = 0)
         let (sx, _) = to_screen(0.0, 0.0);
         c.rect(sx - 0.5, 0.0, 1.0, h, [1.0, 1.0, 1.0], 0.5);
+        self.draw_guides(c, view);
         // selected objects: a green box
         for &i in &self.selected {
             if let Some(o) = self.objects.get(i) {
@@ -626,6 +631,84 @@ pub enum EdEffect {
 
 /// The Z Layer buttons' values (`ZLayer`: B5 −5 … T4 11).
 pub const Z_LAYERS: [i32; 9] = [-5, -3, -1, 1, 3, 5, 7, 9, 11];
+
+/// The editor's line speeds (units per second) by a speed index (0 normal, 1 slow, 2 fast,
+/// 3 faster, 4 fastest), as `DrawGridLayer` keeps them.
+const GUIDE_SPEEDS: [f32; 5] = [311.58011, 251.16007, 387.42014, 468.00015, 576.00018];
+
+impl Editor {
+    /// The guide objects' overlays:
+    /// - Camera Guide 2016 (`LevelEditorLayer::updateDebugDraw` 0xba678): with preview opacity 506
+    ///   above 0, zoom 371 held to 0.4..3: a green 480 × 320 rectangle ÷ zoom (the game's
+    ///   reference view) and, when the window isn't 3:2, an orange (255, 128, 0) one of the window's
+    ///   size ÷ zoom, both centered on the object moved by offset 28 / 29 and kept above y = half
+    ///   their height; a yellow line through the object's x across the green one. All in the
+    ///   preview opacity, half a unit wide (CCDrawNode, radius 0.25 ÷ the layer's scale).
+    /// - BPM 3642 (`DrawGridLayer::draw` 0xbda9c, with `showBPMMarkers`): unless disabled (500),
+    ///   with BPM 498 above 0, a line every speed(499) · 60 / (BPM · max(1, 501)) units from the
+    ///   object's x over duration 10 seconds of the speed: every 501st line yellow, the others
+    ///   orange (all yellow when 501 < 1); one pixel wide, opaque.
+    fn draw_guides(&self, c: &mut Canvas, view: (f32, f32, f32, f32)) {
+        let (w, h) = (c.width, c.height);
+        let to_screen = |x: f32, y: f32| ((x - view.0) * w / view.2, (y - view.1) * h / view.3);
+        let unit = w / view.2;
+        let f = |o: &EdObject, k: u16| o.get(k).and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+        let line = 0.5 * unit;
+        for o in self.objects.iter().filter(|o| o.id == 2016) {
+            let opacity = f(o, 506);
+            if opacity <= 0.0 {
+                continue;
+            }
+            let zoom = f(o, 371).min(3.0).max(0.4);
+            let (ox, oy) = (f(o, 28), f(o, 29));
+            let rect = |c: &mut Canvas, rw: f32, rh: f32, color: [f32; 3]| {
+                let cy = o.y.max(rh * 0.5);
+                let (x0, y0) = to_screen(o.x + ox - rw * 0.5, cy + oy - rh * 0.5 + GROUND);
+                let (x1, y1) = to_screen(o.x + ox + rw * 0.5, cy + oy + rh * 0.5 + GROUND);
+                c.rect(x0 - line * 0.5, y0 - line * 0.5, x1 - x0 + line, line, color, opacity);
+                c.rect(x0 - line * 0.5, y1 - line * 0.5, x1 - x0 + line, line, color, opacity);
+                c.rect(x0 - line * 0.5, y0 - line * 0.5, line, y1 - y0 + line, color, opacity);
+                c.rect(x1 - line * 0.5, y0 - line * 0.5, line, y1 - y0 + line, color, opacity);
+                (y0, y1)
+            };
+            // the window (Cadence's view is VIEW_HEIGHT tall, its width the window's aspect)
+            let (win_w, win_h) = (view.2 * self.zoom, view.3 * self.zoom);
+            if (480.0 / zoom, 320.0 / zoom) != (win_w / zoom, win_h / zoom) {
+                rect(c, win_w / zoom, win_h / zoom, [1.0, 0.5, 0.0]);
+            }
+            let (y0, y1) = rect(c, 480.0 / zoom, 320.0 / zoom, [0.0, 1.0, 0.0]);
+            let (sx, _) = to_screen(o.x, 0.0);
+            c.rect(sx - line * 0.5, y0, line, y1 - y0, [1.0, 1.0, 0.0], opacity);
+        }
+        if !self.show_bpm_markers {
+            return;
+        }
+        let pixel = 0.45;
+        for o in self.objects.iter().filter(|o| o.id == 3642) {
+            let bpm = f(o, 498) as i32;
+            if bpm <= 0 || f(o, 500) as i32 != 0 {
+                continue;
+            }
+            let per_bar = f(o, 501) as i32;
+            let speed = GUIDE_SPEEDS.get(f(o, 499) as usize).copied().unwrap_or(GUIDE_SPEEDS[0]);
+            let step = speed * (60.0 / (per_bar.max(1) * bpm) as f32);
+            let end = (o.x + speed * f(o, 10)).min(view.0 + view.2);
+            let (mut x, mut n) = (o.x, 0i32);
+            if view.0 > x {
+                let skip = ((view.0 - x) / step) as i32;
+                n = skip;
+                x += step * skip as f32;
+            }
+            while x < end {
+                let yellow = per_bar < 1 || n % per_bar == 0;
+                let (sx, _) = to_screen(x, 0.0);
+                c.rect(sx - pixel * 0.5, 0.0, pixel, h, if yellow { [1.0, 1.0, 0.0] } else { [1.0, 0.5, 0.0] }, 1.0);
+                x += step;
+                n += 1;
+            }
+        }
+    }
+}
 
 impl EdObject {
     pub fn get(&self, key: u16) -> Option<&str> {

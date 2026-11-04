@@ -53,7 +53,7 @@ pub enum CameraAction {
     /// Camera mode (2925, `updateCameraMode` 0xe0c78): free mode 111 (+0x311) and, with 112, the
     /// camera padding 114 (0..1) and easing 113 (1..40) (+0x2cc / +0x2d0); applied to the player
     /// like a mode portal's.
-    CameraMode { free: bool, padding: Option<(f32, f32)> },
+    CameraMode { free: bool, padding: Option<(f32, f32)>, no_snap: bool },
     /// Camera edge (2062, `updateCameraEdge` 0x104a94): edge 164 (1 left, 2 right, 3 up, 4 down)
     /// becomes group 51's main object (`None`: no edge; `Some(None)`: a group without objects,
     /// at the origin).
@@ -89,7 +89,7 @@ enum TriggerKind {
     /// (+0x745) only switches the channel.
     RotateGameplay { dir: i32, dir2: i32, change: bool, rotate: bool, target: i32, edit: bool, keep: bool, mod_x: f32, mod_y: f32 },
     GameplayOffset { x: Option<i32>, y: Option<i32>, no_zoom: (bool, bool) },
-    CameraMode { free: bool, padding: Option<(f32, f32)> },
+    CameraMode { free: bool, padding: Option<(f32, f32)>, no_snap: bool },
     Edge { side: i32, target: Option<Option<u32>> },
 }
 
@@ -151,6 +151,8 @@ impl CameraTriggers {
                 }
                 2925 => TriggerKind::CameraMode {
                     free: raw.get(111) == Some("1"),
+                    // key 370 (+0x6e0 → GJBaseGameLayer+0x312): corridors not snapped to the grid
+                    no_snap: raw.get(370) == Some("1"),
                     padding: (raw.get(112) == Some("1")).then(|| {
                         let pad = raw.get_f32(114).unwrap_or(0.0);
                         let ease = raw.get_f32(113).unwrap_or(0.0);
@@ -247,7 +249,7 @@ impl CameraTriggers {
             }
             TriggerKind::Offset { x, y, duration, easing, rate } => CameraAction::Offset { x, y, duration, easing, rate },
             TriggerKind::GameplayOffset { x, y, no_zoom } => CameraAction::GameplayOffset { x, y, no_zoom },
-            TriggerKind::CameraMode { free, padding } => CameraAction::CameraMode { free, padding },
+            TriggerKind::CameraMode { free, padding, no_snap } => CameraAction::CameraMode { free, padding, no_snap },
             TriggerKind::Edge { side, target } => CameraAction::Edge { side, target },
             TriggerKind::RotateGameplay { dir, dir2, edit, keep, mod_x, mod_y, .. } => {
                 if keep && !edit {
@@ -1179,7 +1181,7 @@ mod tests {
         assert!(acts.contains(&CameraAction::GameplayOffset { x: Some(200), y: None, no_zoom: (true, false) }));
         assert!(acts.contains(&CameraAction::Edge { side: 2, target: Some(Some(0)) }));
         // padding clamped to 0..1, easing to 1..40
-        assert!(acts.contains(&CameraAction::CameraMode { free: true, padding: Some((1.0, 1.0)) }));
+        assert!(acts.contains(&CameraAction::CameraMode { free: true, padding: Some((1.0, 1.0)), no_snap: false }));
         let mut c = Camera::new();
         c.apply(CameraAction::GameplayOffset { x: Some(200), y: None, no_zoom: (true, false) }, 569.0);
         assert_eq!(c.gameplay_offset, [200, 75]);

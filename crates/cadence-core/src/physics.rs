@@ -288,6 +288,11 @@ pub struct Player {
     /// of the portals that set it.
     pub free_mode: bool,
     pub free_mode_portals: std::sync::Arc<Vec<u32>>,
+    /// Key 370 of the last camera mode trigger or mode portal (GJBaseGameLayer+0x312): the
+    /// corridor's floor isn't snapped to the 30-unit grid (`animateInDualGroundNew`); the portals
+    /// that set it.
+    pub corridor_no_snap: bool,
+    pub no_snap_portals: std::sync::Arc<Vec<u32>>,
     /// This step's game time in seconds and in 60 fps units (0.25 at 240 steps/s; time warp
     /// scales both).
     pub step_secs: f64,
@@ -547,6 +552,8 @@ impl Default for Player {
             max_gameplay_y: MAX_GAMEPLAY_Y,
             free_mode: false,
             free_mode_portals: Default::default(),
+            corridor_no_snap: false,
+            no_snap_portals: Default::default(),
             step_secs: 1.0 / 240.0,
             dt60: STEP_DT,
             fix_radius_collision: false,
@@ -907,7 +914,7 @@ impl Player {
                 self.dual_portal_y = Some(y);
                 let mut second = self.dual_copy();
                 second.dual_portal_y = Some(y);
-                self.corridor = Some(corridor_at(y, dual_height(self.mode, (self.mode, self.upside_down))));
+                self.corridor = Some(corridor_at(y, dual_height(self.mode, (self.mode, self.upside_down)), self.corridor_no_snap));
                 second.corridor = self.corridor;
                 self.dual = Some(Box::new(second));
                 return;
@@ -1022,7 +1029,7 @@ impl Player {
     fn end_dual(&mut self) {
         self.dual = None;
         self.dual_portal_y = None;
-        self.corridor = solo_corridor(self.mode, self.mode_portal_y);
+        self.corridor = solo_corridor(self.mode, self.mode_portal_y, self.corridor_no_snap);
     }
 
     fn step_one(&mut self, world: &World) {
@@ -1435,6 +1442,9 @@ impl Player {
         self.force_blocks = std::sync::Arc::new(blocks);
         self.free_mode_portals = std::sync::Arc::new(
             level.objects.iter().enumerate().filter(|(_, o)| o.get(111) == Some("1")).map(|(i, _)| i as u32).collect(),
+        );
+        self.no_snap_portals = std::sync::Arc::new(
+            level.objects.iter().enumerate().filter(|(_, o)| o.get(370) == Some("1")).map(|(i, _)| i as u32).collect(),
         );
     }
 
@@ -2099,6 +2109,7 @@ impl Player {
                 // playerWillSwitchMode: the portal's "free mode" (key 111, +0x6d4) becomes the
                 // layer's (+0x311): no corridor floor/ceiling while it's on.
                 self.free_mode = self.free_mode_portals.contains(&obj.order);
+                self.corridor_no_snap = self.no_snap_portals.contains(&obj.order);
                 if let Some(cam) = obj.portal_camera {
                     self.camera_padding = cam;
                 }
@@ -2120,8 +2131,8 @@ impl Player {
                     self.used_portals.push(index);
                     self.mode_portal_y = obj.y;
                     self.corridor = match (self.dual_portal_y, self.partner) {
-                        (Some(y), Some(other)) => Some(corridor_at(y, dual_height(to, other))),
-                        _ => solo_corridor(to, obj.y),
+                        (Some(y), Some(other)) => Some(corridor_at(y, dual_height(to, other), self.corridor_no_snap)),
+                        _ => solo_corridor(to, obj.y, self.corridor_no_snap),
                     };
                 }
             }
@@ -2330,8 +2341,8 @@ impl Player {
         self.rotation_speed = 0.0;
         self.mode_portal_y = portal_y;
         self.corridor = match (self.dual_portal_y, self.partner) {
-            (Some(y), Some(other)) => Some(corridor_at(y, dual_height(to, other))),
-            _ => solo_corridor(to, portal_y),
+            (Some(y), Some(other)) => Some(corridor_at(y, dual_height(to, other), self.corridor_no_snap)),
+            _ => solo_corridor(to, portal_y, self.corridor_no_snap),
         };
         if to == Mode::Cube && from.is_flying() {
             self.run_rotate_action();
@@ -2718,8 +2729,9 @@ impl Player {
     /// camera step.
     fn camera_action(&mut self, action: crate::camera::CameraAction) {
         match action {
-            crate::camera::CameraAction::CameraMode { free, padding } => {
+            crate::camera::CameraAction::CameraMode { free, padding, no_snap } => {
                 self.free_mode = free;
+                self.corridor_no_snap = no_snap;
                 if let Some(p) = padding {
                     self.camera_padding = p;
                 }
@@ -3056,12 +3068,12 @@ fn is_ring(kind: ObjectType) -> bool {
 }
 
 /// The corridor a mode gets outside dual mode: flying modes 300, the ball 240, none for the cube.
-fn solo_corridor(mode: Mode, portal_y: f32) -> Option<(f32, f32)> {
+fn solo_corridor(mode: Mode, portal_y: f32, no_snap: bool) -> Option<(f32, f32)> {
     match mode {
-        Mode::Ship | Mode::Ufo | Mode::Wave | Mode::Swing => Some(corridor_at(portal_y, SHIP_CORRIDOR)),
-        Mode::Ball => Some(corridor_at(portal_y, BALL_CORRIDOR)),
+        Mode::Ship | Mode::Ufo | Mode::Wave | Mode::Swing => Some(corridor_at(portal_y, SHIP_CORRIDOR, no_snap)),
+        Mode::Ball => Some(corridor_at(portal_y, BALL_CORRIDOR, no_snap)),
         // The spider portal opens a 270 corridor (updateDualGround: type 33 animates it in).
-        Mode::Spider => Some(corridor_at(portal_y, 270.0)),
+        Mode::Spider => Some(corridor_at(portal_y, 270.0, no_snap)),
         Mode::Cube | Mode::Robot => None,
     }
 }
@@ -3083,8 +3095,10 @@ fn dual_height(to: Mode, (other, _): (Mode, bool)) -> f32 {
 
 /// Floor and ceiling of the corridor a portal at height `y` opens (`animateInDualGroundNew`):
 /// the floor is snapped down to the 30-unit grid and kept at or above the ground.
-fn corridor_at(y: f32, height: f32) -> (f32, f32) {
-    let floor = (((y - height * 0.5) / 30.0) as i32 as f32 * 30.0).max(GROUND);
+/// With `no_snap` (key 370) the floor is the portal's y less half the height, unsnapped.
+fn corridor_at(y: f32, height: f32, no_snap: bool) -> (f32, f32) {
+    let low = y - height * 0.5;
+    let floor = (if no_snap { low } else { (low / 30.0) as i32 as f32 * 30.0 }).max(GROUND);
     (floor, floor + height)
 }
 

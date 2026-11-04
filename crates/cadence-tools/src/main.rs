@@ -214,11 +214,19 @@ fn press(player: &mut cadence_core::physics::Player, world: &mut cadence_core::w
 
 /// The world of a spec: its `levelstring` file (a raw or encoded level string) or main level.
 fn load_spec_world(spec: &cadence_core::trace::Spec) -> Result<cadence_core::world::World, Box<dyn std::error::Error>> {
-    let Some(path) = &spec.level_string else { return load_world(spec.level) };
-    let bytes = std::fs::read(path)?;
-    let text = String::from_utf8_lossy(&bytes);
-    let text = if text.trim_start().starts_with("H4sI") || !text.contains(';') { decode_level_bytes(&bytes)? } else { text.into_owned() };
-    Ok(world_of(LevelString::parse(&text)))
+    let mut world = match &spec.level_string {
+        None => load_world(spec.level)?,
+        Some(path) => {
+            let bytes = std::fs::read(path)?;
+            let text = String::from_utf8_lossy(&bytes);
+            let text = if text.trim_start().starts_with("H4sI") || !text.contains(';') { decode_level_bytes(&bytes)? } else { text.into_owned() };
+            world_of(LevelString::parse(&text))
+        }
+    };
+    if let Some(seed) = spec.fast_seed {
+        world.set_fast_seed(seed);
+    }
+    Ok(world)
 }
 
 fn load_world(level: i32) -> Result<cadence_core::world::World, Box<dyn std::error::Error>> {

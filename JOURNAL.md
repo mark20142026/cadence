@@ -965,3 +965,54 @@ float maths. What the game does is in NOTES ("The remaining 2.2 triggers").
 - Share: Options cycles public / unlisted / friends only (the upload's unlisted 0/1/2), "!" shows the game's rules text. Rate Demon on a rated demon's page (easy … extreme → rateGJDemon21 1–5).
 - Comment History from your profile (getGJCommentHistory with your user id → the comments popup's rows); its own layout wasn't captured (the harness press didn't open it), so the frame is the comments popup's.
 - Platformer: `m_slopeAngle` is the ridden slope's signed angle (slopes.rs sets it on landing), used for the speed cap on slopes; verify_all unchanged at 111/126 (no platformer-slope trace yet).
+
+## 2026-11-05 night (death agent): death effects, editor guides, trigger residuals, slope trace
+
+Worktree branch; decompiles from a scratch copy of re/ghidra; harness runs with this agent's own
+build of the mod and its own copy of the game app (so the main session's copy and mod stayed
+untouched), home re/home (re/home-anon for the editor).
+
+- **Death effects 2–20** (`death.rs`): `playDeathEffect`'s 19 cases read from the instructions
+  with a small symbolic tracer over the disassembly (calls with their float arguments, the
+  per-case tails they jump into, CCCircleWave field stores). Sprite (its sheet loaded only when
+  chosen; the web reads all 19 sheets' files), frames, delay, fade, tint, scale, rotation, blend;
+  particle system settings; both circle waves (first at z 1000 over the T layers, the second a
+  10-pixel ring); the shatter (not for 20). Found: 12–15 build a fade they never run; the
+  default effect's particles have node scale = size (Cadence had 1); cocos actions start a frame
+  late; ring widths are framebuffer pixels (spider dash rings now 2 pixels too). Practice mode
+  uses the default unless option 0100. Checked: harness `deatheffect` / `deathshot` captures of
+  all 20 on Stereo Madness, `CADENCE_CHECK_DEATH` steps each effect with the real rolls:
+  **20/20 match** in sprite frame, opacity, color, position, blend, both waves' radius / alpha /
+  color / ring / opacity mod and the particle settings at every captured frame. Screenshots
+  (`compare_shots.py`) differ only by the random rolls and particles (mean diff 2–6 per channel).
+- **Editor guides**: Camera Guide 2016 rectangles and player line, BPM 3642 beat lines (with
+  `show_bpm_markers`, off by default as GameManager's `showBPMMarkers`; nothing in Cadence toggles
+  it yet: the real toggle is the edit tab's `edit_eBPMBtn`). Real editor captured with the mod's
+  new `edit:string:<file>` (objects from a level string, nothing selected, BPM markers on);
+  Cadence with `CADENCE_EDITOR_LEVEL` / `CADENCE_EDITOR_CAM`: the guides land on the same pixels
+  (gui_pair mean diff 1.9 over the guide's area). Not drawn: the real editor's orange
+  (255, 150, 0) playback-position line at the level's stored x (LevelEditorLayer +0x38f8), and
+  Cadence draws its guides over the objects (the real DrawGridLayer is under them).
+- **Trigger residuals**: the game's `fast_rand` for random 1912 / advanced random 2068 /
+  advanced follow (the game seeds from the clock; `fastseed N` in specs fixes it in both: a test
+  level of three random triggers matches for seeds 1 and 2, and the triggers log shows the
+  predicted picks); camera key 370 (corridors unsnapped: real corridor centers 305 / 245 with
+  370 portals, Cadence's trace matches step for step; the camera mode trigger's own 370 only
+  matters when no portal sets it after, not traced); area tint HSV mode (278) ported and area
+  triggers now fire by position (they're object type 45 and the order walk only took type 20:
+  position-placed area triggers never ran in Cadence). The HSV-tinted blocks were captured
+  (re/traces/areahsv): the shift is there in both, the comparison is muddied because Cadence
+  draws P1-colored blocks paler than the game even outside the area (not looked into).
+  Enter tint's HSV mode was already ported. Not done: group parents / linked objects, keyframe
+  curves / reference-only / close loop, edit SFX / song speed and proximity.
+- **Platformer-slope trace** (re/traces/pfslope: 45° and 2:1 slopes up and down, two attempts):
+  Cadence matches until step 259, the second step on the first uphill slope: the real game slows
+  faster (x per step 1.306 → 1.237 → 1.170 → 1.104, about −5 % a step and rising; Cadence
+  −1.1 %, its 0.05 decel). The max-speed cap by cos(m_slopeAngle) is right (both settle toward
+  0.924); the real decel there is about 0.23 per 60 fps unit, as if the momentum path (0.2) or
+  something else applies on landing on an uphill slope. Not fixed. Also seen: the real
+  m_slopeAngle stays set after leaving a slope.
+- verify_all: **114/131** (the original 126 at 111 as before; new suites death, rand, areahsv
+  pass; cam370 matches every position but its ship start's visual rotation at step 0 (as other
+  ship-start levels); pfslope fails as above). `cargo test --workspace --release` green (53 core,
+  47 game).

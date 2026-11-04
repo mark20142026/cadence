@@ -235,6 +235,9 @@ pub struct Emitter {
     pub active: bool,
     /// Remove once stopped and empty (`setAutoRemoveOnFinish`).
     pub auto_remove: bool,
+    /// z among the object layer's children (one-shot effects: the death effects' 99–1000);
+    /// those at 120 and over draw above the T layers.
+    pub z: i32,
     elapsed: f32,
     emit_counter: f32,
     particles: Vec<Particle>,
@@ -251,6 +254,7 @@ impl Emitter {
             position_type: PositionType::Relative,
             active: true,
             auto_remove: false,
+            z: 0,
             elapsed: 0.0,
             emit_counter: 0.0,
             particles: Vec::new(),
@@ -449,11 +453,15 @@ pub struct CircleWave {
     pub outline: bool,
     /// `m_opacityMod` (+0x168): the drawn alpha is opacity × this.
     pub opacity_mod: f32,
+    /// `m_lineWidth` (+0x164, glLineWidth) of the outline: 2 by default, 10 for the death rings.
+    pub line_width: f32,
+    /// Skip the first update, as a cocos2d action's first step starts at 0 (the death waves).
+    pub first_tick: bool,
 }
 
 impl CircleWave {
     pub fn new(center: (f32, f32), r0: f32, r1: f32, duration: f32, color: [f32; 3]) -> CircleWave {
-        CircleWave { center, r0, r1, duration, color, ease_out: true, fade_in: false, z: 0, elapsed: 0.0, outline: false, opacity_mod: 1.0 }
+        CircleWave { center, r0, r1, duration, color, ease_out: true, fade_in: false, z: 0, elapsed: 0.0, outline: false, opacity_mod: 1.0, line_width: 2.0, first_tick: false }
     }
 
     /// The `fadeIn` variant.
@@ -839,6 +847,8 @@ pub struct Effects {
     pub prewarm: f32,
     pub waves: Vec<CircleWave>,
     pub shatters: Vec<Shatter>,
+    /// The death effects' animated sprites (`crate::death`).
+    pub deaths: Vec<crate::death::DeathSprite>,
     pub rng: Rng,
     seed: u64,
     /// The glitter (`GJBaseGameLayer::m_glitterParticles`): squares over the whole view in player
@@ -871,6 +881,12 @@ pub fn glitter_def(color: [f32; 3], view: (f32, f32)) -> ParticleDef {
 }
 
 impl Effects {
+    /// A seed for a new emitter's own random numbers.
+    pub fn next_seed(&mut self) -> u64 {
+        self.seed = self.seed.wrapping_add(0x9e3779b97f4a7c15);
+        self.seed
+    }
+
     /// Start a one-shot effect that removes itself when done.
     pub fn spawn(&mut self, def: &ParticleDef, position: (f32, f32), position_type: PositionType, start_color: Option<[f32; 4]>) {
         self.seed = self.seed.wrapping_add(0x9e3779b97f4a7c15);
@@ -1018,8 +1034,16 @@ impl Effects {
         }
         self.emitters.retain(|e| !(e.auto_remove && e.finished()));
         for w in &mut self.waves {
-            w.elapsed += dt;
+            if w.first_tick {
+                w.first_tick = false;
+            } else {
+                w.elapsed += dt;
+            }
         }
+        for d in &mut self.deaths {
+            d.update(dt);
+        }
+        self.deaths.retain(|d| !d.finished());
         self.waves.retain(|w| w.elapsed < w.duration);
         for sh in &mut self.shatters {
             sh.update(dt);
@@ -1034,6 +1058,7 @@ impl Effects {
         self.objects.clear();
         self.waves.clear();
         self.shatters.clear();
+        self.deaths.clear();
     }
 }
 
@@ -1067,6 +1092,8 @@ impl ParticleLibrary {
         "dashEffect.plist",
         "burstEffect2.plist",
         "swingBurstEffect.plist",
+        "explodeEffectGrav.plist",
+        "explodeEffectVortex.plist",
     ];
 
     pub fn load(files: &dyn Files) -> ParticleLibrary {

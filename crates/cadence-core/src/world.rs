@@ -755,6 +755,17 @@ impl World {
     }
 
     /// Back to the level's starting state (a new attempt).
+    /// `fast_srand(seed)` as every attempt starts (the game seeds from the clock in
+    /// `PlayLayer::resetLevel`; tests and harness comparisons fix it).
+    pub fn set_fast_seed(&mut self, seed: u64) {
+        self.triggers.reseed(seed);
+        self.adv.reseed(seed);
+        if let Some(initial) = self.initial.as_mut() {
+            initial.triggers.reseed(seed);
+            initial.adv.reseed(seed);
+        }
+    }
+
     pub fn reset(&mut self) {
         // kept across attempts: the BG effect switch, persistent items and timers
         let bg_off = self.bg_effect_off;
