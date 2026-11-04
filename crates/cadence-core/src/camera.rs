@@ -46,6 +46,18 @@ pub enum CameraAction {
     MgOffset { y: f32, duration: f32, easing: i32, rate: f32 },
     /// Rotate gameplay (2900): applied to the player (`Player::rotate_gameplay`).
     RotateGameplay { dir: i32, dir2: i32, edit: bool, over: bool, mod_x: f32, mod_y: f32 },
+    /// Gameplay offset (2901, `updateGameplayOffsetX/Y` 0x104bec): how far ahead of the
+    /// player the view sits (+0x2a4 / +0x2ac, 75 by default; keys 28 / 29 as ints, axis 101),
+    /// and 58 / 59 "don't zoom" (+0x2a8 / +0x2b0: not divided by the zoom).
+    GameplayOffset { x: Option<i32>, y: Option<i32>, no_zoom: (bool, bool) },
+    /// Camera mode (2925, `updateCameraMode` 0xe0c78): free mode 111 (+0x311) and, with 112, the
+    /// camera padding 114 (0..1) and easing 113 (1..40) (+0x2cc / +0x2d0); applied to the player
+    /// like a mode portal's.
+    CameraMode { free: bool, padding: Option<(f32, f32)> },
+    /// Camera edge (2062, `updateCameraEdge` 0x104a94): edge 164 (1 left, 2 right, 3 up, 4 down)
+    /// becomes group 51's main object (`None`: no edge; `Some(None)`: a group without objects,
+    /// at the origin).
+    Edge { side: i32, target: Option<Option<u32>> },
 }
 
 /// A camera trigger as placed in the level.
@@ -76,6 +88,9 @@ enum TriggerKind {
     /// Key 171 (+0x744) switches the order channel to key 173 (+0x748, default 0); key 172
     /// (+0x745) only switches the channel.
     RotateGameplay { dir: i32, dir2: i32, change: bool, rotate: bool, target: i32, edit: bool, keep: bool, mod_x: f32, mod_y: f32 },
+    GameplayOffset { x: Option<i32>, y: Option<i32>, no_zoom: (bool, bool) },
+    CameraMode { free: bool, padding: Option<(f32, f32)> },
+    Edge { side: i32, target: Option<Option<u32>> },
 }
 
 /// The level's camera and rotate-gameplay triggers, activated along the player's forward axis
@@ -125,6 +140,27 @@ impl CameraTriggers {
                     mod_y: raw.get_f32(583).unwrap_or(1.0),
                 },
                 3029..=3031 => TriggerKind::ChangeArt { kind: (raw.id() - 3029) as usize, id: raw.get_i32(533).unwrap_or(0) },
+                2901 => {
+                    let axis = raw.get_i32(101).unwrap_or(0);
+                    let v = |k: u32| raw.get_f32(k).unwrap_or(0.0) as i32;
+                    TriggerKind::GameplayOffset {
+                        x: (axis != 2).then(|| v(28)),
+                        y: (axis != 1).then(|| v(29)),
+                        no_zoom: (raw.get(58) == Some("1"), raw.get(59) == Some("1")),
+                    }
+                }
+                2925 => TriggerKind::CameraMode {
+                    free: raw.get(111) == Some("1"),
+                    padding: (raw.get(112) == Some("1")).then(|| {
+                        let pad = raw.get_f32(114).unwrap_or(0.0);
+                        let ease = raw.get_f32(113).unwrap_or(0.0);
+                        (if pad < 0.0 { 0.0 } else if pad > 1.0 { 1.0 } else { pad }, if ease < 1.0 { 1.0 } else if ease > 40.0 { 40.0 } else { ease })
+                    }),
+                },
+                2062 => {
+                    let group = raw.get_i32(51).unwrap_or(0);
+                    TriggerKind::Edge { side: raw.get_i32(164).unwrap_or(0), target: (group > 0).then(|| first_in_group.get(&group).copied()) }
+                }
                 2999 => TriggerKind::MgOffset { y: raw.get_f32(29).unwrap_or(0.0), duration, easing, rate },
                 1913 => TriggerKind::Zoom { zoom: raw.get_f32(371).unwrap_or(1.0), duration, easing, rate },
                 2015 => TriggerKind::Rotate { degrees: raw.get_f32(68).unwrap_or(0.0), add: raw.get(70) == Some("1"), snap: raw.get(394) == Some("1"), duration, easing, rate },
@@ -210,6 +246,9 @@ impl CameraTriggers {
                 CameraAction::ExitStatic { x, y, duration, easing, rate, smooth, smooth_mod }
             }
             TriggerKind::Offset { x, y, duration, easing, rate } => CameraAction::Offset { x, y, duration, easing, rate },
+            TriggerKind::GameplayOffset { x, y, no_zoom } => CameraAction::GameplayOffset { x, y, no_zoom },
+            TriggerKind::CameraMode { free, padding } => CameraAction::CameraMode { free, padding },
+            TriggerKind::Edge { side, target } => CameraAction::Edge { side, target },
             TriggerKind::RotateGameplay { dir, dir2, edit, keep, mod_x, mod_y, .. } => {
                 if keep && !edit {
                     CameraAction::RotateGameplay { dir, dir2, edit: true, over: true, mod_x: 0.0, mod_y: 0.0 }
@@ -321,6 +360,13 @@ pub struct Camera {
     fly_active: bool,
     pub ground_bottom: f32,
     pub ground_top: f32,
+    /// `m_gameplayOffsetX/Y` (+0x2a4 / +0x2ac, gameplay offset triggers) and their "don't
+    /// zoom" flags (+0x2a8 / +0x2b0).
+    pub gameplay_offset: [i32; 2],
+    pub gameplay_no_zoom: [bool; 2],
+    /// Camera edges (+0x420.. left, right, up, down): the edge object by level order (see
+    /// `CameraAction::Edge`).
+    pub edges: [Option<Option<u32>>; 4],
 }
 
 /// A `GJGameState` tween (`updateTweenActions`): elapsed += dt; t = elapsed / duration (1 when
@@ -366,9 +412,6 @@ fn ease_in_out(t: f32, rate: f32) -> f32 {
 
 const STEP: f32 = 1.0 / crate::physics::STEPS_PER_SECOND as f32;
 
-/// `m_gameplayOffsetX/Y`: how far the followed player sits from the view's center (no
-/// gameplay offset triggers yet).
-const GAMEPLAY_OFFSET: [f32; 2] = [75.0, 75.0];
 
 impl Camera {
     /// The camera starts here and holds until the player is far enough in.
@@ -431,6 +474,9 @@ impl Camera {
             fly_active: false,
             ground_bottom: 0.0,
             ground_top: 0.0,
+            gameplay_offset: [75, 75],
+            gameplay_no_zoom: [false; 2],
+            edges: [None; 4],
         }
     }
 
@@ -528,7 +574,29 @@ impl Camera {
             }
         }
         let dir = if left { -1.0f32 } else { 1.0 };
-        let goff = if !sideways { [(dir * GAMEPLAY_OFFSET[0]) / z, 0.0] } else { [0.0, (dir * GAMEPLAY_OFFSET[1]) / z] };
+        let gz = |a: usize| if self.gameplay_no_zoom[a] { 1.0 } else { z };
+        let goff = if !sideways {
+            [(dir * self.gameplay_offset[0] as f32) / gz(0), 0.0]
+        } else {
+            [0.0, (dir * self.gameplay_offset[1] as f32) / gz(1)]
+        };
+        // Camera edges (+0x420..): the view stops at the edge objects; without an up edge the
+        // top is m_maxGameplayY − 150, the bottom 0 without a down edge.
+        let edge_pos = |k: usize| -> Option<(f32, f32)> {
+            self.edges[k].map(|o| o.map_or((0.0, 0.0), |o| position(o)))
+        };
+        let max = [
+            edge_pos(1).map_or(-99999.0, |p| p.0 - wz),
+            edge_pos(2).map_or(player.max_gameplay_y + -150.0, |p| p.1) - hz,
+        ];
+        let min = [
+            edge_pos(0).map_or(-99999.0, |p| p.0),
+            edge_pos(3).map(|p| p.1).filter(|&y| 0.0 < y).unwrap_or(0.0),
+        ];
+        // the edges' own flags: an edge set by a trigger also eases the camera into it
+        let max_flag = [self.edges[1].is_some(), self.edges[2].is_some()];
+        let min_flag = [self.edges[0].is_some(), self.edges[3].is_some()];
+        let platformer = player.platformer.on;
         let mut cam = [self.x - self.applied_exit[0], self.y - self.applied_exit[1]];
         for a in 0..2 {
             cam[a] += self.offset[a] - self.last_offset[a];
@@ -591,7 +659,8 @@ impl Camera {
                     self.internal[a] = v;
                     target[a] = ((ppos[a] - half) + v) + self.offset[a];
                     if a == 0 && !sideways {
-                        target[a] = target[a].max(Self::START_X);
+                        // the level's left limit: max(left edge, 15)
+                        target[a] = target[a].max(if min[0] == -99999.0 { Self::START_X } else { min[0].max(Self::START_X) });
                     }
                 }
             } else {
@@ -648,9 +717,29 @@ impl Camera {
                 }
                 target[a] = (v - half) + self.offset[a];
             }
-            // The bottom edge (y 0); no other camera edges.
-            if a == 1 && target[1] < 0.0 {
-                target[1] = 0.0;
+            // The edges: clamp to them, and ease in over the last 60 units (the easing grows
+            // toward 24) unless moving away from them.
+            if max[a] != -99999.0 {
+                if max[a] < target[a] {
+                    target[a] = max[a];
+                }
+                if (max_flag[a] || platformer) && max[a] + -60.0 < target[a] && !(target[a] < self.last_target[a] && target[a] < cam[a]) {
+                    let e = ease[a];
+                    if e < 24.0 && (e != 1.0 || !self.static_active[a]) {
+                        ease[a] = e + (24.0 - e) * ((max[a] - target[a]) / -60.0 + 1.0);
+                    }
+                }
+            }
+            if min[a] != -99999.0 {
+                if target[a] < min[a] {
+                    target[a] = min[a];
+                }
+                if (min_flag[a] || platformer) && target[a] < min[a] + 60.0 && !(self.last_target[a] < target[a] && cam[a] < target[a]) {
+                    let e = ease[a];
+                    if e < 24.0 && (e != 1.0 || !self.static_active[a]) {
+                        ease[a] = e + (24.0 - e) * ((target[a] - min[a]) / -60.0 + 1.0);
+                    }
+                }
             }
         }
         self.last_target = target;
@@ -665,8 +754,13 @@ impl Camera {
         if instant[0] {
             ease[0] = 1.0;
         }
-        if target[1] < 0.0 {
-            target[1] = 0.0;
+        for a in 0..2 {
+            if 0.0 < max[a] && max[a] < target[a] {
+                target[a] = max[a];
+            }
+            if target[a] < min[a] {
+                target[a] = min[a];
+            }
         }
         for a in 0..2 {
             cam[a] = if 1.0 < ease[a] {
@@ -879,7 +973,22 @@ impl Camera {
                     self.mg_tween = Some(Tween::with_easing(self.mg_offset, y, duration, easing, rate));
                 }
             }
-            CameraAction::RotateGameplay { .. } => {}
+            CameraAction::RotateGameplay { .. } | CameraAction::CameraMode { .. } => {}
+            CameraAction::GameplayOffset { x, y, no_zoom } => {
+                if let Some(x) = x {
+                    self.gameplay_offset[0] = x;
+                    self.gameplay_no_zoom[0] = no_zoom.0;
+                }
+                if let Some(y) = y {
+                    self.gameplay_offset[1] = y;
+                    self.gameplay_no_zoom[1] = no_zoom.1;
+                }
+            }
+            CameraAction::Edge { side, target } => {
+                if (1..=4).contains(&side) {
+                    self.edges[side as usize - 1] = target;
+                }
+            }
             CameraAction::Rotate { degrees, add, snap, duration, easing, rate } => {
                 if snap {
                     self.angle = self.angle.rem_euclid(360.0);

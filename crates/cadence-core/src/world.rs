@@ -229,7 +229,7 @@ pub struct World {
     /// SFX triggers fired since the app last looked: (sound id, volume).
     pub sfx: Vec<(i32, f32)>,
     /// Song triggers fired since the app last looked: (song id, start ms, volume, looped).
-    pub songs: Vec<(i32, i32, f32, bool)>,
+    pub songs: Vec<(i32, i32, f32, bool, i32)>,
     /// kA41 (LevelSettings +0x1cb → layer +0x7bc): rotate triggers turn solids too.
     pub rotate_free_all: bool,
     /// The game's `m_levelLength`: furthest object x + 340 (or more for very short levels).
@@ -242,6 +242,59 @@ pub struct World {
     /// Starting speed factor from the level settings (`kA4`: 0 → 0.9, 1 → 0.7, 2 → 1.1,
     /// 3 → 1.3, 4 → 1.6).
     pub start_speed: f32,
+    /// Enter effects in force (enter.rs) and the enter triggers' values by level order.
+    pub enter: crate::enter::EnterState,
+    pub enter_specs: std::sync::Arc<std::collections::HashMap<u32, crate::enter::EnterSpec>>,
+    /// BG effect off (1819; `PlayLayer` +0x399d): the glitter stays off. Kept across attempts,
+    /// as the game never resets it.
+    pub bg_effect_off: bool,
+    /// BG / MG speed triggers (3606 / 3612): `m_bgSpeed` (+0x314, default 0.1, 0.1) and
+    /// `m_mgSpeed` (+0x31c, default 0.3, 0.5).
+    pub bg_speed: (f32, f32),
+    pub mg_speed: (f32, f32),
+    /// Edit song / SFX triggers fired since the app last looked.
+    pub audio_edits: Vec<crate::groups::AudioEdit>,
+    /// Touch triggers registered (`GJEffectManager` +0x1c0): (group, hold, mode, only, dual).
+    touch_triggers: Vec<(i32, bool, i32, i32, bool)>,
+    /// A reverse trigger (1917) fired after the last step, and the one the coming step applies.
+    reverse: bool,
+    pub reverse_now: bool,
+    /// Spawn particle triggers (3608) fired since the app last looked: (particle group, position,
+    /// rotation, scale).
+    pub particle_spawns: Vec<(i32, (f32, f32), f32, f32)>,
+    /// Spawn particle triggers' values by level order: (51 particle group, 71 position group,
+    /// 547/548 offset, 549/550 its variance, 551 match rotation, 552/553 rotation, 554/555
+    /// scale), and the trigger's own position.
+    particle_specs: std::sync::Arc<std::collections::HashMap<u32, ParticleSpec>>,
+    /// A platformer checkpoint (2063) activated this step (its level order), for the app
+    /// (`PlayLayer::checkpointActivated` → `processCheckpoints`).
+    pub checkpoint: Option<u32>,
+    /// Persistent items and timers (3641): their values survive a restart.
+    pub persistent_items: std::collections::BTreeSet<i32>,
+    pub persistent_timers: std::collections::BTreeSet<i32>,
+    /// The level's platformer progress (UI progress trigger 3663, `GJEffectManager` +0x340).
+    pub platformer_progress: i32,
+    /// Platformer mode (`m_isPlatformer`, kA22).
+    pub platformer: bool,
+    /// Breakable blocks a reset trigger (3618) restored (indices into `objects`), and a counter
+    /// the player compares with to take them off its destroyed list.
+    pub restored: Vec<usize>,
+    pub restore_count: u64,
+}
+
+/// A spawn particle trigger's values (`SpawnParticleGameObject::customObjectSetup` 0x188b3c).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParticleSpec {
+    pub group: i32,
+    pub position_group: i32,
+    pub at: (f32, f32),
+    pub offset: (f32, f32),
+    pub offset_var: (f32, f32),
+    pub match_rotation: bool,
+    pub rotation: f32,
+    pub rotation_var: f32,
+    pub scale: f32,
+    pub scale_var: f32,
 }
 
 impl World {
@@ -357,6 +410,8 @@ impl World {
                     members.entry(r.center).or_default();
                 }
                 crate::groups::Action::Toggle { group, .. }
+                | crate::groups::Action::Reset { group }
+                | crate::groups::Action::Touch { group, .. }
                 | crate::groups::Action::OnDeath { group, .. }
                 | crate::groups::Action::Animate { group, .. }
                 | crate::groups::Action::Collision { group, .. }
@@ -392,7 +447,30 @@ impl World {
                 | crate::groups::Action::Random { .. }
                 | crate::groups::Action::PlayerVisible { .. }
                 | crate::groups::Action::Shake { .. }
+                | crate::groups::Action::Chance { .. }
+                | crate::groups::Action::AreaStop { .. }
+                | crate::groups::Action::Persistent { .. }
+                | crate::groups::Action::Progress { .. }
+                | crate::groups::Action::BgEffect { .. }
+                | crate::groups::Action::ArtSpeed { .. }
+                | crate::groups::Action::AudioEdit(_)
+                | crate::groups::Action::Reverse
+                | crate::groups::Action::Enter { .. }
+                | crate::groups::Action::EnterStop { .. }
+                | crate::groups::Action::AdvFollow { .. }
+                | crate::groups::Action::AdvFollowEdit { .. }
+                | crate::groups::Action::KeyframeAnim { .. }
                 | crate::groups::Action::Effect { .. } => {}
+                crate::groups::Action::SpawnParticle { order } | crate::groups::Action::Checkpoint { order } => {
+                    // their position groups (and the particle group, for the app)
+                    if let Some(raw) = level.objects.get(order as usize) {
+                        for k in [51, 71] {
+                            if let Some(g) = raw.get_i32(k).filter(|&g| g > 0) {
+                                members.entry(g).or_default();
+                            }
+                        }
+                    }
+                }
             }
         }
         // Teleport targets: their group's main object.
@@ -562,8 +640,61 @@ impl World {
             max_slope_width,
             level_length: max_x + 340.0,
             start_speed,
+            enter: crate::enter::EnterState::default(),
+            enter_specs: std::sync::Arc::new(
+                level
+                    .objects
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, o)| crate::enter::is_enter_trigger(o.id()))
+                    .map(|(order, o)| {
+                        let mut spec = crate::enter::EnterSpec::from_raw(o);
+                        spec.order = order as u32;
+                        (order as u32, spec)
+                    })
+                    .collect(),
+            ),
+            bg_effect_off: false,
+            bg_speed: (0.1, 0.1),
+            mg_speed: (0.3, 0.5),
+            audio_edits: Vec::new(),
+            touch_triggers: Vec::new(),
+            reverse: false,
+            reverse_now: false,
+            particle_spawns: Vec::new(),
+            particle_specs: std::sync::Arc::new(
+                level
+                    .objects
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, o)| o.id() == 3608)
+                    .map(|(order, o)| {
+                        let f = |k: u32| o.get_f32(k).unwrap_or(0.0);
+                        let spec = ParticleSpec {
+                            group: o.get_i32(51).unwrap_or(0),
+                            position_group: o.get_i32(71).unwrap_or(0),
+                            at: (o.x(), o.y() + GROUND_OFFSET),
+                            offset: (f(547), f(548)),
+                            offset_var: (f(549), f(550)),
+                            match_rotation: o.get(551) == Some("1"),
+                            rotation: f(552),
+                            rotation_var: f(553),
+                            scale: f(554),
+                            scale_var: f(555),
+                        };
+                        (order as u32, spec)
+                    })
+                    .collect(),
+            ),
+            checkpoint: None,
+            persistent_items: Default::default(),
+            persistent_timers: Default::default(),
+            platformer_progress: 0,
+            platformer: level.setting("kA22") == Some("1"),
+            restored: Vec::new(),
+            restore_count: 0,
         };
-        if first_dynamic < world.objects.len() || !world.members.is_empty() {
+        if first_dynamic < world.objects.len() || !world.members.is_empty() || !world.enter_specs.is_empty() || !world.triggers.actions().is_empty() {
             world.initial = Some(Box::new(world.clone()));
         }
         world
@@ -581,6 +712,11 @@ impl World {
 
     /// Back to the level's starting state (a new attempt).
     pub fn reset(&mut self) {
+        // kept across attempts: the BG effect switch, persistent items and timers
+        let bg_off = self.bg_effect_off;
+        let (pi, pt) = (std::mem::take(&mut self.persistent_items), std::mem::take(&mut self.persistent_timers));
+        let items: Vec<(i32, i32)> = pi.iter().filter_map(|id| self.triggers.items.get(id).map(|&v| (*id, v))).collect();
+        let timers: Vec<(i32, (f64, f32, bool, Option<f32>, i32))> = pt.iter().filter_map(|id| self.timers.get(id).map(|&v| (*id, v))).collect();
         if let Some(initial) = self.initial.take() {
             let (every, phase, track) = (self.sched_every, self.sched_phase, self.track_moves);
             *self = (*initial).clone();
@@ -588,6 +724,17 @@ impl World {
             self.sched_every = every;
             self.sched_phase = phase;
             self.track_moves = track;
+        } else {
+            self.enter = Default::default();
+        }
+        self.bg_effect_off = bg_off;
+        self.persistent_items = pi;
+        self.persistent_timers = pt;
+        for (id, v) in items {
+            self.triggers.items.insert(id, v);
+        }
+        for (id, v) in timers {
+            self.timers.insert(id, v);
         }
         self.epoch = World::next_epoch();
     }
@@ -659,6 +806,7 @@ impl World {
         self.last_player = Some(player);
         self.teleport_now = self.teleport.take();
         self.control_now = self.control.take();
+        self.reverse_now = std::mem::take(&mut self.reverse);
         self.step_count += 1;
         let now = self.step_count as f64 * self.step_secs;
         self.player_history.push_back((now, player.1));
@@ -1290,7 +1438,7 @@ impl World {
                             self.animated_at[order as usize] = Some(now);
                         }
                     }
-                    crate::groups::Action::Song { id, start_ms, volume, looped, .. } => self.songs.push((id, start_ms, volume, looped)),
+                    crate::groups::Action::Song { id, start_ms, volume, looped, channel, .. } => self.songs.push((id, start_ms, volume, looped, channel)),
                     crate::groups::Action::OnDeath { group, on } => {
                         if !self.death_triggers.contains(&(group, on)) {
                             self.death_triggers.push((group, on));
@@ -1421,10 +1569,203 @@ impl World {
                         }
                         self.time_warp = value;
                     }
-                    crate::groups::Action::Spawn { .. } | crate::groups::Action::Stop { .. } | crate::groups::Action::Noop => {}
+                    crate::groups::Action::Spawn { .. }
+                    | crate::groups::Action::Stop { .. }
+                    | crate::groups::Action::Chance { .. }
+                    | crate::groups::Action::Noop => {}
+                    crate::groups::Action::AreaStop { id } => self.area.effects.retain(|e| e.effect_id != id),
+                    crate::groups::Action::Reset { group } => self.reset_group(group),
+                    crate::groups::Action::Persistent { item, on, all, reset, timer } => self.persistent(item, on, all, reset, timer),
+                    crate::groups::Action::Progress { value, add, item, counter } => self.progress(value, add, item, counter),
+                    crate::groups::Action::BgEffect { on } => self.bg_effect_off = !on,
+                    crate::groups::Action::ArtSpeed { mg, x, y } => {
+                        let pick = |v: f32, d: f32| if v.abs() > 999.0 { d } else { v };
+                        if mg {
+                            self.mg_speed = (pick(x, 0.3), pick(y, 0.5));
+                        } else {
+                            self.bg_speed = (pick(x, 0.1), pick(y, 0.1));
+                        }
+                    }
+                    crate::groups::Action::AudioEdit(edit) => self.audio_edits.push(edit),
+                    crate::groups::Action::Touch { group, hold, mode, only, dual } => {
+                        let entry = (group, hold, mode, only, dual);
+                        if !self.touch_triggers.contains(&entry) {
+                            self.touch_triggers.push(entry);
+                        }
+                    }
+                    crate::groups::Action::Reverse => self.reverse = !self.reverse,
+                    crate::groups::Action::SpawnParticle { order } => self.spawn_particle(order),
+                    crate::groups::Action::Checkpoint { order } => {
+                        if self.platformer {
+                            self.checkpoint = Some(order);
+                        }
+                    }
+                    crate::groups::Action::Enter { order } => {
+                        if let Some(spec) = self.enter_specs.get(&order).copied() {
+                            self.enter.fire(&spec);
+                        }
+                    }
+                    crate::groups::Action::EnterStop { channel, mode, effect_id } => self.enter.stop(channel, mode, effect_id),
+                    crate::groups::Action::AdvFollow { .. } | crate::groups::Action::AdvFollowEdit { .. } | crate::groups::Action::KeyframeAnim { .. } => {}
                 }
             }
         }
+    }
+
+    /// Reset trigger (3618): the group's collectibles can be collected again, its breakable
+    /// blocks are whole again (`removeTriggeredID` + `resetObject` on types 30 and 21; the
+    /// checkpoints 2063 re-arm).
+    fn reset_group(&mut self, group: i32) {
+        let members = self.members.get(&group).cloned().unwrap_or_default();
+        for order in members {
+            if self.collectibles.iter().any(|c| c.0 == order) {
+                self.enabled[order as usize] = true;
+            }
+            let index = self.collider[order as usize];
+            if index != u32::MAX && self.objects[index as usize].kind == ObjectType::BREAKABLE {
+                self.restored.push(index as usize);
+                self.restore_count += 1;
+            }
+        }
+    }
+
+    /// UI progress trigger (3663, platformer only): 0..99, added to the old value or at least
+    /// it; the counter item then holds it.
+    fn progress(&mut self, value: i32, add: bool, item: Option<i32>, counter: i32) {
+        if !self.platformer {
+            return;
+        }
+        let v = match item {
+            Some(id) => self.triggers.items.get(&id).copied().unwrap_or(0),
+            None => value,
+        }
+        .clamp(0, 99);
+        let old = self.platformer_progress;
+        self.platformer_progress = if add { v + old } else { v.max(old) };
+        if counter > 0 {
+            let have = self.triggers.items.get(&counter).copied().unwrap_or(0);
+            for (a, _) in self.triggers.add_to_item(counter, self.platformer_progress - have) {
+                if let crate::groups::Action::Count { group, on, .. } = a {
+                    self.toggle(group, on);
+                }
+            }
+        }
+    }
+
+    /// Persistent item trigger (3641): items (or timers) whose values survive a restart.
+    fn persistent(&mut self, item: i32, on: bool, all: bool, reset: bool, timer: bool) {
+        if timer {
+            if !all {
+                if on {
+                    self.persistent_timers.insert(item);
+                } else {
+                    self.persistent_timers.remove(&item);
+                }
+                if reset {
+                    if let Some(t) = self.timers.get_mut(&item) {
+                        t.0 = 0.0;
+                    }
+                }
+            } else {
+                if reset {
+                    for t in self.timers.values_mut() {
+                        t.0 = 0.0;
+                    }
+                }
+                if !on {
+                    self.persistent_timers.clear();
+                }
+            }
+            return;
+        }
+        let ids: Vec<i32> = if all { self.triggers.items.keys().copied().collect() } else { vec![item] };
+        if !all {
+            if on {
+                self.persistent_items.insert(item);
+            } else {
+                self.persistent_items.remove(&item);
+            }
+        }
+        if reset {
+            for id in ids {
+                let have = self.triggers.items.get(&id).copied().unwrap_or(0);
+                self.triggers.add_to_item(id, -have);
+            }
+        }
+        if all && !on {
+            self.persistent_items.clear();
+        }
+    }
+
+    /// Spawn particle trigger (3608, `spawnParticleTrigger` 0x110b0c): at the trigger, or the
+    /// position group's main object (with its rotation if 551), plus the offset; rotation and
+    /// scale with their variances (`_rand()` in the game, a fixed sequence here).
+    fn spawn_particle(&mut self, order: u32) {
+        let Some(spec) = self.particle_specs.get(&order).copied() else { return };
+        let mut state = (self.step_count as u32).wrapping_mul(0x9e37_79b9) ^ order ^ 0x5bd1_e995;
+        let mut rand = move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            ((state >> 8) as f32 / (1u32 << 24) as f32) * 2.0 - 1.0
+        };
+        let mut rotation = spec.rotation + spec.rotation_var * rand();
+        let scale = spec.scale + spec.scale_var * rand();
+        let mut at = spec.at;
+        if spec.position_group > 0 {
+            if let Some(&o) = self.members.get(&spec.position_group).and_then(|m| m.first()) {
+                let p = self.level_pos[o as usize];
+                at = (p.0 as f32, p.1 as f32);
+                if spec.match_rotation {
+                    rotation += self.turned[o as usize];
+                }
+            }
+        }
+        at.0 += spec.offset.0 + spec.offset_var.0 * rand();
+        at.1 += spec.offset.1 + spec.offset_var.1 * rand();
+        // spawnParticleTrigger: a scale of 0 is 1
+        self.particle_spawns.push((spec.group, at, rotation, if scale == 0.0 { 1.0 } else { scale }));
+    }
+
+    /// Spawn a group now (as a spawn trigger without delay would), from outside the triggers.
+    pub fn spawn_group(&mut self, group: i32) {
+        let actions = self.triggers.expand_public(vec![(crate::groups::Action::Spawn { group, delay: 0.0, ordered: false, remap: 0 }, Vec::new())], &self.enabled);
+        self.apply(actions);
+    }
+
+    /// A group's members by level order (the app's spawn particle copies).
+    pub fn members_of(&self, group: i32) -> &[u32] {
+        self.members.get(&group).map(Vec::as_slice).unwrap_or_default()
+    }
+
+    /// A player button event (`GJEffectManager::playerButton`, from `handleButton`): the
+    /// registered touch triggers toggle their groups. `p2`: the second player's button (two
+    /// player mode). Returns whether a dual-mode touch trigger takes player 1's presses away
+    /// from the player (`hasActiveDualTouch`).
+    pub fn player_button(&mut self, down: bool, p2: bool) -> bool {
+        let mut dual = false;
+        for (group, hold, mode, only, dual_mode) in self.touch_triggers.clone() {
+            dual |= dual_mode;
+            if dual_mode && p2 {
+                continue;
+            }
+            let wanted = match only {
+                1 => p2,
+                2 => !p2,
+                _ => true,
+            };
+            if !wanted || !(down || hold) {
+                continue;
+            }
+            let enabled_now = self.members.get(&group).and_then(|m| m.first()).is_some_and(|&o| self.enabled[o as usize]);
+            let on = match (hold, mode) {
+                (_, 0) => !enabled_now,
+                (false, m) => m == 1,
+                (true, m) => (m != 1) ^ down,
+            };
+            self.toggle(group, on);
+        }
+        dual && !p2
     }
 
     /// Toggle a group's objects on or off.

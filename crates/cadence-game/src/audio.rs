@@ -28,6 +28,19 @@ pub trait Audio {
     }
     /// The music and sound effect volumes (0..1), the options' sliders.
     fn set_volumes(&mut self, _music: f32, _sfx: f32) {}
+    /// An SFX trigger's sound, kept so edit SFX triggers can stop it or change its volume.
+    fn play_trigger_effect(&mut self, file: &str, volume: f32) {
+        self.play_effect_volume(file, volume);
+    }
+    /// Edit song triggers: the music's own volume (on top of the options') toward `volume` over
+    /// `duration` seconds (stepped by `update`), and its speed.
+    fn fade_music(&mut self, _volume: f32, _duration: f32) {}
+    fn set_music_speed(&mut self, _speed: f32) {}
+    /// Edit SFX triggers: stop the trigger sounds, or set their volume.
+    fn stop_effects(&mut self) {}
+    fn set_effects_volume(&mut self, _volume: f32) {}
+    /// Once a frame: advance volume fades.
+    fn update(&mut self, _dt: f32) {}
 }
 
 /// The song an official level plays (`LevelTools::getAudioFileName`, track = level − 1;
@@ -93,6 +106,11 @@ mod native {
         files: Box<dyn Files>,
         cache: HashMap<String, Arc<[u8]>>,
         volumes: (f32, f32),
+        /// Edit song triggers: the music's gain and its fade (from, to, duration, elapsed).
+        gain: f32,
+        fade: Option<(f32, f32, f32, f32)>,
+        /// SFX triggers' sounds, with their own volumes.
+        trigger_effects: Vec<(rodio::Player, f32)>,
     }
 
     impl NativeAudio {
@@ -100,7 +118,17 @@ mod native {
         pub fn new(files: Box<dyn Files>) -> Option<NativeAudio> {
             let mut sink = rodio::DeviceSinkBuilder::open_default_sink().ok()?;
             sink.log_on_drop(false);
-            Some(NativeAudio { sink, music: None, peak: Arc::new(AtomicU32::new(0)), files, cache: HashMap::new(), volumes: (1.0, 1.0) })
+            Some(NativeAudio {
+                sink,
+                music: None,
+                peak: Arc::new(AtomicU32::new(0)),
+                files,
+                cache: HashMap::new(),
+                volumes: (1.0, 1.0),
+                gain: 1.0,
+                fade: None,
+                trigger_effects: Vec::new(),
+            })
         }
 
         fn decoder(&mut self, file: &str) -> Option<rodio::Decoder<Cursor<Arc<[u8]>>>> {
@@ -119,8 +147,68 @@ mod native {
             let player = rodio::Player::connect_new(self.sink.mixer());
             let source = decoder.skip_duration(Duration::from_secs_f32(offset.max(0.0)));
             player.append(Meter::new(source, self.peak.clone()));
+            self.gain = 1.0;
+            self.fade = None;
             player.set_volume(self.volumes.0);
             self.music = Some(player);
+        }
+
+        fn fade_music(&mut self, volume: f32, duration: f32) {
+            if duration <= 0.0 {
+                self.fade = None;
+                self.gain = volume.max(0.0);
+            } else {
+                self.fade = Some((self.gain, volume.max(0.0), duration, 0.0));
+            }
+            if let Some(player) = &self.music {
+                player.set_volume(self.volumes.0 * self.gain);
+            }
+        }
+
+        fn set_music_speed(&mut self, speed: f32) {
+            if let Some(player) = &self.music {
+                player.set_speed(speed.clamp(0.1, 10.0));
+            }
+        }
+
+        fn update(&mut self, dt: f32) {
+            if let Some((from, to, duration, elapsed)) = &mut self.fade {
+                *elapsed += dt;
+                let t = (*elapsed / *duration).min(1.0);
+                self.gain = *from + (*to - *from) * t;
+                if t >= 1.0 {
+                    self.fade = None;
+                }
+                if let Some(player) = &self.music {
+                    player.set_volume(self.volumes.0 * self.gain);
+                }
+            }
+            self.trigger_effects.retain(|(p, _)| !p.empty());
+        }
+
+        fn play_trigger_effect(&mut self, file: &str, volume: f32) {
+            if self.volumes.1 <= 0.0 {
+                return;
+            }
+            let Some(decoder) = self.decoder(file) else { return };
+            let player = rodio::Player::connect_new(self.sink.mixer());
+            player.append(decoder);
+            let v = volume.clamp(0.0, 2.0);
+            player.set_volume(self.volumes.1 * v);
+            self.trigger_effects.push((player, v));
+        }
+
+        fn stop_effects(&mut self) {
+            for (p, _) in self.trigger_effects.drain(..) {
+                p.stop();
+            }
+        }
+
+        fn set_effects_volume(&mut self, volume: f32) {
+            for (p, v) in &mut self.trigger_effects {
+                *v = volume.clamp(0.0, 2.0);
+                p.set_volume(self.volumes.1 * *v);
+            }
         }
 
         fn set_paused(&mut self, paused: bool) {

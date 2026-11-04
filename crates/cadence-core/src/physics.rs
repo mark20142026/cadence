@@ -384,6 +384,8 @@ pub struct Player {
     pub accelerating: bool,
     /// Breakable blocks destroyed this attempt (indices into the world).
     pub destroyed: Vec<usize>,
+    /// The world's `restore_count` last seen (reset triggers give breakables back).
+    pub restore_seen: u64,
     /// Custom orbs fired this step (the world spawns / toggles their groups), and
     /// `m_touchedCustomRing` (one custom orb per step, apart from the other orbs).
     pub custom_fired: Vec<usize>,
@@ -579,6 +581,7 @@ impl Default for Player {
             gravity_mod: 1.0,
             accelerating: false,
             destroyed: Vec::new(),
+            restore_seen: 0,
             mirrored: false,
             total_time: 0.0,
             on_slope: false,
@@ -848,6 +851,20 @@ impl Player {
     /// One physics step: player 1, then in dual mode player 2 (`GJBaseGameLayer::update`).
     pub fn step(&mut self, world: &World) {
         self.gravity_mod = world.gravity_mod;
+        // reset triggers (3618) made broken blocks whole again
+        if world.restore_count != self.restore_seen {
+            self.restore_seen = world.restore_count;
+            self.destroyed.retain(|i| !world.restored.contains(i));
+        }
+        // a reverse trigger (1917) fired last step: `reversePlayer` (not in platformer mode)
+        if world.reverse_now && !self.platformer.on {
+            let left = !self.going_left;
+            self.do_reverse_player(left);
+            if let Some(p2) = &mut self.dual {
+                let left = !p2.going_left;
+                p2.do_reverse_player(left);
+            }
+        }
         // a player control trigger (1932) fired last step: releaseButton / stopRotation
         if let Some((stop_jump, stop_move, stop_rotation)) = world.control_now {
             if stop_jump {
@@ -2638,7 +2655,7 @@ impl Player {
                             }
                         }
                     } else if let Some(action) = self.camera_triggers.action(i, world) {
-                        self.pending_camera.push(action);
+                        self.camera_action(action);
                     }
                 }
                 crate::order::OrderKind::Options(p1) => {
@@ -2688,9 +2705,24 @@ impl Player {
                 Some(crate::camera::CameraAction::RotateGameplay { dir, dir2, edit, over, mod_x, mod_y }) => {
                     self.rotate_gameplay(dir, dir2, edit, over, mod_x, mod_y);
                 }
-                Some(action) => self.pending_camera.push(action),
+                Some(action) => self.camera_action(action),
                 None => {}
             }
+        }
+    }
+
+    /// A camera trigger fired: camera mode triggers (2925) act on the player at once
+    /// (`updateCameraMode`, like a mode portal's free mode and padding); the others go to the
+    /// camera step.
+    fn camera_action(&mut self, action: crate::camera::CameraAction) {
+        match action {
+            crate::camera::CameraAction::CameraMode { free, padding } => {
+                self.free_mode = free;
+                if let Some(p) = padding {
+                    self.camera_padding = p;
+                }
+            }
+            other => self.pending_camera.push(other),
         }
     }
 

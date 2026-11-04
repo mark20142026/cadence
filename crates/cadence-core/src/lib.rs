@@ -7,6 +7,7 @@ pub mod camera;
 pub mod codec;
 pub mod collide;
 pub mod easing;
+pub mod enter;
 pub mod gradients;
 pub mod groups;
 pub mod level;

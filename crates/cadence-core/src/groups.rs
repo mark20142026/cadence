@@ -234,6 +234,62 @@ pub enum Action {
     PlayerVisible { on: bool },
     /// Shake trigger (1520): key 75 strength, 84 interval, 10 duration.
     Shake { strength: f32, interval: f32, duration: f32 },
+    /// Random trigger (1912, `EffectGameObject::triggerObject` 0x778): spawns `a` (51) when
+    /// fast_rand_0_1() · 100 ≤ the chance (key 10), else `b` (71).
+    Chance { a: i32, b: i32, chance: f32 },
+    /// Area stop (3024): `controlAreaEffectWithID(key 51, −1, 0)` removes the area effects with
+    /// that effect id (225).
+    AreaStop { id: i32 },
+    /// Reset trigger (3618, `activateResetTrigger` 0x102164): the collectibles, breakable blocks
+    /// and checkpoints of group 51 can be taken again.
+    Reset { group: i32 },
+    /// Persistent item (3641, `activatePersistentItemTrigger` 0x103264): 80 item (or timer with
+    /// 494), 491 persistent on/off, 492 every item, 493 also reset it to 0.
+    Persistent { item: i32, on: bool, all: bool, reset: bool, timer: bool },
+    /// UI progress (3663, `FUN_1000e5900`, platformer only): the level's platformer progress
+    /// becomes key 602 (or item 95's count with 605), added to it with 603, else at least the
+    /// old value; 0..99. Item 80 then counts it.
+    Progress { value: i32, add: bool, item: Option<i32>, counter: i32 },
+    /// BG effect on (1818) / off (1819) (`PlayLayer::toggleBGEffectVisibility`): the glitter.
+    BgEffect { on: bool },
+    /// BG speed (3606) / MG speed (3612) (`updateBGArtSpeed` / `updateMGArtSpeed`): keys 143 /
+    /// 144 the x / y speed factors; |v| > 999 means the default (0.1 / 0.1 BG, 0.3 / 0.5 MG).
+    ArtSpeed { mg: bool, x: f32, y: f32 },
+    /// Edit song (3605) / edit SFX (3603): see `AudioEdit`.
+    AudioEdit(AudioEdit),
+    /// Touch trigger (1595, `runTouchTriggerCommand` / `GJEffectManager::playerButton`): from now
+    /// on button presses toggle group 51: 81 hold mode (release too), 82 toggle mode (0 flip, 1
+    /// on, 2 off), 198 1 = player 2 only, 2 = player 1 only, 89 dual mode.
+    Touch { group: i32, hold: bool, mode: i32, only: i32, dual: bool },
+    /// Reverse (1917, `reverseDirection`): the players turn around (classic mode only).
+    Reverse,
+    /// Spawn particle (3608, `spawnParticleTrigger`): by level order (`World::particle_specs`).
+    SpawnParticle { order: u32 },
+    /// Checkpoint (2063, platformer only: `PlayLayer::checkpointActivated`): by level order.
+    Checkpoint { order: u32 },
+    /// Enter effect triggers (22–28, 55–59, 1915, 3017–3021) and enter stop (3023): see
+    /// `enter.rs`.
+    Enter { order: u32 },
+    EnterStop { channel: i32, mode: i32, effect_id: i32 },
+    /// Advanced follow (3016) and its edit / re-target triggers (3660 / 3661), by level order
+    /// (`advfollow.rs`).
+    AdvFollow { order: u32 },
+    AdvFollowEdit { order: u32 },
+    /// Keyframe animation trigger (3033), by level order (`keyframes.rs`).
+    KeyframeAnim { order: u32 },
+}
+
+/// Edit song (3605) / edit SFX (3603) (`activateSongEditTrigger`, `applySFXEditTrigger`): on
+/// song channel 432 (song) or the SFX group 457 / unique id (SFX): 417 stop, 418 change volume
+/// to 406 over the duration 10, 419 change speed to 404 (`pitchForIdx`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AudioEdit {
+    pub song: bool,
+    pub channel: i32,
+    pub stop: bool,
+    pub volume: Option<f32>,
+    pub speed: Option<i32>,
+    pub duration: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -313,6 +369,51 @@ impl Trigger {
             2066 => Action::Gravity { value: raw.get_f32(148).unwrap_or(1.0) },
             1817 => Action::Pickup { item: raw.get_i32(80).unwrap_or(0), count: raw.get_i32(77).unwrap_or(0), set: raw.get(139) == Some("1") },
             2068 => Action::Random { table: 0 },
+            1912 => Action::Chance { a: group, b: raw.get_i32(71).unwrap_or(0), chance: raw.get_f32(10).unwrap_or(0.0) },
+            3024 => Action::AreaStop { id: group },
+            3618 => Action::Reset { group },
+            3641 => Action::Persistent {
+                item: raw.get_i32(80).unwrap_or(0),
+                on: raw.get(491) == Some("1"),
+                all: raw.get(492) == Some("1"),
+                reset: raw.get(493) == Some("1"),
+                timer: raw.get(494) == Some("1"),
+            },
+            3663 => Action::Progress {
+                value: raw.get_i32(602).unwrap_or(0),
+                add: raw.get(603) == Some("1"),
+                item: (raw.get(605) == Some("1")).then(|| raw.get_i32(95).unwrap_or(0)),
+                counter: raw.get_i32(80).unwrap_or(0),
+            },
+            1818 | 1819 => Action::BgEffect { on: raw.id() == 1818 },
+            3606 | 3612 => Action::ArtSpeed { mg: raw.id() == 3612, x: raw.get_f32(143).unwrap_or(0.0), y: raw.get_f32(144).unwrap_or(0.0) },
+            3603 | 3605 => Action::AudioEdit(AudioEdit {
+                song: raw.id() == 3605,
+                channel: if raw.id() == 3605 { raw.get_i32(432).unwrap_or(0) } else { raw.get_i32(457).unwrap_or(0) },
+                stop: raw.get(417) == Some("1"),
+                volume: (raw.get(418) == Some("1")).then(|| raw.get_f32(406).unwrap_or(1.0)),
+                speed: (raw.get(419) == Some("1")).then(|| raw.get_i32(404).unwrap_or(0)),
+                duration: raw.get_f32(10).unwrap_or(0.0),
+            }),
+            1595 => Action::Touch {
+                group,
+                hold: raw.get(81) == Some("1"),
+                mode: raw.get_i32(82).unwrap_or(0),
+                only: raw.get_i32(198).unwrap_or(0),
+                dual: raw.get(89) == Some("1"),
+            },
+            1917 => Action::Reverse,
+            3608 => Action::SpawnParticle { order },
+            2063 => Action::Checkpoint { order },
+            id if crate::enter::is_enter_trigger(id) => Action::Enter { order },
+            3023 => Action::EnterStop {
+                channel: raw.get_i32(344).unwrap_or(0).clamp(0, 100),
+                mode: raw.get_i32(217).unwrap_or(0),
+                effect_id: raw.get_i32(225).unwrap_or(0),
+            },
+            3016 => Action::AdvFollow { order },
+            3660 | 3661 => Action::AdvFollowEdit { order },
+            3033 => Action::KeyframeAnim { order },
             1612 => Action::PlayerVisible { on: false },
             1613 => Action::PlayerVisible { on: true },
             1520 => Action::Shake { strength: raw.get_f32(75).unwrap_or(0.0), interval: raw.get_f32(84).unwrap_or(0.0), duration: raw.get_f32(10).unwrap_or(0.0) },
@@ -816,6 +917,18 @@ impl GroupTriggers {
                             }
                         }
                     }
+                    Action::Chance { a, b, chance } => {
+                        // fast_rand_0_1() · 100 ≤ chance: the game's own random sequence isn't
+                        // ported (xorshift)
+                        self.rng ^= self.rng << 13;
+                        self.rng ^= self.rng >> 17;
+                        self.rng ^= self.rng << 5;
+                        let r = (self.rng >> 8) as f32 / (1u32 << 24) as f32;
+                        let group = if r * 100.0 <= chance { a } else { b };
+                        if group > 0 {
+                            next.push((Action::Spawn { group, delay: 0.0, ordered: false, remap: 0 }, origin.clone(), offset));
+                        }
+                    }
                     Action::Stop { group } => {
                         self.commands.retain(|c| !c.origin.contains(&group));
                         self.delayed.retain(|d| !d.2.contains(&group));
@@ -924,6 +1037,9 @@ fn remap_action(a: Action, map: &[(i32, i32)]) -> Action {
         Action::Count { item, target, group, on, multi } => Action::Count { item, target, group: r(group), on, multi },
         Action::InstantCount { item, target, mode, group, on } => Action::InstantCount { item, target, mode, group: r(group), on },
         Action::Stop { group } => Action::Stop { group: r(group) },
+        Action::Chance { a, b, chance } => Action::Chance { a: r(a), b: r(b), chance },
+        Action::Reset { group } => Action::Reset { group: r(group) },
+        Action::Touch { group, hold, mode, only, dual } => Action::Touch { group: r(group), hold, mode, only, dual },
         Action::Area(mut a) => {
             a.target = r(a.target);
             a.center = r(a.center);

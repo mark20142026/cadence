@@ -197,9 +197,14 @@ fn simulate_both(
 }
 
 /// One button event (`GJBaseGameLayer::handleButton`): 1 jumps, 2/3 are left/right.
-fn press(player: &mut cadence_core::physics::Player, world: &cadence_core::world::World, down: bool, button: u8) {
+/// Touch triggers (1595) see the jump button first (`GJEffectManager::playerButton`); a
+/// dual-mode one keeps presses from the player.
+fn press(player: &mut cadence_core::physics::Player, world: &mut cadence_core::world::World, down: bool, button: u8) {
     if button == 1 {
-        player.set_button(down, world);
+        let dual = world.player_button(down, false);
+        if !(dual && down) {
+            player.set_button(down, world);
+        }
     } else {
         player.set_direction(down, button);
     }
@@ -712,8 +717,13 @@ fn route_platformer(level: &str, waypoints: &str, out_pattern: &str) -> Result<(
         anchor: (f32, f32, u32),
     }
     let apply = |p: &mut Player, w: &cadence_core::world::World, ev: &[(u32, bool, u8)]| {
+        // (the planner shares worlds between routes: touch triggers aren't run here)
         for &(_, down, b) in ev {
-            press(p, w, down, b);
+            if b == 1 {
+                p.set_button(down, w);
+            } else {
+                p.set_direction(down, b);
+            }
         }
     };
     let mut worlds = vec![base_world.clone()];
