@@ -603,6 +603,24 @@ void openGui(std::string const& name) {
         if (name.rfind("keys:add", 0) == 0) kl->openBindingEditor(10001, -1);
         else if (name.rfind("keys:edit", 0) == 0) kl->openBindingEditor(10001, 32);
         else if (name.rfind("keys:settings", 0) == 0) kl->onSettings(nullptr);
+    } else if (name == "call:list") {
+        // a made-up level list uploaded to the recorder (uploadGJLevelList.php's exact body),
+        // then deleted; CADENCE_HTTP_REDIRECT only
+        if (std::getenv("CADENCE_HTTP_REDIRECT")) {
+            auto glm = GameLevelManager::sharedState();
+            auto list = GJLevelList::create();
+            list->m_listName = "Cadence List";
+            list->m_listDesc = "A test list";
+            list->m_levels = {10565740, 128, 4284013};
+            list->updateLevelsString();
+            list->m_difficulty = 4;
+            list->m_listVersion = 1;
+            list->m_isEditable = true;
+            glm->uploadLevelList(list);
+            auto old = GJLevelList::create();
+            old->m_listID = 777;
+            glm->deleteLevelList(old);
+        }
     } else if (name == "dump:keybinds") {
         // every keybind action the game knows: id, group, name, then its chords (code and
         // text). Written next to the screenshot (.keybinds.txt).
