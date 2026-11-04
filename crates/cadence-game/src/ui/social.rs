@@ -125,9 +125,13 @@ impl Social {
                 crate::net::spawn(async move {
                     match tab {
                         0 | 1 => social::user_list(tab as i32).await.map_or_else(Msg::Error, Msg::Users),
-                        // following and muted are kept by the account on the servers' newer
-                        // lists; an empty list until they answer
-                        _ => Msg::Users(Vec::new()),
+                        // following and muted are kept on this device (`crate::follow`)
+                        _ => Msg::Users(
+                            crate::follow::list(if tab == 2 { "following" } else { "muted" })
+                                .into_iter()
+                                .map(|(account_id, name)| social::User { name, account_id, icon: 1, color2: 3, ..Default::default() })
+                                .collect(),
+                        ),
                     }
                 })
             }

@@ -22,6 +22,7 @@ pub mod online;
 pub mod particles;
 pub mod render;
 pub mod saved;
+pub mod follow;
 pub mod social;
 pub mod ui;
 pub mod trail;

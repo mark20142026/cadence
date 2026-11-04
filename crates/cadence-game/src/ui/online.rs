@@ -136,6 +136,8 @@ pub struct Browser {
     pub popup: Option<super::replay::Scene>,
     pub comments: Option<Vec<crate::online::Comment>>,
     pub profile: Option<crate::online::Profile>,
+    /// The profile's account (its follow button)
+    pub profile_account: i64,
     /// `NewsPopup` over the main menu: the page shown, and the posts once loaded.
     pub news_page: Option<usize>,
     pub news: Vec<crate::online::News>,
@@ -210,6 +212,7 @@ impl Default for Browser {
             popup: None,
             comments: None,
             profile: None,
+            profile_account: 0,
             news_page: None,
             news: Vec::new(),
             news_pictures: Vec::new(),
@@ -1597,6 +1600,7 @@ impl Browser {
 
     /// Another player's `ProfilePage` over whatever is open (your friends and requests lists).
     pub fn open_profile(&mut self, account: i64) {
+        self.profile_account = account;
         self.popup = Some(super::replay::Scene::Profile);
         self.profile = None;
         self.t = 0.0;
@@ -1690,6 +1694,9 @@ impl Browser {
             Scene::Profile => match &self.profile {
                 None => loading_circle(c, cx, 160.0, self.t),
                 Some(p) => {
+                    if crate::follow::contains("following", self.profile_account) {
+                        c.sprite("followBtnOn_001.png", 126.5 + dx, 37.0, Look::scaled(1.1));
+                    }
                     let (nw, _) = c.text_size("bigFont", &p.name);
                     c.text("bigFont", &p.name, cx, 285.0, Look::scaled((200.0 / nw.max(1.0)).min(0.76)));
                     if p.rank > 0 {
@@ -1773,6 +1780,13 @@ impl Browser {
                     if let Some(info) = self.info.as_mut() {
                         info.likes += if like { 1 } else { -1 };
                     }
+                }
+            }
+            // ProfilePage::onFollow: follow (or stop following) this player, on this device
+            (Scene::Profile, 6) => {
+                if let Some(p) = &self.profile {
+                    let on = crate::follow::toggle("following", self.profile_account, &p.name);
+                    return Effect::Alert(p.name.clone(), if on { "You are now <cg>following</c> this player." } else { "You are no longer <cr>following</c> this player." }.into());
                 }
             }
             (Scene::Info, 0) => {

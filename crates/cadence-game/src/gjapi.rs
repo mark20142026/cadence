@@ -249,6 +249,10 @@ pub fn search_tail_filtered(kind: i32, query: &str, diff: &str, len: &str, page:
     if demon_filter > 0 && diff == "-2" {
         s.push_str(&format!("&demonFilter={demon_filter}"));
     }
+    // Followed: the accounts you follow
+    if kind == 12 {
+        s.push_str(&format!("&followed={}", crate::follow::followed_ids()));
+    }
     s.push_str(&format!("&secret={SECRET}"));
     s
 }
