@@ -1,7 +1,7 @@
-//! The players you follow and the ones you muted (`GameLevelManager`'s followed and muted
-//! accounts: kept on this device, not on the servers): the profile's follow button adds or
-//! removes one, the Friends page's Following / Muted tabs list them, and the Followed search
-//! sends the followed ids. One `account name` a line.
+//! The players you follow, kept on this device too (the profile's follow button shows it and
+//! the Followed search sends it even logged out); with an account the button also follows them
+//! on the servers (`followGJUser.php`), whose lists the Friends page's Following / Muted tabs
+//! show (`getGJUserList20` types 2 / 3). One `account name` a line.
 
 #[cfg(not(target_arch = "wasm32"))]
 mod store {

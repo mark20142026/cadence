@@ -255,6 +255,10 @@ pub enum Act {
     Unfriend(i64),
     Block(i64),
     Unblock(i64),
+    /// followGJUser / unfollowGJUser
+    Follow { user: i64, on: bool },
+    /// muteGJUser (`&mute=1` / 0)
+    Mute { user: i64, on: bool },
     Message { to: i64, subject: String, body: String },
     DeleteMessage { id: i64, sent: bool },
     Settings(gjapi::AccountSettings),
@@ -272,6 +276,8 @@ pub async fn act(a: Act) -> Result<(), String> {
         Act::Unfriend(u) => action("removeGJFriend20.php", Some(gjapi::target_form(&id, u))).await,
         Act::Block(u) => action("blockGJUser20.php", Some(gjapi::target_form(&id, u))).await,
         Act::Unblock(u) => action("unblockGJUser20.php", Some(gjapi::target_form(&id, u))).await,
+        Act::Follow { user, on } => action(if on { "followGJUser.php" } else { "unfollowGJUser.php" }, Some(gjapi::target_form(&id, user))).await,
+        Act::Mute { user, on } => action("muteGJUser.php", Some(format!("{}&targetAccountID={user}&mute={}&secret={}", id.base(), on as i32, gjapi::SECRET))).await,
         Act::DeleteMessage { id: m, sent } => action("deleteGJMessages20.php", Some(format!("{}&messageID={m}&secret={}{}", id.base(), crate::gjapi::SECRET, if sent { "&isSender=1" } else { "" }))).await,
         Act::Message { to, subject, body } => action("uploadGJMessage20.php", Some(gjapi::message_form(&id, to, &subject, &body))).await,
         // the account server (accounts/…) answers 1 too

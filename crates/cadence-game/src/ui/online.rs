@@ -1850,6 +1850,11 @@ impl Browser {
             (Scene::Profile, 6) => {
                 if let Some(p) = &self.profile {
                     let on = crate::follow::toggle("following", self.profile_account, &p.name);
+                    // ProfilePage::onFollow: the account follows them on the servers too
+                    if crate::gjapi::linked_account().is_some_and(|(_, ok)| ok) {
+                        let user = self.profile_account;
+                        let _ = crate::net::spawn(async move { crate::social::act(crate::social::Act::Follow { user, on }).await });
+                    }
                     return Effect::Alert(p.name.clone(), if on { "You are now <cg>following</c> this player." } else { "You are no longer <cr>following</c> this player." }.into());
                 }
             }
