@@ -203,6 +203,9 @@ pub struct Player {
     partner: Option<(Mode, bool)>,
     /// This player is player 2.
     is_second: bool,
+    /// The death was player 2's (dual mode): `PlayLayer::destroyPlayer` explodes the player
+    /// that died, the other one leaves with the exit-dual effect.
+    pub second_died: bool,
     /// The robot's hold boost timer (`m_accelerationOrSpeed`): up to 1.5, +dt·0.1 per held step.
     robot_boost: f64,
     /// Launched by a pad since the last jump (`m_touchedPad`): no robot hold boost.
@@ -486,6 +489,16 @@ pub struct PlatformerState {
     /// `m_collidingWithLeft/Right` (+0x608/+0x610): the block last met on that side.
     pub colliding_left: Option<usize>,
     pub colliding_right: Option<usize>,
+    /// `m_currentSlope2` (+0x5e0): the slope last landed on (collidedWithSlopeInternal's
+    /// hitGround path); `m_slopeAngle` (+0x5f0, its atan(h/w), kept after leaving it);
+    /// `m_slopeSlidingMaybeRotated` (+0x5f4: that slope is uphill, flipped sideways);
+    /// `m_slideSlopeAngle` (+0xb00, degrees) and `m_changedDirectionsTime` (+0xae8) from the
+    /// forced-slide check.
+    pub slope2: Option<usize>,
+    pub slope_angle: f32,
+    pub slope2_uphill: bool,
+    pub slide_slope_angle: f64,
+    pub changed_directions_time: f64,
 }
 
 impl Default for Player {
@@ -515,6 +528,7 @@ impl Default for Player {
             mode_portal_y: 0.0,
             partner: None,
             is_second: false,
+            second_died: false,
             robot_boost: 1.5,
             touched_pad: false,
             rect_cache: None,
@@ -936,6 +950,9 @@ impl Player {
         if p2.dead {
             // (Player 1's rotation on that last step: the game sometimes keeps the old one —
             // order of its rotation and collision passes in dual mode, not modelled.)
+            if !self.dead {
+                self.second_died = true;
+            }
             self.dead = true;
         }
         if p2.dual_request.take() == Some(None) {
@@ -1073,6 +1090,12 @@ impl Player {
             self.order_pass(world);
             self.camera_touch_pass(world);
         }
+        // GJBaseGameLayer::update stores this step's ceiling (+0x6bc) after the trigger walk,
+        // from the corridor as the triggers left it: a corridor a camera mode trigger lays out
+        // isn't a moving ceiling on the next step.
+        if let Some(c) = if self.free_mode { None } else { self.corridor } {
+            self.prev_ceiling = self.camera.corridor_bounds(c).1;
+        }
         // A step that kills the player (or ends the level) leaves the rotation as it was.
         if !self.dead && !self.finished {
             self.update_rotation(self.x - x0, self.y - y0);
@@ -1109,8 +1132,9 @@ impl Player {
                 if self.touching_ground {
                     let v = self.y_velocity;
                     let settled = if self.upside_down { v <= 0.25 } else { -0.25 <= v };
-                    // Platformer: a spin running on the ground carries on (0x3753e8).
-                    if settled && !(self.platformer.on && self.spinning) {
+                    // Platformer: a spin running on the ground carries on (0x3753e8). The
+                    // step after leaving a slope (m_wasOnSlope) doesn't ease.
+                    if settled && !self.was_on_slope && !(self.platformer.on && self.spinning) {
                         self.spinning = false;
                         // (convertToClosestRotation returns 0 while dashing)
                         let closest = if self.dashing { 0.0 } else { closest_rotation(self.rotation) };
@@ -1137,7 +1161,9 @@ impl Player {
             Mode::Robot | Mode::Spider => {
                 let v = self.y_velocity;
                 let settled = self.touching_ground && if self.upside_down { v <= 0.25 } else { -0.25 <= v };
-                if settled {
+                if self.was_on_slope {
+                    // Just off a slope: no easing either way (LAB_100375520 / 5528).
+                } else if settled {
                     // convertToClosestRotation(0) returns 0 for the robot and the spider: they
                     // always settle upright, never on their side (real s12-22 after a dash).
                     let closest = 0.0;
@@ -1919,8 +1945,7 @@ impl Player {
                     self.x += dx as f64 as f32;
                 }
             }
-            self.platformer.forced_slide_left = false;
-            self.platformer.forced_slide_right = false;
+            self.slide_check(world);
         }
         let collided = self.collided_object.take();
         let mut moved_away = false;
@@ -1962,6 +1987,30 @@ impl Player {
             self.collide_solid_rect(world, t, world.objects[t].rect, false);
             self.forced_contact = false;
         }
+    }
+
+    /// `performSlideCheck` (0x3702e8, inlined in FUN_10036e834): on (or just off) a slope
+    /// steeper than 40° that isn't a grip slope, the player is forced to slide down it —
+    /// left on an uphill slope right side up, right on a downhill one (mirrored upside down);
+    /// updateMove then pushes the velocity down the slope. Anything else clears both sides.
+    fn slide_check(&mut self, world: &World) {
+        let on = self.on_slope || self.was_on_slope;
+        let pf = &mut self.platformer;
+        let deg = (pf.slope_angle * 57.29578).abs();
+        let slope = pf.slope2.filter(|&s| on && !pf.slope_resnapped && !world.objects[s].grip_slope && deg > 40.0);
+        if slope.is_none() {
+            pf.forced_slide_left = false;
+            pf.forced_slide_right = false;
+            return;
+        }
+        let left = pf.slope2_uphill != self.upside_down;
+        if pf.forced_slide_left != left || pf.forced_slide_right == left {
+            pf.changed_directions_time = self.total_time;
+        }
+        pf.forced_slide_left = left;
+        pf.forced_slide_right = !left;
+        pf.slide_slope_angle = deg as f64;
+        pf.forced_slope_slide = true;
     }
 
     /// Floor (and ceiling in a flying corridor). Touching either calls the game's `hitGround`,
@@ -2730,10 +2779,20 @@ impl Player {
     fn camera_action(&mut self, action: crate::camera::CameraAction) {
         match action {
             crate::camera::CameraAction::CameraMode { free, padding, no_snap } => {
+                let was_free = self.free_mode;
                 self.free_mode = free;
                 self.corridor_no_snap = no_snap;
                 if let Some(p) = padding {
                     self.camera_padding = p;
+                }
+                // A change of free mode calls updateDualGround: the corridor is laid out again
+                // around the last mode portal with the trigger's key 370 (snapped or not), or
+                // animated out while free.
+                if was_free != free {
+                    self.corridor = match (self.dual_portal_y, self.partner) {
+                        (Some(y), Some(other)) => Some(corridor_at(y, dual_height(self.mode, other), no_snap)),
+                        _ => solo_corridor(self.mode, self.mode_portal_y, no_snap),
+                    };
                 }
             }
             other => self.pending_camera.push(other),

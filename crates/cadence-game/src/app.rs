@@ -33,6 +33,10 @@ pub const SINGLE_IMAGES: &[&str] = &["game_bg_01_001", "groundSquare_01_001"];
 pub const PARTICLE_TEXTURE: &str = "square.png";
 /// The regular trail's texture (trail 1), shipped in one resolution.
 pub const STREAK_TEXTURE: &str = "streak_01_001.png";
+/// The ship fires' streak textures (fires 2–6: 9, 10, 6, 16 and 5 frames), single images.
+pub fn ship_fire_files() -> impl Iterator<Item = String> {
+    [(2u32, 9u32), (3, 10), (4, 6), (5, 16), (6, 5)].into_iter().flat_map(|(k, n)| (1..=n).map(move |i| format!("shipfire{k:02}_{i:03}.png")))
+}
 /// The default icon colors: main (green) and secondary (cyan).
 
 
@@ -79,12 +83,13 @@ fn player_draws(
     colors: ([f32; 3], [f32; 3]),
     icons: &crate::ui::garage::IconSet,
     rig: Option<&[crate::anim::Part]>,
+    alpha: f32,
     draws: &mut Vec<Draw>,
 ) {
     let frame_size = |name: &str| sheets.frames.get(name).map(|f| f.source_size);
     let mut push = |name: &str, transform: Affine, color: [f32; 3]| {
         if let Some(frame) = sheets.frames.get(name) {
-            let instance = sprite_instance(frame, atlas(frame.sheet), transform, false, false, tint(color, 1.0));
+            let instance = sprite_instance(frame, atlas(frame.sheet), transform, false, false, tint(color, alpha));
             draws.push(Draw { sheet: frame.sheet, blend: Blend::Normal, instance });
         }
     };
@@ -140,6 +145,188 @@ fn player_draws(
         push(&dome, centered(&dome, body, x, y, scale), [1.0; 3]);
         push(&main, centered(&main, body, x, y, scale), c1);
         push(&extra, centered(&extra, body, x, y, scale), [1.0; 3]);
+    }
+}
+
+/// `GJBaseGameLayer::playExitDualEffect` (0xe5200): a copy of the player that didn't die
+/// (a `SimplePlayer` of its icon, colors and rotation) fades out over 0.4 s while it moves 124.63
+/// screen units back, shrinks to 0.1 and turns 180° (all linear, starting a frame late like every
+/// cocos2d action), with a 10 → 30 ring in its main color following it. The copy sits on the
+/// unmirrored screen layer (the game flips its x scale and rotation when the view is mirrored);
+/// drawn in level space it keeps the player's own.
+/// Ship fires 2–6 (the icon kit's special tab; GameManager `m_playerShipFire`, 1 = the plain
+/// particle fire): `PlayerObject::setupStreak` (0x3677b8) adds a `CCMotionStreak` (min segment
+/// 1, white, SRC_ALPHA ONE) at z −3 whose texture `PlayerObject::update` swaps every step to
+/// `shipfireNN_MMM.png` for `m_totalTime` (FUN_100365034: fire 2 nine frames and 3 ten at 1/32 s,
+/// 4 six and 6 five at 1/24 s, 5 sixteen at 1/20 s). `PlayerObject::setPosition` puts it at the
+/// ship sprite (0, −5 in the player's turned layer) plus a per-fire offset (FUN_1003654d0, x
+/// mirrored going left). Fade and stroke by speed and size (FUN_100364938, below). The
+/// particle fire stays as it is.
+struct ShipFire {
+    key: (u32, f32, f32),
+    streak: crate::trail::MotionStreak,
+    pos: (f32, f32),
+    visible: bool,
+    time: f32,
+}
+
+impl ShipFire {
+    fn new(kind: u32, speed: f32, size: f32) -> ShipFire {
+        let (fade, stroke) = Self::fade_stroke(kind, speed, size);
+        ShipFire { key: (kind, speed, size), streak: crate::trail::MotionStreak::new(fade, 1.0, stroke), pos: (0.0, 0.0), visible: false, time: 0.0 }
+    }
+
+    /// FUN_100364938(speed, size, fire): the fade time and stroke width; setupStreak's own
+    /// values (0x1008e5a30 / 0x1008e5a44) where the speed matches none of the five.
+    fn fade_stroke(kind: u32, speed: f32, size: f32) -> (f32, f32) {
+        let k: f32 = if size != 1.0 { 0.5 } else { 1.0 };
+        let base = [(0.0636f32, 22.0f32), (0.1278, 28.6), (0.105, 28.6), (0.09, 18.7), (0.096, 27.0)];
+        let i = [0.7f32, 0.9, 1.1, 1.3, 1.6].iter().position(|&s| s == speed);
+        let Some(i) = i else { return base[(kind - 2) as usize] };
+        let (fade, stroke) = match kind {
+            2 => (k * [0.12f32, 0.115, 0.11, 0.108, 0.106][i] * 0.6, k * [14.0f32, 16.0, 18.0, 20.0, 22.0][i]),
+            3 => (k * [0.15f32, 0.148, 0.146, 0.144, 0.142][i] * 0.9, k * [12.0f32, 14.0, 16.0, 18.0, 22.0][i] * 1.3),
+            4 => (k * [0.145f32, 0.152, 0.155, 0.151, 0.15][i] * 0.7, k * [12.0f32, 14.0, 16.0, 18.0, 22.0][i] * 1.3),
+            5 => (k * 0.15 * 0.6, k * [12.0f32, 14.0, 15.0, 16.0, 17.0][i] * 1.1),
+            _ => (k * [0.15f32, 0.151, 0.152, 0.155, 0.16][i] * 0.6, k * [12.0f32, 14.0, 15.0, 16.0, 18.0][i] * 1.5),
+        };
+        let f = [1.3f32, 1.2, 1.1, 1.05, 1.0][i];
+        (fade * f, stroke * f)
+    }
+
+    /// Where the streak's node is: the ship sprite plus the fire's offset, through the player's
+    /// rotation, scale and gravity flip.
+    fn anchor(p: &Player, kind: u32) -> (f32, f32) {
+        let (ox, oy) = match kind {
+            2 => (-8.0f32, -3.0f32),
+            3 => (-8.0, -3.5),
+            4 | 5 => (-14.0, -3.0),
+            6 => (-14.0, -2.5),
+            _ => (0.0, 0.0),
+        };
+        let ox = if p.going_left { -ox } else { ox };
+        let flip = if p.upside_down { -1.0 } else { 1.0 };
+        let t = node_transform(p.x, p.y, p.rotation, p.scale, p.scale * flip, 0.0, 0.0, 0.0, 0.0);
+        let (x, y) = (ox, -5.0 + oy);
+        (t[0] * x + t[2] * y + t[4], t[1] * x + t[3] * y + t[5])
+    }
+
+    /// The streak texture for fire `kind` at `time` seconds (FUN_100365034).
+    fn frame(kind: u32, time: f32) -> String {
+        let (dur, count) = match kind {
+            2 => (0.03125f32, 9),
+            3 => (0.03125, 10),
+            4 => (0.041666668, 6),
+            5 => (0.05, 16),
+            _ => (0.041666668, 5),
+        };
+        let n = (time / dur) as i32;
+        let i = n - (n / count) * count;
+        format!("shipfire{kind:02}_{:03}.png", i + 1)
+    }
+}
+
+/// A value tweened linearly over a duration (`FMODAudioEngine::updateChannel`'s fades).
+#[derive(Clone, Copy, Debug)]
+struct Fade {
+    value: f32,
+    from: f32,
+    to: f32,
+    elapsed: f32,
+    duration: f32,
+}
+
+impl Fade {
+    fn new(value: f32) -> Fade {
+        Fade { value, from: value, to: value, elapsed: 0.0, duration: 0.0 }
+    }
+
+    fn start(&mut self, to: f32, duration: f32) {
+        (self.from, self.to, self.elapsed, self.duration) = (self.value, to, 0.0, duration);
+        if duration <= 0.0 {
+            self.value = to;
+        }
+    }
+
+    fn step(&mut self, dt: f32) {
+        if self.value == self.to {
+            return;
+        }
+        self.elapsed += dt;
+        let k = if self.duration <= 0.0 { 1.0 } else { (self.elapsed / self.duration).min(1.0) };
+        self.value = self.from + (self.to - self.from) * k;
+    }
+}
+
+/// Edit song / edit SFX state: the music's and the trigger sounds' volume and the music's speed
+/// (tweened), the proximity effects by (song, channel), and what the backend was last sent.
+#[derive(Clone, Debug)]
+struct AudioEdits {
+    music_volume: Fade,
+    music_speed: Fade,
+    sfx_volume: Fade,
+    proximity: Vec<(bool, i32, cadence_core::groups::Proximity)>,
+    sent: (f32, f32, f32),
+}
+
+impl Default for AudioEdits {
+    fn default() -> AudioEdits {
+        AudioEdits { music_volume: Fade::new(1.0), music_speed: Fade::new(1.0), sfx_volume: Fade::new(1.0), proximity: Vec::new(), sent: (1.0, 1.0, 1.0) }
+    }
+}
+
+/// The exit-dual ring's z (it's added to the layer at z 0 over the copy; any z under the T
+/// layers that no death wave uses marks it).
+const EXIT_DUAL_WAVE_Z: i32 = 100;
+
+struct ExitDual {
+    player: Player,
+    colors: ([f32; 3], [f32; 3]),
+    from: (f32, f32),
+    dx: f32,
+    turn: f32,
+    rotation: f32,
+    scale: f32,
+    end_scale: f32,
+    elapsed: Option<f32>,
+}
+
+impl ExitDual {
+    const DURATION: f32 = 0.4;
+
+    fn new(p: &Player, colors: ([f32; 3], [f32; 3]), zoom: f32, mirrored: bool) -> ExitDual {
+        let mut player = p.clone();
+        player.dual = None;
+        ExitDual {
+            colors,
+            from: (p.x, p.y),
+            dx: -124.632034 / zoom,
+            turn: if mirrored { -180.0 } else { 180.0 },
+            rotation: p.rotation,
+            scale: p.scale,
+            end_scale: 0.1 / zoom,
+            elapsed: None,
+            player,
+        }
+    }
+
+    fn step(&mut self, dt: f32) {
+        self.elapsed = Some(self.elapsed.map_or(0.0, |t| t + dt));
+    }
+
+    fn progress(&self) -> f32 {
+        (self.elapsed.unwrap_or(0.0) / Self::DURATION).min(1.0)
+    }
+
+    /// The copy as drawn now (position, rotation, scale) and its opacity.
+    fn state(&self) -> (Player, f32) {
+        let k = self.progress();
+        let mut p = self.player.clone();
+        p.x = self.from.0 + self.dx * k;
+        p.y = self.from.1;
+        p.rotation = self.rotation + self.turn * k;
+        p.scale = self.scale + (self.end_scale - self.scale) * k;
+        (p, 1.0 - k)
     }
 }
 
@@ -643,6 +830,12 @@ struct Game {
     direction: [bool; 2],
     direction_sent: [bool; 2],
     death_timer: f32,
+    /// playDeathEffect's `CCFadeTo(0.05, 0)` on the player that died (tag 4): None until the
+    /// first frame after the death (cocos2d's first action step is at elapsed 0), then the
+    /// action's elapsed time.
+    death_fade: Option<f32>,
+    /// `GJBaseGameLayer::playExitDualEffect` for the player that didn't die in dual mode.
+    exit_dual: Option<ExitDual>,
     audio: Box<dyn Audio>,
     /// The level's song and where it starts (`kA13`, seconds).
     song: Option<(String, f32)>,
@@ -672,6 +865,8 @@ struct Game {
     /// (the trail follows a frame behind).
     trail: crate::trail::MotionStreak,
     trail_pos: (f32, f32),
+    /// Ship fires 2–6 (`m_shipStreak`, see `ShipFire`); None for the default fire (1).
+    ship_fire: Option<ShipFire>,
     wave_trail: crate::trail::WaveTrail,
     /// The level's background and ground art (kA6 / kA7, 0 = 1): `game_bg_NN_001`,
     /// `groundSquare_NN_001` and, for grounds 8+, its second layer `_2` (ground 2 color).
@@ -698,6 +893,9 @@ struct Game {
     /// The song channel the music plays on (song triggers' key 432; the level's own song is
     /// channel 0), for edit song triggers.
     music_channel: i32,
+    /// Edit song / SFX state (`FMODAudioEngine::updateChannel` tweens and the proximity effects):
+    /// see `AudioEdits`.
+    audio_edits: AudioEdits,
     pending_checkpoint: Option<Checkpoint>,
     /// The options that change play (game variables, from the save).
     opts: PlayOptions,
@@ -721,6 +919,10 @@ pub struct PlayOptions {
     pub spider_main_color: bool,
     /// 0100: the chosen death effect in practice mode too (else the default there).
     pub practice_death_effect: bool,
+    /// The death effects' "Explode" (game variable 0153 off): the icon shatter after the effect.
+    pub death_explode: bool,
+    /// The chosen ship fire (1–6, the icon kit's special tab).
+    pub ship_fire: u32,
 }
 
 impl PlayOptions {
@@ -733,6 +935,9 @@ impl PlayOptions {
             quick_checkpoints: p.var("0068", false),
             spider_main_color: p.var("0061", false),
             practice_death_effect: p.var("0100", false),
+            // the icon kit's death effect "Explode" toggle (shown as !0153, GJGarageLayer::setupPage)
+            death_explode: p.var("deathexplode", !p.var("0153", false)),
+            ship_fire: (p.number("shipfire", 1.0) as u32).clamp(1, 6),
         }
     }
 }
@@ -859,6 +1064,38 @@ impl Game {
         self.trail.update(1.0 / 60.0, self.trail_pos);
         let down = if self.player.mode == Mode::Ship { -10.74 } else { 0.0 };
         self.trail_pos = (self.player.x, self.player.y + down);
+        self.step_ship_fire();
+    }
+
+    /// The chosen ship fire's streak, one frame: it follows the ship (`PlayerObject::setPosition`
+    /// moves it only in ship mode; `toggleFlyMode` shows it only there, never in platformer),
+    /// a frame behind like the regular trail; its fade and stroke follow the speed and size
+    /// (`updateTimeMod` / `togglePlayerScale`).
+    fn step_ship_fire(&mut self) {
+        let kind = self.opts.ship_fire;
+        if kind < 2 {
+            self.ship_fire = None;
+            return;
+        }
+        let p = &self.player;
+        let key = (kind, p.speed, p.size);
+        if self.ship_fire.as_ref().is_none_or(|f| f.key != key) {
+            self.ship_fire = Some(ShipFire::new(kind, p.speed, p.size));
+        }
+        let ship = p.mode == Mode::Ship && !p.platformer.on && !p.dead;
+        let at = ShipFire::anchor(p, kind);
+        let Some(f) = self.ship_fire.as_mut() else { return };
+        if ship && !f.visible {
+            f.streak.reset();
+            f.pos = at;
+        }
+        f.visible = ship;
+        f.streak.active = ship;
+        f.streak.update(1.0 / 60.0, f.pos);
+        if ship {
+            f.pos = at;
+        }
+        f.time = p.total_time as f32;
     }
 
     /// The middle ground's node scale (`updateCameraBGArt` 0x10f978): (1 − (1 − zoom)·0.3)·1.2.
@@ -1046,6 +1283,7 @@ impl Game {
             self.audio.play_music(file, *offset);
             self.music_channel = 0;
         }
+        self.audio_edits = AudioEdits::default();
     }
 
     fn reset(&mut self) {
@@ -1057,6 +1295,7 @@ impl Game {
         self.coins_taken.clear();
         self.trail.reset();
         self.trail.active = false;
+        self.ship_fire = None;
         self.wave_trail.clear();
         // A direction held into the new attempt is pressed again on its first step.
         self.direction_sent = [false; 2];
@@ -1066,6 +1305,8 @@ impl Game {
         self.colors = self.colors_start.clone();
         self.fx.reset();
         self.death_timer = 0.0;
+        self.death_fade = None;
+        self.exit_dual = None;
         self.step_count = 0;
         self.effects.clear();
         self.player_fx.reset();
@@ -1149,8 +1390,18 @@ impl Game {
     /// Edit song / edit SFX triggers (3605 / 3603) fired this step: stop the channel, or change
     /// its volume / speed (`applySFXEditTrigger` 0x112928). Songs: the music when it plays on
     /// the trigger's channel; SFX: the sounds SFX triggers started.
+    ///
+    /// Volume and speed changes are `updateChannel` tweens over the trigger's duration, kept here
+    /// so a proximity effect (target group 51: `addProximityVolumeEffect`) can scale the volume
+    /// every step (`updateProximityVolumeEffects`). The same channel and kind replaces an older
+    /// proximity effect. (SFX speed isn't applied: the audio backend has no per-sound rate.)
     fn apply_audio_edits(&mut self) {
         for edit in std::mem::take(&mut self.world.audio_edits) {
+            if let Some(p) = edit.proximity {
+                let e = &mut self.audio_edits.proximity;
+                e.retain(|(song, channel, _)| (*song, *channel) != (edit.song, edit.channel));
+                e.push((edit.song, edit.channel, p));
+            }
             if edit.song {
                 if edit.channel != self.music_channel {
                     continue;
@@ -1160,16 +1411,73 @@ impl Game {
                     continue;
                 }
                 if let Some(v) = edit.volume {
-                    self.audio.fade_music(v, edit.duration);
+                    self.audio_edits.music_volume.start(v, edit.duration);
                 }
                 if let Some(speed) = edit.speed {
-                    self.audio.set_music_speed(pitch_for_index(speed));
+                    self.audio_edits.music_speed.start(pitch_for_index(speed), edit.duration);
                 }
             } else if edit.stop {
                 self.audio.stop_effects();
             } else if let Some(v) = edit.volume {
-                self.audio.set_effects_volume(v);
+                self.audio_edits.sfx_volume.start(v, edit.duration);
             }
+        }
+        self.update_audio_edits(self.world.step_secs as f32);
+    }
+
+    /// One step of the edit tweens and proximity volumes, sent to the backend when they change.
+    fn update_audio_edits(&mut self, dt: f32) {
+        let ed = &mut self.audio_edits;
+        ed.music_volume.step(dt);
+        ed.music_speed.step(dt);
+        ed.sfx_volume.step(dt);
+        let p = &self.player;
+        let second = p.dual.as_ref().map(|q| (q.x, q.y));
+        let view = (self.camera.x, self.camera.y, self.view_w / self.camera.zoom.max(0.01), VIEW_HEIGHT / self.camera.zoom.max(0.01));
+        let factor = |song: bool, channel: i32| -> f32 {
+            let Some((_, _, pr)) = ed.proximity.iter().find(|(s, c, _)| *s == song && (!song || *c == channel)) else { return 1.0 };
+            let at = if pr.camera {
+                (view.0 + view.2 * 0.5, view.1 + view.3 * 0.5)
+            } else if pr.p1 {
+                (p.x, p.y)
+            } else if pr.p2 {
+                second.unwrap_or((p.x, p.y))
+            } else {
+                match self.world.members_of(pr.center).first() {
+                    Some(&o) => {
+                        let (x, y) = self.world.level_position(o as usize);
+                        (x as f32, y as f32)
+                    }
+                    None => return 1.0,
+                }
+            };
+            let objects: Vec<(f32, f32)> = self
+                .world
+                .members_of(pr.group)
+                .iter()
+                .filter(|&&o| self.world.enabled.get(o as usize).copied().unwrap_or(true))
+                .map(|&o| {
+                    let (x, y) = self.world.level_position(o as usize);
+                    (x as f32, y as f32)
+                })
+                .collect();
+            let both = (pr.p1 && pr.p2 && !pr.camera).then_some(second).flatten();
+            pr.volume(at, both, &objects)
+        };
+        let music = ed.music_volume.value * factor(true, self.music_channel);
+        let sfx = ed.sfx_volume.value * factor(false, 0);
+        let speed = ed.music_speed.value;
+        if ed.sent.0 != music {
+            ed.sent.0 = music;
+            self.audio.fade_music(music, 0.0);
+        }
+        if ed.sent.1 != speed {
+            ed.sent.1 = speed;
+            self.audio.set_music_speed(speed);
+        }
+        if ed.sent.2 != sfx {
+            ed.sent.2 = sfx;
+            self.audio.set_effects_volume(sfx);
         }
     }
 
@@ -1191,6 +1499,9 @@ impl Game {
         self.world.epoch = cadence_core::world::World::next_epoch();
         self.player = cp.player;
         self.player.dead = false;
+        self.player.second_died = false;
+        self.death_fade = None;
+        self.exit_dual = None;
         self.player.set_button(self.holding, &self.world);
         self.colors = cp.colors;
         self.camera = cp.camera;
@@ -1424,7 +1735,23 @@ impl Game {
     /// default in practice mode unless option 0100 shows them there), see `crate::death`. All of
     /// it sits at the player's position, sized by the vehicle size (× 0.9 when it's at least 1).
     fn on_death(&mut self) {
-        let p = &self.player;
+        // `PlayLayer::destroyPlayer`: the player that died explodes (player 2 in dual mode when
+        // it was its death, with the colors swapped); the other one leaves with the exit-dual
+        // effect and is hidden (`playerDestroyed(other, true)`).
+        let second = self.player.second_died && self.player.dual.is_some();
+        let (p, pcol) = match (second, self.player.dual.as_deref()) {
+            (true, Some(p2)) => (p2.clone(), (self.pcol.1, self.pcol.0)),
+            _ => (self.player.clone(), self.pcol),
+        };
+        if let Some(other) = if second { Some(&self.player) } else { self.player.dual.as_deref() } {
+            let colors = if second { self.pcol } else { (self.pcol.1, self.pcol.0) };
+            self.exit_dual = Some(ExitDual::new(other, colors, self.camera.zoom, self.player.mirrored));
+            // The ring: CCCircleWave(10 → 30, 0.4 s) in the main color, outlined, following
+            // the copy (`followObject`).
+            let wave = CircleWave { outline: true, z: EXIT_DUAL_WAVE_Z, first_tick: true, ..CircleWave::new((other.x, other.y), 10.0, 30.0, 0.4, colors.0) };
+            self.effects.waves.push(wave);
+        }
+        let p = &p;
         let at = (p.x, p.y);
         let size = if p.size >= 1.0 { p.size * 0.9 } else { p.size };
         let mut effect = self.icons.ids[10];
@@ -1433,17 +1760,18 @@ impl Game {
         }
         let seed = self.effects.next_seed();
         let defs = |name: &str| self.particle_defs.get(name).cloned();
-        let Some(death) = crate::death::play(effect, at, size, self.pcol, &mut self.effects.rng, seed, &defs) else { return };
+        let Some(death) = crate::death::play(effect, at, size, pcol, &mut self.effects.rng, seed, &defs) else { return };
         self.effects.emitters.push(death.emitter);
         self.effects.waves.extend(death.waves);
         self.effects.deaths.extend(death.sprite);
-        if !death.shatter {
+        if !death.shatter || !self.opts.death_explode {
             return;
         }
-        // The icon shatter (unless the "no explode shatter" option, game variable 0153, is on):
+        // The icon shatter (unless the "Explode" toggle is off: game variable 0153 on — the
+        // only thing it changes in playDeathEffect, where both getGameVariable("0153") tests
+        // skip the ExplodeItemNode):
         // a (size·40)² capture cut into 2–3 × 2–3 pieces (5% of the time one column, 5% one
         // row), flying at the player's speed · 0.72 (vx 0.5v ± v, vy 6 ± 3, 1.4 s).
-        let p = &self.player;
         let rng = &mut self.effects.rng;
         let (r1, r2, r3) = (rng.unit(), rng.unit(), rng.unit());
         let mut rows = (r2 * 2.0) as u32 + 2;
@@ -1503,6 +1831,14 @@ impl Game {
         }
         self.player_fx.update(dt as f32);
         if self.player.dead {
+            self.death_fade = Some(self.death_fade.map_or(0.0, |t| t + dt as f32));
+            if let Some(e) = &mut self.exit_dual {
+                e.step(dt as f32);
+                let (copy, _) = e.state();
+                for w in self.effects.waves.iter_mut().filter(|w| w.z == EXIT_DUAL_WAVE_Z) {
+                    w.center = (copy.x, copy.y);
+                }
+            }
             self.death_timer += dt as f32;
             if self.death_timer > if self.opts.faster_reset { 0.5 } else { 1.0 } {
                 self.reset();
@@ -1644,6 +1980,9 @@ pub struct App {
     /// The editor's level (decoded level string) while the editor is open: the game is built
     /// from it in editor mode (no physics, no player, editor-only objects shown).
     editor_level: Option<String>,
+    /// The editor's music playback (EditorUI::onPlayback): the song time it started at and
+    /// when, while it plays; after it stops, the time it reached (DrawGridLayer keeps the line).
+    editor_playback: Option<(f32, Option<Instant>)>,
     /// CADENCE_UI_SCRIPT: scripted input for headless UI tests (one command a line: click X Y
     /// in points, key Name, wheel D, wait FRAMES, shot PATH), and the shot due this frame.
     script: Option<std::collections::VecDeque<String>>,
@@ -1866,6 +2205,8 @@ impl App {
             direction: [false; 2],
             direction_sent: [false; 2],
             death_timer: 0.0,
+            death_fade: None,
+            exit_dual: None,
             audio,
             song,
             bg_pos: [0.0; 2],
@@ -1891,6 +2232,7 @@ impl App {
             attempt: 1,
             trail: crate::trail::MotionStreak::new(0.3, 5.0, 10.0),
             trail_pos: (0.0, 0.0),
+            ship_fire: None,
             wave_trail: crate::trail::WaveTrail::default(),
             bg_image: bg_name(art_default[0]),
             ground_image: ground_names(art_default[1]).0,
@@ -1904,6 +2246,7 @@ impl App {
             checkpoints: Vec::new(),
             platformer_checkpoint: None,
             music_channel: 0,
+            audio_edits: AudioEdits::default(),
             pending_checkpoint: None,
             opts: PlayOptions::default(),
             icons,
@@ -2167,7 +2510,7 @@ impl App {
         if let Some(sh) = game.effects.shatters.iter_mut().find(|s| s.sheet.is_none()) {
             let mut icon = Vec::new();
             let half = sh.size * 0.5;
-            player_draws(sheets, &|s| renderer.atlas_size(s), &game.player, (half, half), game.player.rotation, game.pcol, &game.icons, rig_parts.as_deref(), &mut icon);
+            player_draws(sheets, &|s| renderer.atlas_size(s), &game.player, (half, half), game.player.rotation, game.pcol, &game.icons, rig_parts.as_deref(), 1.0, &mut icon);
             let px = (sh.size * points_to_pixels).round() as u32;
             sh.sheet = Some(renderer.capture(&icon, (0.0, 0.0, sh.size, sh.size), px));
         }
@@ -2273,6 +2616,27 @@ impl App {
             }
         }
         let world_start = draws.len();
+        // The editor's guides and music playback line (DrawGridLayer, under the objects).
+        if game.editor {
+            if let (Some(e), Some(square)) = (self.ui.editor.as_ref(), sheets.frames.get(PARTICLE_TEXTURE)) {
+                let playback = self.editor_playback.map(|(t, since)| {
+                    let t = t + since.map_or(0.0, |i| i.elapsed().as_secs_f32());
+                    (e.playback_x(t), since.is_some())
+                });
+                for g in e.guide_lines((cam_x, cam_y, view_w, view_h), playback) {
+                    let width = if g.pixels { g.width * pixel } else { g.width };
+                    let (dx, dy) = (g.to.0 - g.from.0, g.to.1 - g.from.1);
+                    let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+                    let (nx, ny) = (-dy / len * width * 0.5, dx / len * width * 0.5);
+                    let (a, b) = ((g.from.0 + nx, g.from.1 + ny), (g.from.0 - nx, g.from.1 - ny));
+                    let (c, d) = ((g.to.0 + nx, g.to.1 + ny), (g.to.0 - nx, g.to.1 - ny));
+                    let color = tint(g.color, g.alpha);
+                    for (p, q, r) in [(a, b, d), (a, d, c)] {
+                        draws.push(Draw { sheet: square.sheet, blend: Blend::Normal, instance: triangle_instance(p, q, r, (0.5, 0.5), color) });
+                    }
+                }
+            }
+        }
         let t_objects = Instant::now();
         // Where the shader/gradient z layers start in `draws` (fx.rs).
         let mut marks = crate::fx::LayerMarks::default();
@@ -2580,12 +2944,11 @@ impl App {
             // The detail ("_color_") layer defaults to black when the object has no detail channel.
             let detail_channel = st.detail_channel.unwrap_or(if visual.detail_color < 0 { 1010 } else { visual.detail_color as i32 });
             let main_active = game.colors.active(base_channel);
-            // Objects flagged m_isObjectBlack keep a black main sprite whatever their channel.
-            let base = if crate::black::OBJECT_BLACK.binary_search(&(st.canonical as u16)).is_ok() {
-                [0.0; 3]
-            } else {
-                game.colors.object_color(base_channel, main_active, groups, hsv_main)
-            };
+            // Objects flagged m_isObjectBlack keep a black main sprite whatever their channel
+            // (but their glow still takes the channel's color, below).
+            let object_black = crate::black::OBJECT_BLACK.binary_search(&(st.canonical as u16)).is_ok();
+            let unblack = game.colors.object_color(base_channel, main_active, groups, hsv_main);
+            let base = if object_black { [0.0; 3] } else { unblack };
             let detail = game.colors.object_color(detail_channel, main_active, groups, hsv_detail);
             // area tint triggers (3010): toward the channel's color, or an HSV shift (278)
             let (base, detail) = match game.world.area.tint[index] {
@@ -2692,8 +3055,12 @@ impl App {
                     .map_or_else(|| main.replace("_001.png", "_glow_001.png"), |s| s.frame.to_string());
                 if let Some((gw, gh)) = frame_size(&glow) {
                     let t = node_transform(ox, oy, rotation + if child_spin { spin } else { 0.0 }, sx, sy, 0.5, 0.5, gw, gh);
-                    // Glows are white, except ids with m_customGlowColor (`updateVisibility`):
-                    // the light background, or the background shifted s −0.2 v +0.2.
+                    // `GameObject::setObjectColor` (0x5b8708) gives the glow the object's color
+                    // (`setGlowColor`, also for black objects, whose main sprite stays black) —
+                    // white for the default channels, the player's color for P1/P2 objects, the
+                    // shifted color under an area or enter tint. Ids with m_customGlowColor
+                    // (`updateVisibility`) take the light background, or the background shifted
+                    // s −0.2 v +0.2.
                     let glow_color = match crate::black::GLOW_COLOR.binary_search_by_key(&(st.canonical as u16), |g| g.0) {
                         Ok(i) if crate::black::GLOW_COLOR[i].1 => game.colors.display(1007),
                         Ok(_) => {
@@ -2701,11 +3068,13 @@ impl App {
                             let h = Hsv { h: 0.0, s: -0.2, v: 0.2, abs_s: true, abs_v: true };
                             cadence_core::triggers::transform_color(bg, h).map(|v| v as f32 / 255.0)
                         }
-                        Err(_) => [1.0; 3],
+                        Err(_) if object_black => unblack,
+                        Err(_) => base,
                     };
                     // the glow follows the object's opacity (`GameObject::setGlowOpacity`): hidden
                     // or faded objects (channel or group alpha) take their glow with them
-                    push(&glow, t, false, false, tint(glow_color, base_alpha), Blend::Normal, &mut draws);
+                    // the glow batch blends SRC_ALPHA, ONE (real scene dumps: 770,1)
+                    push(&glow, t, false, false, [glow_color[0], glow_color[1], glow_color[2], base_alpha], Blend::Additive, &mut draws);
                 }
             }
             let main = visual.sprites[0].frame;
@@ -2922,6 +3291,26 @@ impl App {
                 }
             }
         }
+        // The ship fire's streak (z −3, under the regular trail): white, additive, its texture
+        // for the player's time.
+        if let Some(f) = game.ship_fire.as_ref().filter(|f| f.visible) {
+            if let Some(frame) = sheets.frames.get(ShipFire::frame(f.key.0, f.time).as_str()) {
+                let (aw, ah) = renderer.atlas_size(frame.sheet);
+                let uv = |u: f32, v: f32| {
+                    if frame.rotated {
+                        ((frame.tex_x + v * frame.tex_h) / aw, (frame.tex_y + u * frame.tex_w) / ah)
+                    } else {
+                        ((frame.tex_x + u * frame.tex_w) / aw, (frame.tex_y + (1.0 - v) * frame.tex_h) / ah)
+                    }
+                };
+                for (p, t, alpha) in f.streak.triangles() {
+                    let corners = t.map(|(u, v)| uv(u, v));
+                    let m = [p[1].0 - p[0].0, p[1].1 - p[0].1, p[2].0 - p[0].0, p[2].1 - p[0].1, p[0].0, p[0].1];
+                    let uvs = [corners[0].0, corners[0].1, corners[1].0, corners[1].1, corners[2].0, corners[2].1, corners[2].0, corners[2].1];
+                    draws.push(Draw { sheet: frame.sheet, blend: Blend::Additive, instance: Instance { m, _pad: [1.0, 0.0], uv: uvs, color: [1.0, 1.0, 1.0, alpha] } });
+                }
+            }
+        }
         // The regular trail (z −2, under the player): player color 2, additive, streak_01.
         if let Some(frame) = sheets.frames.get(STREAK_TEXTURE) {
             let atlas = renderer.atlas_size(frame.sheet);
@@ -2994,8 +3383,18 @@ impl App {
                 push_particles(e, sheet, &mut draws);
             }
         }
-        // Player: each sprite centered on its own frame size (cocos2d content size).
-        if !p.dead {
+        // Player: each sprite centered on its own frame size (cocos2d content size). After a
+        // death the player that died fades out over 0.05 s (playDeathEffect's CCFadeTo, a frame
+        // late); in dual mode the other one is hidden and its exit copy drawn instead.
+        let death_alpha = if p.dead { 1.0 - (game.death_fade.unwrap_or(0.0) / 0.05).min(1.0) } else { 1.0 };
+        let second_died = p.dead && p.second_died && p.dual.is_some();
+        if let Some((copy, a)) = game.exit_dual.as_ref().filter(|_| p.dead && !game.editor).map(|e| e.state()) {
+            if 0.0 < a {
+                let colors = game.exit_dual.as_ref().map(|e| e.colors).unwrap_or(game.pcol);
+                player_draws(sheets, &|s| renderer.atlas_size(s), &copy, (copy.x, copy.y), copy.rotation, colors, &game.icons, None, a, &mut draws);
+            }
+        }
+        if !p.dead || 0.0 < death_alpha {
             let (mut px, mut py, mut rot) = (p.x, p.y, p.rotation);
             if let Some(t) = game.end_time {
                 // playEndAnimationToPos: a 1 s cubic Bézier (ease-in 1.2) through
@@ -3030,12 +3429,14 @@ impl App {
             } else {
                 p
             };
-            if !game.editor && !game.world.player_hidden {
-                player_draws(sheets, &|s| renderer.atlas_size(s), p, (px, py), rot, game.pcol, &game.icons, rig, &mut draws);
+            let a1 = if p.dead { if second_died { 0.0 } else { death_alpha } } else { 1.0 };
+            if !game.editor && !game.world.player_hidden && 0.0 < a1 {
+                player_draws(sheets, &|s| renderer.atlas_size(s), p, (px, py), rot, game.pcol, &game.icons, rig, a1, &mut draws);
             }
             // Dual mode: player 2, with the two colors swapped (the game's default).
-            if let Some(p2) = p.dual.as_ref().filter(|_| !game.editor) {
-                player_draws(sheets, &|s| renderer.atlas_size(s), p2, (p2.x, p2.y), p2.rotation, (game.pcol.1, game.pcol.0), &game.icons, rig, &mut draws);
+            let a2 = if p.dead { if second_died { death_alpha } else { 0.0 } } else { 1.0 };
+            if let Some(p2) = p.dual.as_ref().filter(|_| !game.editor && 0.0 < a2) {
+                player_draws(sheets, &|s| renderer.atlas_size(s), p2, (p2.x, p2.y), p2.rotation, (game.pcol.1, game.pcol.0), &game.icons, rig, a2, &mut draws);
             }
         }
         if let Some(sheet) = square_sheet {
@@ -3322,6 +3723,11 @@ impl App {
                 log(&format!("{single}: {e}"));
             }
         }
+        for fire in ship_fire_files() {
+            if let Err(e) = sheets.load_unscaled(files, &fire) {
+                log(&format!("{fire}: {e}"));
+            }
+        }
         self.ui.fonts = crate::ui::load_assets(files, &mut sheets).fonts;
         let rig = |f: &str| files.read(f).and_then(|b| crate::anim::AnimDesc::parse(&b).ok());
         if let (Some(r), Some(sp)) = (rig("Robot_AnimDesc.plist"), rig("Spider_AnimDesc.plist")) {
@@ -3481,6 +3887,10 @@ impl App {
                 Action::MenuMusic => {}
                 // the editor's music button
                 Action::EditorMusic(start) => {
+                    self.editor_playback = match start {
+                        Some(t) => Some((t, Some(Instant::now()))),
+                        None => self.editor_playback.map(|(t, since)| (t + since.map_or(0.0, |i| i.elapsed().as_secs_f32()), None)),
+                    };
                     if let Some(a) = self.audio.as_deref_mut() {
                         match (start, self.ui.editor_song.clone()) {
                             (Some(offset), Some(song)) => a.play_music(&song, offset),
@@ -3516,6 +3926,8 @@ impl App {
                 }
                 Action::PlayOnline => {
                     self.editor_level = None;
+                    // a playtest clears the playback line (DrawGridLayer +0x1e4)
+                    self.editor_playback = None;
                     if let Some(l) = self.ui.take_online() {
                         let id = l.info.id;
                         self.online = Some(l);
@@ -4008,6 +4420,7 @@ pub fn run(files: Box<dyn Files>, audio: Box<dyn Audio>, level_id: i32, quality:
             o
         },
         editor_level: None,
+        editor_playback: None,
         script: std::env::var("CADENCE_UI_SCRIPT").ok().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| t.lines().map(str::to_string).filter(|l| !l.trim().is_empty() && !l.starts_with('#')).collect()),
         script_shot: None,
         script_wait: 0,
@@ -4037,5 +4450,44 @@ pub fn run(files: Box<dyn Files>, audio: Box<dyn Audio>, level_id: i32, quality:
     {
         use winit::platform::web::EventLoopExtWebSys;
         event_loop.spawn_app(app);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The real game's exit-dual copy (re/traces/dualdeath, player 2 died, zoom 1): six frames
+    /// after the death the copy is 25.965 back, at scale 0.8125, turned 37.5 degrees, opacity 201.
+    #[test]
+    fn exit_dual_copy_matches_the_capture() {
+        let mut p = Player::default();
+        p.x = 682.883;
+        p.y = 105.0;
+        let mut e = ExitDual::new(&p, ([0.5; 3], [1.0; 3]), 1.0, false);
+        for _ in 0..6 {
+            e.step(1.0 / 60.0);
+        }
+        let (copy, a) = e.state();
+        assert!((copy.x - (682.883 - 25.965)).abs() < 0.01, "{}", copy.x);
+        assert!((copy.scale - 0.8125).abs() < 1e-4);
+        assert!((copy.rotation - 37.5).abs() < 1e-3);
+        assert_eq!((a * 255.0) as i32, 201);
+    }
+
+    /// The editor's music playback line: posForTime through a speed portal; green, 5 pixels
+    /// while playing, 3 pixels at opacity 100 once stopped.
+    #[test]
+    fn editor_playback_line() {
+        let e = crate::ui::editor::Editor::from_level_string("t", ";1,202,2,311.58011,3,105;1,1,2,600,3,105");
+        assert!((e.playback_x(0.5) - 155.790055).abs() < 1e-3);
+        assert!((e.playback_x(2.0) - (311.58011 + 387.42014)).abs() < 1e-2);
+        let view = (0.0, 0.0, 569.0, 320.0);
+        let playing = e.guide_lines(view, Some((200.0, true)));
+        let line = playing.last().unwrap();
+        assert_eq!((line.from.0, line.color, line.width, line.pixels), (200.0, [50.0 / 255.0, 1.0, 50.0 / 255.0], 5.0, true));
+        let stopped = e.guide_lines(view, Some((200.0, false)));
+        assert_eq!((stopped.last().unwrap().width, stopped.last().unwrap().alpha), (3.0, 100.0 / 255.0));
+        assert!(e.guide_lines(view, None).is_empty());
     }
 }

@@ -22,6 +22,7 @@ pub mod save;
 pub mod shaders;
 pub mod slopes;
 pub mod spider;
+pub mod spline;
 pub mod trace;
 pub mod triggers;
 pub mod world;

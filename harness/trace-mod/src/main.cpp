@@ -86,9 +86,11 @@ struct Spec {
     std::vector<std::pair<int, std::string>> watchGroups;  // (group, path): positions every step
     int watchMax = 4;                                      // objects per watched group (watchmax N)
     std::vector<int> deathEffects;                         // deatheffect N: per attempt (0 = the save's)
+    std::vector<std::pair<std::string, bool>> gameVars;    // gamevar <key> <0|1>: set at each attempt (memory only)
     std::vector<std::pair<int, std::string>> deathShots;   // deathshot <frame> <path>: frames after
                                                            // player 1 dies ("%d" = the attempt)
     int iconCube = -1, iconColor1 = -1, iconColor2 = -1;   // playericon <cube> <color1> <color2> (glow off)
+    int shipFire = 0;                                      // shipfire N: GameManager m_playerShipFire (memory only)
     long long fastSeed = -1;                               // fastseed N: fast_srand(N) after every reset
 };
 
@@ -153,6 +155,12 @@ bool loadSpec() {
             g_spec.deathEffects.resize(g_spec.attempts.size(), 0);
             g_spec.deathEffects.back() = effect;
         }
+        else if (cmd == "gamevar") {
+            std::string key;
+            int on = 0;
+            in >> key >> on;
+            g_spec.gameVars.emplace_back(key, on != 0);
+        }
         else if (cmd == "deathshot") {
             int frame = 0;
             std::string path;
@@ -161,6 +169,7 @@ bool loadSpec() {
         }
         else if (cmd == "fastseed") in >> g_spec.fastSeed;
         else if (cmd == "playericon") in >> g_spec.iconCube >> g_spec.iconColor1 >> g_spec.iconColor2;
+        else if (cmd == "shipfire") in >> g_spec.shipFire;
         else if (cmd == "watchgroup") {
             int group = 0;
             std::string path;
@@ -209,6 +218,8 @@ void startAttempt() {
     if (g_attempt < g_spec.deathEffects.size() && g_spec.deathEffects[g_attempt] > 0) {
         gm->setPlayerDeathEffect(g_spec.deathEffects[g_attempt]);
     }
+    for (auto& [key, on] : g_spec.gameVars) gm->setGameVariable(key.c_str(), on);
+    if (g_spec.shipFire > 0) gm->m_playerShipFire = g_spec.shipFire;
     if (g_spec.iconCube > 0) {
         gm->setPlayerFrame(g_spec.iconCube);
         gm->setPlayerColor(g_spec.iconColor1);
@@ -1792,6 +1803,14 @@ class $modify(TracePlay, PlayLayer) {
             // Player 2 dying in dual mode ends the attempt too: both rows for this step.
             record(m_player1, g_stepDt);
             record(player, g_stepDt, g_out2);
+            if (!g_spec.deathShots.empty()) {
+                // deathshot frames for player 2's death too (its explosion, player 1's exit copy)
+                std::fprintf(g_out, "# end death p2 step=%d updates=%d\n", g_step, g_updates);
+                std::fclose(g_out);
+                g_out = nullptr;
+                g_deathFrame = 0;
+                return;
+            }
             finish("death");
         }
     }
