@@ -36,6 +36,7 @@ mod paths;
 mod chests_table;
 mod treasure;
 pub mod keybinds;
+mod shards;
 mod keybinds_table;
 mod reward;
 
@@ -415,6 +416,9 @@ pub enum Btn {
     KeysExport,
     KeysImport,
     KeysClose,
+    ShardIcon(u8),
+    ShardsClose,
+    ShardsPage(bool),
     DailySafe,
     DailyPlay,
     // editor::Editor
@@ -696,6 +700,8 @@ pub struct Ui {
     treasure: treasure::Treasure,
     /// The Keybindings layer, when open
     keys: Option<keybinds::Keys>,
+    /// Shards of Power's page, when open
+    shards_page: Option<usize>,
     /// Alt (Option) held, for the keybinds' chords
     pub held_alt: bool,
     /// Paths of Power: the path page open (0-based), its chest's "Reward!" popup
@@ -823,6 +829,7 @@ impl Ui {
             shop: shop::Shop::default(),
             treasure: treasure::Treasure::default(),
             keys: None,
+            shards_page: None,
             held_alt: false,
             path_page: None,
             path_reward: false,
@@ -1204,6 +1211,9 @@ impl Ui {
         let mut v = self.wanted_sheets_screen();
         if self.online.paths_open {
             v.extend(paths::wanted_sheets(self.path_page));
+        }
+        if let Some(pg) = self.shards_page {
+            v.extend(shards::wanted_sheets(pg));
         }
         if let Some(b) = self.banners.front() {
             v.extend(achievements::reward_sheet(&b.reward));
@@ -2082,7 +2092,7 @@ impl Ui {
                 self.shop = shop::Shop::default();
                 self.replay = Some((replay::Scene::Shop(0), self.screen));
             }
-            Btn::GarageShards => self.replay = Some((replay::Scene::Shards, self.screen)),
+            Btn::GarageShards => self.shards_page = Some(0),
             Btn::Replay(i) if self.screen == Screen::Online && self.online.popup.is_some() => match self.online.popup_click(i) {
                 online::Effect::Alert(title, text) => self.alert = Some(Alert { title, text, t: 0.0 }),
                 online::Effect::Comment(level) => {
@@ -2569,6 +2579,22 @@ impl Ui {
             }
             Btn::RewardCollect => self.unlock = None,
             Btn::KeysClose => self.keys = None,
+            Btn::ShardsClose => self.shards_page = None,
+            Btn::ShardsPage(next) => {
+                if let Some(pg) = self.shards_page {
+                    self.shards_page = Some(if next { (pg + 1) % shards::PAGES } else { (pg + shards::PAGES - 1) % shards::PAGES });
+                }
+            }
+            Btn::ShardIcon(i) => {
+                if let Some(pg) = self.shards_page {
+                    let kind = pg * 3 + i as usize / 5;
+                    let id = format!("geometry.ach.shard{}{:02}", shards::KINDS[kind].0, i % 5 + 1);
+                    if let Some(a) = achievements_table::ACHIEVEMENTS.iter().find(|a| a.0 == id) {
+                        let done = achievements::unlocked(a.0, a.3, &self.progress);
+                        self.alert = Some(Alert { title: a.1.into(), text: if done { a.2 } else { a.3 }.into(), t: 0.0 });
+                    }
+                }
+            }
             Btn::KeysTab(_) | Btn::KeysAdd(_) | Btn::KeysChord(..) | Btn::KeysSet | Btn::KeysRemove | Btn::KeysEditClose | Btn::KeysSettings | Btn::KeysSettingsClose | Btn::KeysReset | Btn::KeysExport | Btn::KeysImport => {
                 if let Some(k) = self.keys.as_mut()
                     && let Some(msg) = k.click(id, &mut self.progress)
@@ -3009,16 +3035,7 @@ impl Ui {
                 // EditLevelLayer's other buttons
                 _ => self.edit_level_tool(i),
             },
-            replay::Scene::Shards => match i {
-                0 => self.replay = None,
-                _ => {
-                    self.alert = Some(Alert {
-                        title: "Shards of Power".into(),
-                        text: "Collect <cy>shards</c> from orbs, chests and paths to unlock these icons. Shard rewards come from the game's chests, which Cadence can't open.".into(),
-                        t: 0.0,
-                    })
-                }
-            },
+            replay::Scene::Shards => self.replay = None,
             replay::Scene::Keys => self.replay = None,
             replay::Scene::EditGroup => self.edit_group_click(i),
             replay::Scene::EditColor => self.edit_color_click(i),
@@ -3541,7 +3558,7 @@ impl Ui {
             }
             "shards" => {
                 self.screen = Screen::Garage;
-                self.replay = Some((replay::Scene::Shards, Screen::Garage));
+                self.shards_page = Some(page.unwrap_or(0) % shards::PAGES);
             }
             "shop" => {
                 self.shop = shop::Shop::default();
@@ -4345,6 +4362,10 @@ impl Ui {
         if self.screen == Screen::Creator && self.online.daily.is_some() {
             ctx.buttons.clear();
             self.popup_anim(&mut canvas, "daily", |c| self.online.draw_daily(c, &mut ctx));
+        }
+        if let Some(pg) = self.shards_page {
+            ctx.buttons.clear();
+            self.popup_anim(&mut canvas, "shards", |c| shards::draw(c, &mut ctx, &self.progress, pg));
         }
         if let Some(k) = &self.keys {
             ctx.buttons.clear();

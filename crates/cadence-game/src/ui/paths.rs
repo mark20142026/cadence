@@ -135,7 +135,7 @@ pub fn add_reward(p: &mut Progress, item: u8, kind: u8, id: u16, n: u32) {
 
 /// A reward string from the achievements (`icon_213`, `color_48`, `robot_35` …) drawn as the
 /// path page shows it: in the path's colors when reached, else a dark silhouette under a lock.
-fn draw_reward(c: &mut Canvas, reward: &str, x: f32, y: f32, scale: f32, colors: Option<([u8; 3], [u8; 3])>, dark: [u8; 3]) {
+pub fn draw_reward(c: &mut Canvas, reward: &str, x: f32, y: f32, scale: f32, colors: Option<([u8; 3], [u8; 3])>, dark: [u8; 3]) {
     let Some((kind, n)) = reward.rsplit_once('_') else { return };
     let n: u32 = n.parse().unwrap_or(1);
     let start = c.mark();
@@ -151,12 +151,10 @@ fn draw_reward(c: &mut Canvas, reward: &str, x: f32, y: f32, scale: f32, colors:
             let dy = if kind == "bird" { -7.0 * scale } else { 0.0 };
             match colors {
                 Some((c1, c2)) => super::garage::draw_icon(c, &sheet, x, y + dy, scale, c1, c2),
-                // robots and spiders in the bar's dark color, the rest a black main layer
-                None if kind == "robot" || kind == "spider" => super::garage::draw_icon(c, &sheet, x, y + dy, scale, dark, dark),
-                None => {
-                    let base = if kind == "robot" || kind == "spider" { format!("{sheet}_01") } else { sheet };
-                    c.sprite(&format!("{base}_001.png"), x, y + dy, Look::scaled(scale).rgb([0, 0, 0]));
-                }
+                // locked: robots and spiders in the page's dark color, the rest a black main
+                // layer (faded below)
+                None if kind == "robot" || kind == "spider" => super::garage::draw_silhouette(c, &sheet, x, y + dy, scale, dark, 255),
+                None => super::garage::draw_silhouette(c, &sheet, x, y + dy, scale, [0, 0, 0], 255),
             }
         }
     }

@@ -40,6 +40,18 @@ pub fn unlocked(id: &str, unachieved: &str, p: &Progress) -> bool {
             _ => false,
         };
     }
+    // pathNN.MM: the path unlocked (MM 00) and at rank MM (MM × 100 stars and moons)
+    if let Some((n, m)) = rest.strip_prefix("path").and_then(|r| r.split_once('.')) {
+        let (Ok(n), Ok(m)) = (n.parse::<usize>(), m.parse::<u32>()) else { return false };
+        let i = n.saturating_sub(1);
+        return super::paths::unlocked(p, i) && super::paths::progress(p, i) >= m * 100;
+    }
+    // shardKindNN: that many of the kind's shards (5, 15, 35, 65, 100)
+    if let Some(r) = rest.strip_prefix("shard") {
+        let (name, n) = r.split_at(r.len().saturating_sub(2));
+        let (Some(kind), Ok(n)) = (super::shards::KINDS.iter().position(|k| k.0 == name), n.parse::<usize>()) else { return false };
+        return n >= 1 && super::shards::count(p, kind) >= super::shards::STEPS[(n - 1).min(4)];
+    }
     let main = |id: &i32| (1..=22).contains(id) || *id == 3001;
     let done = || p.levels.iter().filter(move |(id, l)| main(id) && l.best >= 100).map(|(id, _)| *id);
     let need = threshold(unachieved);

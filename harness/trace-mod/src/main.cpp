@@ -778,7 +778,11 @@ void openGui(std::string const& name) {
         g_guiTab = name.size() > 6 ? std::atoi(name.c_str() + 6) : -1;
     } else if (name == "creator") {
         CCDirector::get()->replaceScene(CreatorLayer::scene());
-    } else if (name == "shards") {
+    } else if (name.rfind("shards", 0) == 0) {
+        // shards$: 40 of every shard (the copy's home only), so some icons show unlocked
+        if (name.find('$') != std::string::npos) {
+            for (auto k : {"16", "17", "18", "19", "20", "23", "24", "25", "26", "27"}) GameStatsManager::sharedState()->setStat(k, 40);
+        }
         CCDirector::get()->replaceScene(GJGarageLayer::scene());
         g_guiTab = 101;  // open the shards page once the kit is up
     } else if (name == "towerinner") {
@@ -979,7 +983,13 @@ void pressFrame(std::string const& wantIn) {
         };
         auto scene = CCDirector::get()->getRunningScene();
         auto kids = scene ? scene->getChildren() : nullptr;
-        if (kids && kids->count()) walk(static_cast<CCNode*>(kids->objectAtIndex(kids->count() - 1)));
+        // the newest layer that isn't an achievement's banner (they come and go on top)
+        for (int i = kids ? int(kids->count()) - 1 : -1; i >= 0 && !hit; i--) {
+            auto layer = static_cast<CCNode*>(kids->objectAtIndex(i));
+            if (std::strstr(typeid(*layer).name(), "AchievementBar")) continue;
+            walk(layer);
+            break;
+        }
         log::info("gui: then pressing the button showing {}: {}", want, hit ? "found" : "missing");
         if (hit) hit->activate();
     }

@@ -111,6 +111,27 @@ pub fn draw_icon(c: &mut Canvas, base: &str, x: f32, y: f32, scale: f32, c1: [u8
     c.sprite(&format!("{base}_extra_001.png"), x, y, Look::scaled(scale));
 }
 
+/// A locked icon's silhouette (`GJItemIcon`'s locked state): only the main layers, in `col`
+/// (a robot's or spider's far limbs at 0.7), at `alpha`.
+pub fn draw_silhouette(c: &mut Canvas, base: &str, x: f32, y: f32, scale: f32, col: [u8; 3], alpha: u8) {
+    let rig = if base.starts_with("robot_") { Some((0, "robot_01")) } else if base.starts_with("spider_") { Some((1, "spider_01")) } else { None };
+    if let (Some((i, stock)), Some(rigs)) = (rig, c.rigs) {
+        let parts: Vec<crate::anim::Part> = rigs[i].frame("idle01", 0).map(|p| p.to_vec()).unwrap_or_default();
+        for part in &parts {
+            let tex = part.texture.replacen(stock, base, 1);
+            let col = if part.back { col.map(|v| (v as f32 * 0.7) as u8) } else { col };
+            let mut l = Look::default().scale_xy(part.scale.0 * scale, part.scale.1 * scale).flip_x(part.flip.0).flip_y(part.flip.1).rgb(col).alpha(alpha);
+            l.rotation = part.rotation;
+            c.sprite(&format!("{tex}_001.png"), x + part.pos.0 * scale, y + part.pos.1 * scale, l);
+        }
+        if !parts.is_empty() {
+            return;
+        }
+    }
+    let base = if rig.is_some() { format!("{base}_01") } else { base.to_string() };
+    c.sprite(&format!("{base}_001.png"), x, y, Look::scaled(scale).rgb(col).alpha(alpha));
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum View {
     #[default]
