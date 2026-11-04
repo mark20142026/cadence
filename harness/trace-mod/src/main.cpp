@@ -561,10 +561,34 @@ void openGui(std::string const& name) {
         l->show();
         l->showTab(tab);
         for (int i = 0; i < page; i++) if (l->m_nextPageButton) l->m_nextPageButton->activate();
-    } else if (name == "keys") {
+    } else if (name.rfind("keys", 0) == 0) {
         auto l = GameSettingsLayer::create(nullptr, 0);
         l->show();
-        KeybindingsLayer::create(l)->show();
+        auto kl = KeybindingsLayer::create(l);
+        kl->show();
+        // keys:add / keys:edit: Jump P1's binding editor, for a new key or its Space;
+        // keys:settings: the gear's page
+        if (name.rfind("keys:add", 0) == 0) kl->openBindingEditor(10001, -1);
+        else if (name.rfind("keys:edit", 0) == 0) kl->openBindingEditor(10001, 32);
+        else if (name.rfind("keys:settings", 0) == 0) kl->onSettings(nullptr);
+    } else if (name == "dump:keybinds") {
+        // every keybind action the game knows: id, group, name, then its chords (code and
+        // text). Written next to the screenshot (.keybinds.txt).
+        auto km = GJKeybindManager::sharedState();
+        auto path = g_spec.guis[g_guiIndex].second + ".keybinds.txt";
+        if (auto out = std::fopen(path.c_str(), "w")) {
+            for (int a = 0; a < 70000; a++) {
+                auto nm = GJKeybindManager::actionToString(a);
+                if (!nm || !*nm) continue;
+                if (a > 0 && std::strcmp(nm, GJKeybindManager::actionToString(a - 1) ? GJKeybindManager::actionToString(a - 1) : "") == 0) continue;
+                std::fprintf(out, "%d\t%d\t%s", a, km->groupForAction(a), GJKeybindManager::actionToString(a));
+                for (int chord : km->chordsForAction(a)) {
+                    std::fprintf(out, "\t%d=%s", chord, GJKeybindManager::chordToString(chord).c_str());
+                }
+                std::fprintf(out, "\n");
+            }
+            std::fclose(out);
+        }
     } else if (name == "dump:chests") {
         // every special chest the game defines (paths' rewards, gauntlets', the vaults' and
         // the treasure room's): key, chest id, reward type, then each object (special reward
@@ -775,7 +799,7 @@ void openGui(std::string const& name) {
         CCDirector::get()->replaceScene(SecretLayer3::scene());
     } else if (name == "secret4") {
         CCDirector::get()->replaceScene(SecretLayer4::scene());
-    } else if (name == "secretrewards") {
+    } else if (name.rfind("secretrewards", 0) == 0) {
         CCDirector::get()->replaceScene(SecretRewardsLayer::scene(false));
     } else if (name.rfind("garage:", 0) == 0) {
         CCDirector::get()->replaceScene(GJGarageLayer::scene());
@@ -921,8 +945,11 @@ void removeNotices() {
     for (auto a : alerts) a->removeFromParent();
 }
 
-/// Press the visible button whose sprite shows `want` (the newest top-level layer's).
-void pressFrame(std::string const& want) {
+/// Press the visible button whose sprite shows `want` (the newest top-level layer's); a
+/// trailing "@last" presses the last such button instead of the first (arrows' twins).
+void pressFrame(std::string const& wantIn) {
+        bool last = wantIn.size() > 5 && wantIn.compare(wantIn.size() - 5, 5, "@last") == 0;
+        std::string want = last ? wantIn.substr(0, wantIn.size() - 5) : wantIn;
         // .../thenframe:<frame>: press the visible button whose sprite shows <frame> (safer than
         // an index: the walk order counts hidden items)
 
@@ -938,14 +965,14 @@ void pressFrame(std::string const& want) {
         CCMenuItemSpriteExtra* hit = nullptr;
         std::function<void(CCNode*)> walk = [&](CCNode* nd) {
             for (auto c : CCArrayExt<CCNode*>(nd->getChildren())) {
-                if (hit || !c->isVisible()) continue;
+                if ((hit && !last) || !c->isVisible()) continue;
                 if (auto item = typeinfo_cast<CCMenuItemSpriteExtra*>(c)) {
                     std::function<bool(CCNode*)> shows = [&](CCNode* n2) {
                         if (frameOf(n2) == want) return true;
                         for (auto k : CCArrayExt<CCNode*>(n2->getChildren())) if (shows(k)) return true;
                         return false;
                     };
-                    if (shows(item)) { hit = item; return; }
+                    if (shows(item)) { hit = item; if (!last) return; }
                 }
                 walk(c);
             }

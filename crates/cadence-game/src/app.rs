@@ -3789,6 +3789,7 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::ModifiersChanged(m) => {
                 self.mods = m.state();
                 self.ui.held_mods = (self.mods.shift_key(), self.mods.control_key() || self.mods.super_key());
+                self.ui.held_alt = self.mods.alt_key();
             }
             WindowEvent::CursorMoved { position, .. } => self.ui.mouse_moved(position.x as f32, position.y as f32),
             WindowEvent::MouseWheel { delta, .. } => {
@@ -3816,42 +3817,26 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::KeyboardInput { .. } if !self.ui.in_level() || !self.ui.level_running() || self.ui.hold_end() => {}
             WindowEvent::KeyboardInput { event, .. } => {
+                // the keybinds' gameplay actions (Jump, Move, the checkpoints, Restart …)
                 let down = event.state == ElementState::Pressed;
-                if down && !event.repeat && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Space | KeyCode::ArrowUp | KeyCode::KeyW)) {
-                    self.ui.jumped();
-                }
-                match event.physical_key {
-                    PhysicalKey::Code(KeyCode::Space | KeyCode::ArrowUp | KeyCode::KeyW) => {
-                        if let Some(g) = self.game.as_mut() {
+                let PhysicalKey::Code(key) = event.physical_key else { return };
+                use crate::ui::keybinds::act;
+                for a in self.ui.play_actions(key, down) {
+                    let Some(g) = self.game.as_mut() else { break };
+                    match a {
+                        act::JUMP_P1 | act::JUMP_P2 => {
+                            if down && !event.repeat && !g.holding {
+                                self.ui.jumped();
+                            }
                             g.holding = down;
                         }
+                        act::LEFT_P1 | act::LEFT_P2 => g.direction[0] = down,
+                        act::RIGHT_P1 | act::RIGHT_P2 => g.direction[1] = down,
+                        act::PLACE_CHECKPOINT if down && !event.repeat => g.place_checkpoint(),
+                        act::DELETE_CHECKPOINT if down && !event.repeat => g.remove_checkpoint(),
+                        act::RESTART | act::FULL_RESET if down => g.reset(),
+                        _ => {}
                     }
-                    PhysicalKey::Code(KeyCode::ArrowLeft | KeyCode::KeyA) => {
-                        if let Some(g) = self.game.as_mut() {
-                            g.direction[0] = down;
-                        }
-                    }
-                    PhysicalKey::Code(KeyCode::ArrowRight | KeyCode::KeyD) => {
-                        if let Some(g) = self.game.as_mut() {
-                            g.direction[1] = down;
-                        }
-                    }
-                    PhysicalKey::Code(KeyCode::KeyZ) if down && !event.repeat => {
-                        if let Some(g) = self.game.as_mut() {
-                            g.place_checkpoint();
-                        }
-                    }
-                    PhysicalKey::Code(KeyCode::KeyX) if down && !event.repeat => {
-                        if let Some(g) = self.game.as_mut() {
-                            g.remove_checkpoint();
-                        }
-                    }
-                    PhysicalKey::Code(KeyCode::KeyR) if down => {
-                        if let Some(g) = self.game.as_mut() {
-                            g.reset();
-                        }
-                    }
-                    _ => {}
                 }
             }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {

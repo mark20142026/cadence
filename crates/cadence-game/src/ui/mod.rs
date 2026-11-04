@@ -35,6 +35,8 @@ mod shop;
 mod paths;
 mod chests_table;
 mod treasure;
+pub mod keybinds;
+mod keybinds_table;
 mod reward;
 
 /// A shop item's price (what the game's `GS_6` keeps for it).
@@ -401,6 +403,18 @@ pub enum Btn {
     TreasurePrev,
     TreasureNext,
     TreasureClose,
+    KeysTab(u8),
+    KeysAdd(u8),
+    KeysChord(u8, u8),
+    KeysSet,
+    KeysRemove,
+    KeysEditClose,
+    KeysSettings,
+    KeysSettingsClose,
+    KeysReset,
+    KeysExport,
+    KeysImport,
+    KeysClose,
     DailySafe,
     DailyPlay,
     // editor::Editor
@@ -680,6 +694,10 @@ pub struct Ui {
     pub garage: garage::Garage,
     pub shop: shop::Shop,
     treasure: treasure::Treasure,
+    /// The Keybindings layer, when open
+    keys: Option<keybinds::Keys>,
+    /// Alt (Option) held, for the keybinds' chords
+    pub held_alt: bool,
     /// Paths of Power: the path page open (0-based), its chest's "Reward!" popup
     path_page: Option<usize>,
     path_reward: bool,
@@ -804,6 +822,8 @@ impl Ui {
             garage: garage::Garage::default(),
             shop: shop::Shop::default(),
             treasure: treasure::Treasure::default(),
+            keys: None,
+            held_alt: false,
             path_page: None,
             path_reward: false,
             unlock: None,
@@ -894,36 +914,20 @@ impl Ui {
             return;
         }
         let (shift, ctrl) = self.held_mods;
-        let Some(e) = self.editor.as_mut() else { return };
-        // the desktop shortcuts, as buttons (EDIT_BUTTONS: 0-3 move a block, 4-7 two units,
-        // 10/11 rotate); ctrl/cmd combinations first
-        let edit = |k: u8| Btn::EdEdit(k);
         let popup = self.replay.is_some() || self.editor_paused || self.trig_focus.is_some();
-        let shortcut = match key {
-            _ if popup => None,
-            K::KeyZ if ctrl && shift => Some(Btn::EdRedo),
-            K::KeyZ if ctrl => Some(Btn::EdUndo),
-            K::KeyY if ctrl => Some(Btn::EdRedo),
-            K::KeyD if ctrl => Some(Btn::EdDuplicate),
-            K::KeyC if ctrl => Some(Btn::EdCopy),
-            K::KeyV if ctrl => Some(Btn::EdPaste),
-            _ if ctrl => None,
-            K::KeyW => Some(edit(if shift { 4 } else { 0 })),
-            K::KeyS => Some(edit(if shift { 5 } else { 1 })),
-            K::KeyA => Some(edit(if shift { 6 } else { 2 })),
-            K::KeyD => Some(edit(if shift { 7 } else { 3 })),
-            K::KeyQ => Some(edit(11)),
-            K::KeyE => Some(edit(10)),
-            K::KeyR => Some(Btn::EdRotateToggle),
-            K::KeyF => Some(Btn::EdFreeMove),
-            K::KeyT => Some(Btn::EdSwipe),
-            K::KeyG => Some(Btn::EdSnap),
-            _ => None,
-        };
-        if let Some(b) = shortcut {
-            let _ = e.click(b);
-            return;
+        // the keybinds (Editor, Tools and View tabs), as the editor's buttons
+        // (EDIT_BUTTONS: 0-3 move a block, 4-7 two units, 8/9 flip, 10/11 rotate)
+        if !popup && let Some(chord) = keybinds::chord(key, ctrl, self.held_alt, shift) {
+            let actions = keybinds::actions_for(&self.progress, chord, true);
+            let mut used = false;
+            for a in actions {
+                used |= self.editor_action(a);
+            }
+            if used {
+                return;
+            }
         }
+        let Some(e) = self.editor.as_mut() else { return };
         match key {
             K::Escape => self.editor_paused = !self.editor_paused,
             K::ArrowLeft => e.cam.0 -= 30.0,
@@ -938,6 +942,98 @@ impl Ui {
                 let _ = e.click(Btn::EdTrash);
             }
             _ => {}
+        }
+    }
+
+    /// An editor keybind's action, when Cadence's editor has it (`EditorUI`'s handling of
+    /// GJKeybindManager's editor actions). Returns whether it did something.
+    fn editor_action(&mut self, a: u32) -> bool {
+        let edit = Btn::EdEdit;
+        let btn = match a {
+            20001 => Some(Btn::EdUndo),
+            20002 => Some(Btn::EdRedo),
+            20003 => Some(Btn::EdCopy),
+            20004 => Some(Btn::EdPaste),
+            20005 => Some(Btn::EdDuplicate),
+            20006 => Some(Btn::EdDeselect),
+            20027..=20030 => Some(Btn::EdMode((a - 20027) as u8)),
+            20031 => Some(Btn::EdZoom(true)),
+            20032 => Some(Btn::EdZoom(false)),
+            20035 => Some(Btn::EdTrash),
+            20037 => Some(edit(8)),
+            20038 => Some(edit(9)),
+            20039 => Some(edit(11)),
+            20040 => Some(edit(10)),
+            20043 => Some(edit(0)),
+            20044 => Some(edit(1)),
+            20041 => Some(edit(2)),
+            20042 => Some(edit(3)),
+            20047 => Some(edit(4)),
+            20048 => Some(edit(5)),
+            20045 => Some(edit(6)),
+            20046 => Some(edit(7)),
+            20049 => Some(Btn::EdRotateToggle),
+            20050 => Some(Btn::EdFreeMove),
+            20051 => Some(Btn::EdSwipe),
+            20052 => Some(Btn::EdSnap),
+            20053 => Some(Btn::EdMusic),
+            20067 => Some(Btn::EdPause),
+            20068 => Some(Btn::EdPlaytest),
+            20116 => Some(Btn::EdHide),
+            _ => None,
+        };
+        if let Some(b) = btn {
+            self.clicked(b);
+            return true;
+        }
+        let Some(e) = self.editor.as_mut() else { return false };
+        match a {
+            // Move View Up / Down (= and -)
+            20033 => e.cam.1 += 30.0,
+            20034 => e.cam.1 -= 30.0,
+            // Save Pos / Load Pos 0–9: the view
+            20007..=20016 => {
+                let n = a - 20007;
+                self.progress.settings.insert(format!("edpos{n}"), format!("{} {} {}", e.cam.0, e.cam.1, e.zoom));
+                self.alert = Some(Alert { title: "Editor".into(), text: format!("Position {n} saved."), t: 0.0 });
+            }
+            20017..=20026 => {
+                let n = a - 20017;
+                let saved = self.progress.settings.get(&format!("edpos{n}")).and_then(|v| {
+                    let w: Vec<f32> = v.split(' ').filter_map(|x| x.parse().ok()).collect();
+                    (w.len() == 3).then(|| (w[0], w[1], w[2]))
+                });
+                match saved {
+                    Some((x, y, z)) => {
+                        e.cam = (x, y);
+                        e.zoom = z;
+                    }
+                    None => self.alert = Some(Alert { title: "Editor".into(), text: format!("Position {n} empty."), t: 0.0 }),
+                }
+            }
+            // Grid Size: Toggle
+            20118 | 20159 => e.hide_grid = !e.hide_grid,
+            20086 => {
+                self.save_editor();
+                self.alert = Some(Alert { title: "Editor".into(), text: "Level Saved.".into(), t: 0.0 });
+            }
+            20144 => self.editor_pause_side(6),
+            20151 => self.keys = Some(keybinds::Keys { tab: 2, ..keybinds::Keys::default() }),
+            _ => return false,
+        }
+        true
+    }
+
+    /// The gameplay actions a key does (the keybinds): pressed, the chord with the modifiers
+    /// held; released, every action the key is bound to (whatever the modifiers now).
+    pub fn play_actions(&self, key: winit::keyboard::KeyCode, down: bool) -> Vec<u32> {
+        let Some(code) = keybinds::code(key) else { return Vec::new() };
+        if down {
+            let (shift, ctrl) = self.held_mods;
+            let chord = keybinds::chord(key, ctrl, self.held_alt, shift).unwrap_or(code);
+            keybinds::actions_for(&self.progress, chord, false)
+        } else {
+            keybinds_table::ACTIONS.iter().filter(|a| a.1 < 2 && keybinds::key_held_for(&self.progress, code, a.0)).map(|a| a.0).collect()
         }
     }
 
@@ -1315,6 +1411,25 @@ impl Ui {
             }
             return false;
         }
+        if let Some(k) = self.keys.as_mut() {
+            let (shift, ctrl) = self.held_mods;
+            if k.editing.is_some() {
+                if key == K::Escape {
+                    k.editing = None;
+                } else {
+                    k.capture(key, ctrl, self.held_alt, shift);
+                }
+            } else if k.settings {
+                if key == K::Escape {
+                    k.settings = false;
+                }
+            } else if key == K::Escape {
+                self.keys = None;
+            } else if key == K::Backspace && k.tab == 5 {
+                k.search.pop();
+            }
+            return true;
+        }
         if let Some(w) = self.writer.as_mut() {
             match key {
                 K::Backspace => w.backspace(),
@@ -1609,6 +1724,10 @@ impl Ui {
     }
 
     pub fn scroll(&mut self, delta: f32) {
+        if let Some(k) = self.keys.as_mut() {
+            k.wheel(delta, &self.progress);
+            return;
+        }
         if let Some(s) = self.social.as_mut() {
             s.scroll_by(-delta);
             return;
@@ -1635,6 +1754,15 @@ impl Ui {
 
     /// Typed text (the online search box). Returns true if the UI used it.
     pub fn text(&mut self, text: &str) -> bool {
+        if let Some(k) = self.keys.as_mut() {
+            // the search box takes text; the capture popup wants the key itself
+            if k.tab == 5 && k.editing.is_none() && !k.settings {
+                k.search.extend(text.chars().filter(|c| !c.is_control()));
+                k.scroll = 0.0;
+                return true;
+            }
+            return false;
+        }
         if self.screen == Screen::Online && self.online.my_find.is_some() && self.online.search.kind == -1 {
             if let Some(f) = self.online.my_find.as_mut() {
                 f.extend(text.chars().filter(|c| !c.is_control()));
@@ -2258,7 +2386,7 @@ impl Ui {
                 self.alert = Some(Alert { title: title.into(), text: format!("By {artist}"), t: 0.0 });
             }
             // GameSettingsLayer's Keys: KeybindingsLayer over the settings
-            Btn::MoreKeys => self.replay = Some((replay::Scene::Keys, self.screen)),
+            Btn::MoreKeys => self.keys = Some(keybinds::Keys::default()),
             // OptionsLayer::onSecretVault / CreatorLayer::onSecretVault: locked, the Keymaster
             // says one of his lines (a random one first, then in order)
             Btn::SetVault if self.progress.user_coins() >= 10 => {
@@ -2440,6 +2568,14 @@ impl Ui {
                 }
             }
             Btn::RewardCollect => self.unlock = None,
+            Btn::KeysClose => self.keys = None,
+            Btn::KeysTab(_) | Btn::KeysAdd(_) | Btn::KeysChord(..) | Btn::KeysSet | Btn::KeysRemove | Btn::KeysEditClose | Btn::KeysSettings | Btn::KeysSettingsClose | Btn::KeysReset | Btn::KeysExport | Btn::KeysImport => {
+                if let Some(k) = self.keys.as_mut()
+                    && let Some(msg) = k.click(id, &mut self.progress)
+                {
+                    self.alert = Some(Alert { title: "Keybinds".into(), text: msg, t: 0.0 });
+                }
+            }
             Btn::TreasureChest(_) | Btn::TreasurePrev | Btn::TreasureNext | Btn::TreasureClose => {
                 let effect = self.treasure.click_grid(id, &mut self.progress);
                 let back = self.replay.map_or(Screen::Creator, |(_, b)| b);
@@ -2883,16 +3019,7 @@ impl Ui {
                     })
                 }
             },
-            replay::Scene::Keys => match i {
-                0 => self.replay = None,
-                _ => {
-                    self.alert = Some(Alert {
-                        title: "Keys".into(),
-                        text: "Cadence uses the default bindings: <cg>Space</c>, <cg>W</c>, <cg>Up</c> or click to jump, <cg>A</c>/<cg>D</c> and the arrows to move, <cg>Escape</c> to pause, <cg>Z</c>/<cg>X</c> for checkpoints. Changing them isn't in yet.".into(),
-                        t: 0.0,
-                    })
-                }
-            },
+            replay::Scene::Keys => self.replay = None,
             replay::Scene::EditGroup => self.edit_group_click(i),
             replay::Scene::EditColor => self.edit_color_click(i),
             replay::Scene::EditorPause => {}
@@ -3401,7 +3528,17 @@ impl Ui {
             }
             "rewards" => self.popup = Some(popups::Popup::Rewards),
             "tower" => self.replay = Some((replay::Scene::TowerInner, Screen::Levels)),
-            "keys" => self.replay = Some((replay::Scene::Keys, Screen::Menu)),
+            // CADENCE_PAGE: the tab; 10: Jump P1's binding editor, 11: the settings
+            "keys" => {
+                let n = page.unwrap_or(0);
+                let mut k = keybinds::Keys { tab: (n % 10).min(6) as u8, ..keybinds::Keys::default() };
+                match n {
+                    10 => k.editing = Some((keybinds::act::JUMP_P1, Some(32), Some(32))),
+                    11 => k.settings = true,
+                    _ => {}
+                }
+                self.keys = Some(k);
+            }
             "shards" => {
                 self.screen = Screen::Garage;
                 self.replay = Some((replay::Scene::Shards, Screen::Garage));
@@ -4208,6 +4345,10 @@ impl Ui {
         if self.screen == Screen::Creator && self.online.daily.is_some() {
             ctx.buttons.clear();
             self.popup_anim(&mut canvas, "daily", |c| self.online.draw_daily(c, &mut ctx));
+        }
+        if let Some(k) = &self.keys {
+            ctx.buttons.clear();
+            self.popup_anim(&mut canvas, "keys", |c| keybinds::draw(c, &mut ctx, k, &self.progress));
         }
         if let Some((scene @ (replay::Scene::Keys | replay::Scene::Shards), _)) = self.replay {
             ctx.buttons.clear();
