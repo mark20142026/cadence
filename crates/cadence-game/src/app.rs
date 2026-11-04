@@ -226,6 +226,55 @@ impl ShipFire {
     }
 }
 
+/// A value tweened linearly over a duration (`FMODAudioEngine::updateChannel`'s fades).
+#[derive(Clone, Copy, Debug)]
+struct Fade {
+    value: f32,
+    from: f32,
+    to: f32,
+    elapsed: f32,
+    duration: f32,
+}
+
+impl Fade {
+    fn new(value: f32) -> Fade {
+        Fade { value, from: value, to: value, elapsed: 0.0, duration: 0.0 }
+    }
+
+    fn start(&mut self, to: f32, duration: f32) {
+        (self.from, self.to, self.elapsed, self.duration) = (self.value, to, 0.0, duration);
+        if duration <= 0.0 {
+            self.value = to;
+        }
+    }
+
+    fn step(&mut self, dt: f32) {
+        if self.value == self.to {
+            return;
+        }
+        self.elapsed += dt;
+        let k = if self.duration <= 0.0 { 1.0 } else { (self.elapsed / self.duration).min(1.0) };
+        self.value = self.from + (self.to - self.from) * k;
+    }
+}
+
+/// Edit song / edit SFX state: the music's and the trigger sounds' volume and the music's speed
+/// (tweened), the proximity effects by (song, channel), and what the backend was last sent.
+#[derive(Clone, Debug)]
+struct AudioEdits {
+    music_volume: Fade,
+    music_speed: Fade,
+    sfx_volume: Fade,
+    proximity: Vec<(bool, i32, cadence_core::groups::Proximity)>,
+    sent: (f32, f32, f32),
+}
+
+impl Default for AudioEdits {
+    fn default() -> AudioEdits {
+        AudioEdits { music_volume: Fade::new(1.0), music_speed: Fade::new(1.0), sfx_volume: Fade::new(1.0), proximity: Vec::new(), sent: (1.0, 1.0, 1.0) }
+    }
+}
+
 /// The exit-dual ring's z (it's added to the layer at z 0 over the copy; any z under the T
 /// layers that no death wave uses marks it).
 const EXIT_DUAL_WAVE_Z: i32 = 100;
@@ -844,6 +893,9 @@ struct Game {
     /// The song channel the music plays on (song triggers' key 432; the level's own song is
     /// channel 0), for edit song triggers.
     music_channel: i32,
+    /// Edit song / SFX state (`FMODAudioEngine::updateChannel` tweens and the proximity effects):
+    /// see `AudioEdits`.
+    audio_edits: AudioEdits,
     pending_checkpoint: Option<Checkpoint>,
     /// The options that change play (game variables, from the save).
     opts: PlayOptions,
@@ -1231,6 +1283,7 @@ impl Game {
             self.audio.play_music(file, *offset);
             self.music_channel = 0;
         }
+        self.audio_edits = AudioEdits::default();
     }
 
     fn reset(&mut self) {
@@ -1337,8 +1390,18 @@ impl Game {
     /// Edit song / edit SFX triggers (3605 / 3603) fired this step: stop the channel, or change
     /// its volume / speed (`applySFXEditTrigger` 0x112928). Songs: the music when it plays on
     /// the trigger's channel; SFX: the sounds SFX triggers started.
+    ///
+    /// Volume and speed changes are `updateChannel` tweens over the trigger's duration, kept here
+    /// so a proximity effect (target group 51: `addProximityVolumeEffect`) can scale the volume
+    /// every step (`updateProximityVolumeEffects`). The same channel and kind replaces an older
+    /// proximity effect. (SFX speed isn't applied: the audio backend has no per-sound rate.)
     fn apply_audio_edits(&mut self) {
         for edit in std::mem::take(&mut self.world.audio_edits) {
+            if let Some(p) = edit.proximity {
+                let e = &mut self.audio_edits.proximity;
+                e.retain(|(song, channel, _)| (*song, *channel) != (edit.song, edit.channel));
+                e.push((edit.song, edit.channel, p));
+            }
             if edit.song {
                 if edit.channel != self.music_channel {
                     continue;
@@ -1348,16 +1411,73 @@ impl Game {
                     continue;
                 }
                 if let Some(v) = edit.volume {
-                    self.audio.fade_music(v, edit.duration);
+                    self.audio_edits.music_volume.start(v, edit.duration);
                 }
                 if let Some(speed) = edit.speed {
-                    self.audio.set_music_speed(pitch_for_index(speed));
+                    self.audio_edits.music_speed.start(pitch_for_index(speed), edit.duration);
                 }
             } else if edit.stop {
                 self.audio.stop_effects();
             } else if let Some(v) = edit.volume {
-                self.audio.set_effects_volume(v);
+                self.audio_edits.sfx_volume.start(v, edit.duration);
             }
+        }
+        self.update_audio_edits(self.world.step_secs as f32);
+    }
+
+    /// One step of the edit tweens and proximity volumes, sent to the backend when they change.
+    fn update_audio_edits(&mut self, dt: f32) {
+        let ed = &mut self.audio_edits;
+        ed.music_volume.step(dt);
+        ed.music_speed.step(dt);
+        ed.sfx_volume.step(dt);
+        let p = &self.player;
+        let second = p.dual.as_ref().map(|q| (q.x, q.y));
+        let view = (self.camera.x, self.camera.y, self.view_w / self.camera.zoom.max(0.01), VIEW_HEIGHT / self.camera.zoom.max(0.01));
+        let factor = |song: bool, channel: i32| -> f32 {
+            let Some((_, _, pr)) = ed.proximity.iter().find(|(s, c, _)| *s == song && (!song || *c == channel)) else { return 1.0 };
+            let at = if pr.camera {
+                (view.0 + view.2 * 0.5, view.1 + view.3 * 0.5)
+            } else if pr.p1 {
+                (p.x, p.y)
+            } else if pr.p2 {
+                second.unwrap_or((p.x, p.y))
+            } else {
+                match self.world.members_of(pr.center).first() {
+                    Some(&o) => {
+                        let (x, y) = self.world.level_position(o as usize);
+                        (x as f32, y as f32)
+                    }
+                    None => return 1.0,
+                }
+            };
+            let objects: Vec<(f32, f32)> = self
+                .world
+                .members_of(pr.group)
+                .iter()
+                .filter(|&&o| self.world.enabled.get(o as usize).copied().unwrap_or(true))
+                .map(|&o| {
+                    let (x, y) = self.world.level_position(o as usize);
+                    (x as f32, y as f32)
+                })
+                .collect();
+            let both = (pr.p1 && pr.p2 && !pr.camera).then_some(second).flatten();
+            pr.volume(at, both, &objects)
+        };
+        let music = ed.music_volume.value * factor(true, self.music_channel);
+        let sfx = ed.sfx_volume.value * factor(false, 0);
+        let speed = ed.music_speed.value;
+        if ed.sent.0 != music {
+            ed.sent.0 = music;
+            self.audio.fade_music(music, 0.0);
+        }
+        if ed.sent.1 != speed {
+            ed.sent.1 = speed;
+            self.audio.set_music_speed(speed);
+        }
+        if ed.sent.2 != sfx {
+            ed.sent.2 = sfx;
+            self.audio.set_effects_volume(sfx);
         }
     }
 
@@ -2126,6 +2246,7 @@ impl App {
             checkpoints: Vec::new(),
             platformer_checkpoint: None,
             music_channel: 0,
+            audio_edits: AudioEdits::default(),
             pending_checkpoint: None,
             opts: PlayOptions::default(),
             icons,

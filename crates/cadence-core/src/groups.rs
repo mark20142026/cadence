@@ -290,6 +290,103 @@ pub struct AudioEdit {
     pub volume: Option<f32>,
     pub speed: Option<i32>,
     pub duration: f32,
+    /// With a target group (51): the channel's volume follows the listener's distance to that
+    /// group (`addProximityVolumeEffect`, updated every step by `updateProximityVolumeEffects`).
+    pub proximity: Option<Proximity>,
+}
+
+/// An SFX / song (edit) trigger's proximity settings (`volumeForProximityEffect` 0x112c60,
+/// `getMinDistance` 0x112f88): the distance from the listener — the camera's center (428), player
+/// 1 (138, and player 2 too with 200 in dual mode), player 2 (200) or group 71's main object — to
+/// the nearest object of group 51, measured by mode 458 (0 distance, 1 |dx|, 2 obj − x,
+/// 3 x − obj, 4 |dy|, 5 obj − y, 6 y − obj). Within near (424 × 3) the volume is 421; it goes
+/// linearly to 422 at near + medium (425 × 3) and to 423 at near + medium + far (426 × 3).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Proximity {
+    pub group: i32,
+    pub center: i32,
+    pub p1: bool,
+    pub p2: bool,
+    pub camera: bool,
+    pub volumes: [f32; 3],
+    pub distances: [i32; 3],
+    pub mode: i32,
+}
+
+impl Proximity {
+    pub fn from_raw(raw: &crate::level::RawObject) -> Option<Proximity> {
+        let group = raw.get_i32(51).unwrap_or(0);
+        (group > 0).then(|| Proximity {
+            group,
+            center: raw.get_i32(71).unwrap_or(0),
+            p1: raw.get(138) == Some("1"),
+            p2: raw.get(200) == Some("1"),
+            camera: raw.get(428) == Some("1"),
+            volumes: [raw.get_f32(421).unwrap_or(0.0), raw.get_f32(422).unwrap_or(0.0), raw.get_f32(423).unwrap_or(0.0)],
+            distances: [raw.get_i32(424).unwrap_or(0), raw.get_i32(425).unwrap_or(0), raw.get_i32(426).unwrap_or(0)],
+            mode: raw.get_i32(458).unwrap_or(0),
+            // (absent keys are 0, SFXTriggerGameObject::customObjectSetup 0x16c0f0)
+        })
+    }
+
+    /// The volume for the listener at `at` given the group's object positions (none: 1). With
+    /// `second` (player 2 also listens) its distance counts when nearer than player 1's beyond
+    /// near.
+    pub fn volume(&self, at: (f32, f32), second: Option<(f32, f32)>, objects: &[(f32, f32)]) -> f32 {
+        if objects.is_empty() {
+            return 1.0;
+        }
+        let near = (self.distances[0] * 3) as f32;
+        let min_distance = |p: (f32, f32)| {
+            let mut best = 2.1474836e9f32;
+            for &o in objects {
+                let d = match self.mode {
+                    0 => ((o.0 - p.0) * (o.0 - p.0) + (o.1 - p.1) * (o.1 - p.1)).sqrt(),
+                    1 => (o.0 - p.0).abs(),
+                    2 => o.0 - p.0,
+                    3 => p.0 - o.0,
+                    4 => (o.1 - p.1).abs(),
+                    5 => o.1 - p.1,
+                    6 => p.1 - o.1,
+                    _ => return best,
+                };
+                if d < best {
+                    best = d;
+                }
+                if best <= near {
+                    return best;
+                }
+            }
+            best
+        };
+        let mut d = min_distance(at);
+        if let Some(q) = second.filter(|_| near < d) {
+            d = d.min(min_distance(q));
+        }
+        let [v0, v1, v2] = self.volumes;
+        let (mut from, mut to) = (v0, v2);
+        let mut k = 0.0f32;
+        if near < d {
+            let mid = near + (self.distances[1] * 3) as f32;
+            let far = mid + (self.distances[2] * 3) as f32;
+            if far <= d {
+                k = 1.0;
+            } else {
+                let (mut lo, mut hi) = (near, far);
+                if 0.0 < mid {
+                    if mid <= d {
+                        (from, to, lo) = (v1, v2, mid);
+                    } else {
+                        (from, to, hi) = (v0, v1, mid);
+                    }
+                }
+                if lo != hi {
+                    k = (d - lo) / (hi - lo);
+                }
+            }
+        }
+        from + k * (to - from)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -394,6 +491,7 @@ impl Trigger {
                 volume: (raw.get(418) == Some("1")).then(|| raw.get_f32(406).unwrap_or(1.0)),
                 speed: (raw.get(419) == Some("1")).then(|| raw.get_i32(404).unwrap_or(0)),
                 duration: raw.get_f32(10).unwrap_or(0.0),
+                proximity: Proximity::from_raw(raw),
             }),
             1595 => Action::Touch {
                 group,
@@ -1049,5 +1147,30 @@ fn remap_action(a: Action, map: &[(i32, i32)]) -> Action {
             Action::Area(a)
         }
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// volumeForProximityEffect's curve: near (424 x 3) keeps 421, then linear to 422 at
+    /// near + medium and to 423 at near + medium + far; no objects: full volume.
+    #[test]
+    fn proximity_volume_curve() {
+        let raw = crate::level::LevelString::parse("kA13,0;1,3603,2,0,3,0,51,5,138,1,421,1,422,0.5,423,0,424,10,425,10,426,20");
+        let p = Proximity::from_raw(&raw.objects[0]).unwrap();
+        let at = |x: f32| p.volume((0.0, 0.0), None, &[(x, 0.0)]);
+        assert_eq!(at(20.0), 1.0);
+        assert_eq!(at(30.0), 1.0);
+        assert!((at(45.0) - 0.75).abs() < 1e-6);
+        assert!((at(60.0) - 0.5).abs() < 1e-6);
+        assert!((at(90.0) - 0.25).abs() < 1e-6);
+        assert_eq!(at(200.0), 0.0);
+        assert_eq!(p.volume((0.0, 0.0), None, &[]), 1.0);
+        // mode 2 (obj - x): objects behind the listener count as near
+        let mut q = p;
+        q.mode = 2;
+        assert_eq!(q.volume((100.0, 0.0), None, &[(0.0, 0.0)]), 1.0);
     }
 }
