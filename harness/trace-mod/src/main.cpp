@@ -86,6 +86,7 @@ struct Spec {
     std::vector<std::pair<int, std::string>> watchGroups;  // (group, path): positions every step
     int watchMax = 4;                                      // objects per watched group (watchmax N)
     std::vector<int> deathEffects;                         // deatheffect N: per attempt (0 = the save's)
+    std::vector<std::pair<std::string, bool>> gameVars;    // gamevar <key> <0|1>: set at each attempt (memory only)
     std::vector<std::pair<int, std::string>> deathShots;   // deathshot <frame> <path>: frames after
                                                            // player 1 dies ("%d" = the attempt)
     int iconCube = -1, iconColor1 = -1, iconColor2 = -1;   // playericon <cube> <color1> <color2> (glow off)
@@ -153,6 +154,12 @@ bool loadSpec() {
             g_spec.deathEffects.resize(g_spec.attempts.size(), 0);
             g_spec.deathEffects.back() = effect;
         }
+        else if (cmd == "gamevar") {
+            std::string key;
+            int on = 0;
+            in >> key >> on;
+            g_spec.gameVars.emplace_back(key, on != 0);
+        }
         else if (cmd == "deathshot") {
             int frame = 0;
             std::string path;
@@ -209,6 +216,7 @@ void startAttempt() {
     if (g_attempt < g_spec.deathEffects.size() && g_spec.deathEffects[g_attempt] > 0) {
         gm->setPlayerDeathEffect(g_spec.deathEffects[g_attempt]);
     }
+    for (auto& [key, on] : g_spec.gameVars) gm->setGameVariable(key.c_str(), on);
     if (g_spec.iconCube > 0) {
         gm->setPlayerFrame(g_spec.iconCube);
         gm->setPlayerColor(g_spec.iconColor1);

@@ -789,6 +789,10 @@ pub struct PlayOptions {
     pub spider_main_color: bool,
     /// 0100: the chosen death effect in practice mode too (else the default there).
     pub practice_death_effect: bool,
+    /// The death effects' "Explode" (game variable 0153 off): the icon shatter after the effect.
+    pub death_explode: bool,
+    /// The chosen ship fire (1–6, the icon kit's special tab).
+    pub ship_fire: u32,
 }
 
 impl PlayOptions {
@@ -801,6 +805,9 @@ impl PlayOptions {
             quick_checkpoints: p.var("0068", false),
             spider_main_color: p.var("0061", false),
             practice_death_effect: p.var("0100", false),
+            // the icon kit's death effect "Explode" toggle (shown as !0153, GJGarageLayer::setupPage)
+            death_explode: p.var("deathexplode", !p.var("0153", false)),
+            ship_fire: (p.number("shipfire", 1.0) as u32).clamp(1, 6),
         }
     }
 }
@@ -1526,10 +1533,12 @@ impl Game {
         self.effects.emitters.push(death.emitter);
         self.effects.waves.extend(death.waves);
         self.effects.deaths.extend(death.sprite);
-        if !death.shatter {
+        if !death.shatter || !self.opts.death_explode {
             return;
         }
-        // The icon shatter (unless the "no explode shatter" option, game variable 0153, is on):
+        // The icon shatter (unless the "Explode" toggle is off: game variable 0153 on — the
+        // only thing it changes in playDeathEffect, where both getGameVariable("0153") tests
+        // skip the ExplodeItemNode):
         // a (size·40)² capture cut into 2–3 × 2–3 pieces (5% of the time one column, 5% one
         // row), flying at the player's speed · 0.72 (vx 0.5v ± v, vy 6 ± 3, 1.4 s).
         let rng = &mut self.effects.rng;
