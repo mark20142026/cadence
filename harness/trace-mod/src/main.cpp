@@ -1083,6 +1083,35 @@ void stepGui() {
         if (g_guiItem < int(items.size())) items[g_guiItem]->activate();
         g_guiItem = -1;
     }
+    else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - 2 && name.find("/toggleall") != std::string::npos) {
+        // every toggle of the newest popup, one at a time: its position, then the selected
+        // object's save string with it flipped (flipped back after), to map toggles to keys
+        auto lel = CCDirector::get()->getRunningScene()->getChildByType<LevelEditorLayer>(0);
+        auto kids = CCDirector::get()->getRunningScene()->getChildren();
+        CCNode* top = kids && kids->count() ? static_cast<CCNode*>(kids->objectAtIndex(kids->count() - 1)) : nullptr;
+        if (lel && top) {
+            if (FILE* out = std::fopen((path + ".toggles").c_str(), "w")) {
+                auto obj = lel->m_editorUI->m_selectedObject;
+                std::vector<CCMenuItemToggler*> toggles;
+                std::function<void(CCNode*)> walk = [&](CCNode* nd) {
+                    for (auto c : CCArrayExt<CCNode*>(nd->getChildren())) {
+                        if (!c->isVisible()) continue;
+                        if (auto t = typeinfo_cast<CCMenuItemToggler*>(c)) toggles.push_back(t);
+                        walk(c);
+                    }
+                };
+                walk(top);
+                if (obj) std::fprintf(out, "base %s\n", std::string(obj->getSaveString(lel)).c_str());
+                for (size_t i = 0; i < toggles.size(); i++) {
+                    auto w = toggles[i]->convertToWorldSpaceAR({0, 0});
+                    toggles[i]->activate();
+                    if (obj) std::fprintf(out, "%zu %.1f %.1f %s\n", i, w.x, w.y, std::string(obj->getSaveString(lel)).c_str());
+                    toggles[i]->activate();
+                }
+                std::fclose(out);
+            }
+        }
+    }
     else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - 2 && name.find("/dumpbuild") != std::string::npos) {
         // the editor's build tabs: every CreateMenuItem's object id, tab by tab
         if (auto ui = CCDirector::get()->getRunningScene()->getChildByType<LevelEditorLayer>(0) ? CCDirector::get()->getRunningScene()->getChildByType<LevelEditorLayer>(0)->m_editorUI : nullptr) {
