@@ -82,6 +82,19 @@ pub enum Field {
     Slider { key: u16, x: f32, y: f32, min: f32, max: f32 },
 }
 
+/// The popup's slider grooves in layout order (center, scale): the n-th slider field (L
+/// lines, in the same order) runs along the n-th groove.
+pub fn slider_grooves(scene: Scene) -> Vec<(f32, f32, f32, f32)> {
+    scene
+        .source()
+        .lines()
+        .filter_map(|l| {
+            let w: Vec<&str> = l.split(' ').collect();
+            (w.first() == Some(&"S") && w.get(1).is_some_and(|n| n.ends_with("slidergroove.png"))).then(|| (f(w.get(2)), f(w.get(3)), f(w.get(4)), f(w.get(5))))
+        })
+        .collect()
+}
+
 /// A popup's fields, and the values it showed for a fresh trigger (V lines).
 pub fn fields(scene: Scene) -> (Vec<Field>, Vec<(u16, String)>) {
     let mut out = Vec::new();

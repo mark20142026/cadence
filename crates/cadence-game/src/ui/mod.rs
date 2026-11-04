@@ -458,6 +458,8 @@ pub enum Btn {
     /// The editor's layer arrows (0 down, 1 up, 2 all)
     EdLayer(u8),
     TrigToggle(u16),
+    /// A trigger popup's slider (its property key), dragged
+    TrigSlider(u16),
     // popups::Popup
     PopClose,
     PopNext,
@@ -1262,6 +1264,26 @@ impl Ui {
     fn drag_slider(&mut self, id: Btn) {
         let Some(b) = self.buttons.iter().find(|b| b.id == id) else { return };
         let v = ((self.mouse.0 - (b.x - b.hw)) / (2.0 * b.hw)).clamp(0.0, 1.0);
+        // a trigger popup's slider: its key over the popup's min..max (`SetupTriggerPopup::
+        // sliderChanged`), whole numbers unless the field shows decimals
+        if let Btn::TrigSlider(key) = id {
+            let Some((scene, _)) = self.replay else { return };
+            let (fields, defaults) = replay::fields(scene);
+            let Some((min, max)) = fields.iter().find_map(|f| match f {
+                replay::Field::Slider { key: k, min, max, .. } if *k == key => Some((*min, *max)),
+                _ => None,
+            }) else {
+                return;
+            };
+            let decimal = replay::is_decimal(scene, key) || defaults.iter().any(|d| d.0 == key && d.1.contains('.')) || max - min <= 2.0;
+            let raw = min + v * (max - min);
+            let text = if decimal { format!("{:.2}", raw).trim_end_matches('0').trim_end_matches('.').to_string() } else { format!("{}", raw.round() as i64) };
+            let text = if text.is_empty() || text == "-" { "0".to_string() } else { text };
+            if let Some(e) = self.editor.as_mut() {
+                e.edit_selected(move |o| o.set(key, Some(text.clone())));
+            }
+            return;
+        }
         let key = match id {
             Btn::SliderMusic => "music",
             Btn::SliderSfx => "sfx",
@@ -1336,7 +1358,7 @@ impl Ui {
                 self.drag_picker();
                 return true;
             }
-            if let Some(id @ (Btn::SliderMusic | Btn::SliderSfx | Btn::SliderSetting(_))) = hit {
+            if let Some(id @ (Btn::SliderMusic | Btn::SliderSfx | Btn::SliderSetting(_) | Btn::TrigSlider(_))) = hit {
                 self.slider_drag = Some(id);
                 self.drag_slider(id);
                 return true;
@@ -4521,6 +4543,7 @@ impl Ui {
                 || (paused && (t.starts_with("Objects: ") || t.starts_with("Length: ")))
                 || (settings && (t == "01: Stereo Madness" || t == "frame:boost_02_001.png" || t == "frame:gj_iconBtn_off_001.png" || t == "frame:bgIcon_01_001.png" || t == "frame:gIcon_01_001.png" || t == "frame:mgIcon_00_001.png"))
                 || (scene == replay::Scene::Trigger(899) && t == "frame:block009c_base_001.png")
+                || (matches!(scene, replay::Scene::Trigger(_) | replay::Scene::Special(_)) && t == "frame:sliderthumb.png")
         });
         // the color trigger's swatch, in its color (keys 7/8/9)
         if scene == replay::Scene::Trigger(899)
@@ -4725,6 +4748,8 @@ impl Ui {
             }
             let (fields, defaults) = replay::fields(scene);
             let value = |key: u16| o.get(key).map(str::to_string).or_else(|| defaults.iter().find(|d| d.0 == key).map(|d| d.1.clone())).unwrap_or_default();
+            let grooves = replay::slider_grooves(scene);
+            let mut slider_n = 0;
             for field in fields {
                 match field {
                     replay::Field::Input { key, x, y, w, h } => {
@@ -4751,7 +4776,19 @@ impl Ui {
                         }
                         ctx.area(Btn::TrigToggle(key), x + dx, y, w, h);
                     }
-                    replay::Field::Slider { .. } => {}
+                    replay::Field::Slider { key, min, max, .. } => {
+                        // its groove (the n-th); the thumb at the value (min..max along it)
+                        let Some(&(gx, gy, sx, sy)) = grooves.get(slider_n) else { continue };
+                        slider_n += 1;
+                        let (gw, _) = canvas.size("slidergroove.png");
+                        let len = gw * sx;
+                        let v = value(key).parse::<f32>().unwrap_or(min);
+                        let t = if max > min { ((v - min) / (max - min)).clamp(0.0, 1.0) } else { 0.0 };
+                        let track = len - 14.0 * sy;
+                        let tx = gx - track * 0.5 + t * track;
+                        canvas.sprite("sliderthumb.png", tx + dx, gy, canvas::Look::scaled(sy));
+                        ctx.area(Btn::TrigSlider(key), gx - track * 0.5 + track * 0.5 + dx, gy, track, 20.0);
+                    }
                 }
             }
         }
