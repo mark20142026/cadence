@@ -22,6 +22,7 @@ pub struct Share {
 pub enum Effect {
     None,
     Close,
+    Alert(String, String),
 }
 
 /// The difficulty face for requested stars (none, auto, easy … demon).
@@ -52,6 +53,13 @@ impl Share {
             10 => self.friends = !self.friends,
             11 => self.followers = !self.followers,
             12 => return Effect::Close,
+            // the options: public → unlisted → friends only (the upload's unlisted 0 / 1 / 2)
+            14 => {
+                self.upload.unlisted = (self.upload.unlisted + 1) % 3;
+                let what = ["<cg>Public</c>: anyone can find it.", "<cg>Unlisted</c> makes it so that your level can only be found by <cy>searching for the exact ID</c>.", "<co>Friends Only</c> makes it so that only <cl>friends</c> who search the exact ID can find it."];
+                return Effect::Alert("Options".into(), what[self.upload.unlisted as usize].into());
+            }
+            15 => return Effect::Alert("Rules".into(), "Hateful, abusive, or otherwise inappropriate content, whether it is in the level, name, or description may lead to <cr>deletion</c>. The same applies to levels abusing cheats or exploits.".into()),
             13 => {
                 let mut u = self.upload.clone();
                 u.requested_stars = self.stars as i32;

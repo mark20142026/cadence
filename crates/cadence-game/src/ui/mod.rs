@@ -1652,8 +1652,10 @@ impl Ui {
 
     fn clicked_now(&mut self, id: Btn) {
         if let (Some(sh), Btn::Replay(i)) = (self.share.as_mut(), id) {
-            if let share::Effect::Close = sh.click(i) {
-                self.share = None;
+            match sh.click(i) {
+                share::Effect::Close => self.share = None,
+                share::Effect::Alert(title, text) => self.alert = Some(Alert { title, text, t: 0.0 }),
+                share::Effect::None => {}
             }
             return;
         }

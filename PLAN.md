@@ -138,12 +138,14 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
           [ ] the newer threads page (getGJThreads answer format), [ ] notifications' rows
           (the page and its states are there), Following / Muted lists, level leaderboards (getGJLevelScores211's
           chk: salt yPg6pUrtWn0J + s7, values and key not pinned yet)
-- [ ] Triggers: Advanced Follow 3016 + Edit 3660 + Re-target 3661; Keyframe objects 3032 +
-      Keyframe anim 3033; Enter effects 3017–3021, 3023, 1915; Touch 1595; BG Effect On/Off
-      1818/1819; Advanced Random 1912; Reverse 1917; End 1931; Checkpoint 2063; Gameplay Offset
-      2901; Camera Mode 2925; Camera Edge 2062; Area Stop 3024; Edit SFX 3603; Edit Song 3605;
-      BG Speed 3606; MG Speed 3612; Spawn Particle 3608; Reset 3618; Persistent Item 3641;
-      Collision State 3655; Link Visible 3662; UI progress 3663; editor guides 2016, 3642.
+- [x] Triggers (agent, merged): Advanced Follow + Edit + Re-target, Keyframes, enter effects
+      (3017–3023, 1915, old 22–28/55–59), Gameplay Offset, Camera Edge/Mode, Reverse, Random,
+      Area Stop, Reset, Persistent Item, Progress, BG Effect, BG/MG speed, Touch, Spawn Particle,
+      Checkpoint, Edit SFX/Song; 1931/3655 confirmed inert; 2016/3642 editor-only. Checked
+      against real-game traces (advanced follow, keyframes, enter effects, camera, reverse).
+      Still open: group parents/linked objects in advanced follow & area, keyframe curves /
+      reference-only / closed loops, the game's random rolls, edit SFX/song speed and
+      proximity, camera key 370, HSV tint modes, [ ] the 2016/3642 guide overlays in the editor.
 - [ ] Editor: [x] pause menu options (settings, export, auto-save, get audio, …), [x] edit
       tools (grid, wrench, color), [x] level page tools, [x] level settings buttons (font,
       song type, 2-player; [ ] the color picker for the channels), [x] music in the

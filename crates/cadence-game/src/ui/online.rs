@@ -899,11 +899,24 @@ impl Browser {
             }
             Btn::InfoSide(4) => self.popup = Some(super::replay::Scene::Vote),
             Btn::InfoSide(13) => self.rating = Some(0),
+            Btn::InfoSide(14) => self.rating = Some(100),
             Btn::RateStar(n) => self.rating = Some(n),
             Btn::RateCancel => self.rating = None,
             // RateStarsLayer::onRate: rateGJStars211 (the stars suggested), then closes
+            // RateDemonLayer: easy … extreme (1–5) → rateGJDemon21
+            Btn::RateSubmit if self.rating.is_some_and(|n| n > 100) => {
+                if let (Some(n), Some(l)) = (self.rating, &self.info) {
+                    let (level, rating) = (l.id as i64, (n - 100) as i32);
+                    let _ = crate::net::spawn(async move {
+                        let id = crate::gjapi::identity();
+                        let _ = crate::net::post("rateGJDemon21.php", &crate::gjapi::rate_demon_form(&id, level, rating)).await;
+                    });
+                    self.rating = None;
+                    return Effect::Alert("Rate Demon".into(), "Thank you for your vote.".into());
+                }
+            }
             Btn::RateSubmit => {
-                if let (Some(n), Some(l)) = (self.rating.filter(|n| *n > 0), &self.info) {
+                if let (Some(n), Some(l)) = (self.rating.filter(|n| *n > 0 && *n <= 10), &self.info) {
                     let level = l.id as i64;
                     let _ = crate::net::spawn(async move {
                         let id = crate::gjapi::identity();
@@ -990,8 +1003,22 @@ impl Browser {
         ctx.buttons.clear();
         c.rect(0.0, 0.0, w, h, [0.0; 3], 150.0 / 255.0);
         c.nine_slice("GJ_square01.png", cx, cy, 360.0, 200.0, Look::default());
-        c.text("goldFont", "Rate Difficulty", cx, cy + 75.0, Look::scaled(0.8));
-        for i in 0..10u8 {
+        let demon = chosen >= 100;
+        c.text("goldFont", if demon { "Rate Demon" } else { "Rate Difficulty" }, cx, cy + 75.0, Look::scaled(0.8));
+        // the demon faces: easy, medium, hard, insane, extreme (7, 8, 6, 9, 10 as the game numbers them)
+        if demon {
+            for (k, face) in [7, 8, 6, 9, 10].into_iter().enumerate() {
+                let x = cx - 120.0 + 60.0 * k as f32;
+                let id = Btn::RateStar(101 + k as u8);
+                let f = ctx.factor(id);
+                c.sprite(&format!("difficulty_{face:02}_btn_001.png"), x, cy + 15.0, Look::scaled(0.8 * f));
+                if chosen == 101 + k as u8 {
+                    c.sprite("GJ_select_001.png", x, cy + 15.0, Look::scaled(1.2));
+                }
+                ctx.area(id, x, cy + 15.0, 50.0, 50.0);
+            }
+        }
+        for i in (0..10u8).filter(|_| !demon) {
             let x = cx - 92.0 + 46.0 * (i % 5) as f32;
             let y = if i < 5 { cy + 30.0 } else { cy - 5.0 };
             let f = ctx.factor(Btn::RateStar(i + 1));
@@ -1471,9 +1498,12 @@ impl Browser {
         {
             ctx.button(c, Btn::InfoSide(k as u8), icon, cx + 254.5, cy + y, Look::default(), 1.2);
         }
-        // an unrated level can be rated (RateStarsLayer), under the like button
+        // an unrated level can be rated (RateStarsLayer), a rated demon's difficulty voted
+        // (RateDemonLayer), under the like button
         if l.stars == 0 {
             ctx.button(c, Btn::InfoSide(13), "GJ_rateDiffBtn_001.png", cx + 254.5, cy - 120.0, Look::default(), 1.2);
+        } else if l.demon {
+            ctx.button(c, Btn::InfoSide(14), "GJ_rateDiffBtn2_001.png", cx + 254.5, cy - 120.0, Look::default(), 1.2);
         }
         if self.rating.is_some() {
             self.draw_rating(c, ctx);
