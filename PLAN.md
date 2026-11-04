@@ -144,10 +144,13 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       frame by frame) with Explode.
 - [x] Triggers: advanced follow, keyframes, enter effects, the game's random generator, camera
       key 370 (portals), area HSV, area triggers by position.
-- [ ] Still open (in progress): the newer threads messaging (getGJThreads and its popups) and
-      notifications (getGJNotifications) — their answer formats aren't pinned (no real account
-      to record against); My Lists (level lists of your own: LevelListLayer, uploadGJLevelList);
-      the simulation agent's items (platformer slope deceleration, keyframe curves / reference /
-      loops, group parents in advanced follow and areas, Edit SFX/Song speed and proximity, dual
-      mode player 2 death and the death fade, ship fire in play, Explode off, camera mode 370,
-      player-color blocks under area HSV).
+- [x] Simulation (agent, merged): platformer slopes (forced slide past 40°, slope launch;
+      pfslope bit-exact), keyframe curves / reference-only / closed loops (kfcurve), Edit
+      SFX/Song fades and proximity, dual-mode deaths and the 0.05 s fade, camera mode 370
+      (cam370t), glows tinted and additive (the pale blocks), editor guides under the objects
+      and the green playback line, ship fires 2–6 in play, Explode off (no shatter).
+      verify_all 122/133.
+- [ ] Still open: group parents / linked objects in advanced follow and area triggers (worked
+      out in NOTES, not ported); SFX playback speed (the audio backend has no per-sound rate)
+      and per-sound proximity; the newer threads messaging and notifications (answer formats
+      not pinned without a real account to record against); My Lists (your own level lists).
