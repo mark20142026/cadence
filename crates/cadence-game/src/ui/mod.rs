@@ -2537,9 +2537,7 @@ impl Ui {
                         self.dialog = Some(Dialog { title: "The Keymaster".into(), lines: VERSUS_LINES.iter().map(|l| l.to_string()).collect(), page: 0, icon: 2, style: 2, t: 0.0 })
                     }
                     "The Map" => self.map_promo = true,
-                    _ => {
-                        self.alert = Some(Alert { title: label.into(), text: format!("{label} isn't in Cadence yet: it's being built."), t: 0.0 });
-                    }
+                    _ => {}
                 }
             }
             // CreatorLayer::onTreasureRoom: closed until 5 keys
@@ -2965,9 +2963,8 @@ impl Ui {
                         self.color_detail = false;
                         self.replay = Some((replay::Scene::EditColor, Screen::Editor));
                     }
-                    editor::EdEffect::EditObject(_) => {
-                        self.alert = Some(Alert { title: "Not yet".into(), text: "This object's settings aren't in Cadence yet.".into(), t: 0.0 });
-                    }
+                    // triggers have no Edit Object (the game's button is grayed out for them)
+                    editor::EdEffect::EditObject(_) => {}
                     // the custom particle object: CreateParticlePopup
                     editor::EdEffect::EditSpecial(2065) => {
                         let ed = self.editor.as_ref().and_then(|e| e.selection().next()).map(|o| {
@@ -2979,9 +2976,8 @@ impl Ui {
                         self.trig_focus = None;
                         self.replay = Some((replay::Scene::Special(id), Screen::Editor));
                     }
-                    editor::EdEffect::EditSpecial(_) => {
-                        self.alert = Some(Alert { title: "Not yet".into(), text: "This object's special settings aren't in Cadence yet.".into(), t: 0.0 });
-                    }
+                    // objects without special settings (the game's Edit Special is grayed out)
+                    editor::EdEffect::EditSpecial(_) => {}
                     editor::EdEffect::Settings => {
                         self.replay = Some((replay::Scene::LevelSettings, Screen::Editor));
                     }

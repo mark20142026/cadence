@@ -2071,13 +2071,6 @@ impl Browser {
                     self.news_page = Some(if next { (p + 1).min(self.news.len().saturating_sub(1)) } else { p.saturating_sub(1) });
                 }
             }
-            Btn::PathIcon(i) => {
-                const PATHS: [&str; 10] = ["Fire", "Ice", "Poison", "Shadow", "Lava", "Earth", "Blood", "Metal", "Light", "Souls"];
-                return Effect::Alert(
-                    format!("Path of {}", PATHS[i as usize % 10]),
-                    "This path is <cr>locked</c>. Paths are unlocked and leveled up with the <cy>Path</c> shards you earn from levels, which Cadence doesn't track yet.".into(),
-                );
-            }
             Btn::DailySafe if self.quests_open => {
                 return Effect::Alert("Quests".into(), "Complete <cg>quests</c> to earn <cl>diamonds</c>. New quests arrive over time.".into());
             }
