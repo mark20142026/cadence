@@ -44,6 +44,13 @@ pub struct Hsv {
 impl Hsv {
     pub const IDENTITY: Hsv = Hsv { h: 0.0, s: 1.0, v: 1.0, abs_s: false, abs_v: false };
 
+    /// `GameToolbox::getMultipliedHSV(k, hsv)` (0x44aa84): the shift scaled by `k` — the hue
+    /// times k, saturation and brightness times k when absolute, else 1 + (x − 1)·k.
+    pub fn multiplied(self, k: f32) -> Hsv {
+        let rel = |x: f32| x.mul_add(k, 1.0 - k);
+        Hsv { h: self.h * k, s: if self.abs_s { self.s * k } else { rel(self.s) }, v: if self.abs_v { self.v * k } else { rel(self.v) }, ..self }
+    }
+
     pub fn parse(s: &str) -> Hsv {
         let p: Vec<&str> = s.split('a').collect();
         let f = |i: usize, d: f32| p.get(i).and_then(|v| v.parse::<f64>().ok()).map_or(d, |v| v as f32);

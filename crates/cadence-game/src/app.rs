@@ -2547,6 +2547,7 @@ impl App {
                 && game.world.area.turn[index] == 0.0
                 && game.world.area.opacity[index] == 1.0
                 && game.world.area.tint[index].0 == 0
+                && game.world.area.tint_hsv[index].is_none()
                 && !game.level.ui_objects.contains_key(&index)
                 && !game.level.pulse_groups.contains_key(&index)
                 && (ox - cam_x).min(cam_x + view_w - ox) >= enter_margin
@@ -2586,7 +2587,7 @@ impl App {
                 game.colors.object_color(base_channel, main_active, groups, hsv_main)
             };
             let detail = game.colors.object_color(detail_channel, main_active, groups, hsv_detail);
-            // area tint triggers (3010): toward the channel's color
+            // area tint triggers (3010): toward the channel's color, or an HSV shift (278)
             let (base, detail) = match game.world.area.tint[index] {
                 (0, ..) => (base, detail),
                 (channel, share, main, det) => {
@@ -2594,6 +2595,16 @@ impl App {
                     let mix = |c: [f32; 3]| [0, 1, 2].map(|k| c[k] + (to[k] - c[k]) * share);
                     (if main { mix(base) } else { base }, if det { mix(detail) } else { detail })
                 }
+            };
+            let (base, detail) = match game.world.area.tint_hsv[index] {
+                Some((h, main, det)) => {
+                    let shift = |c: [f32; 3]| {
+                        let u = c.map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8);
+                        cadence_core::triggers::transform_color(u, h).map(|v| v as f32 / 255.0)
+                    };
+                    (if main { shift(base) } else { base }, if det { shift(detail) } else { detail })
+                }
+                None => (base, detail),
             };
             if debug_obj == Some(st.id) {
                 log(&format!("obj {} at ({ox},{oy}) z {z_layer} base {base:?} detail {detail:?} channels {base_channel}/{detail_channel} sprites {:?}",

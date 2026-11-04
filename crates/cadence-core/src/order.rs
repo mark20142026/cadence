@@ -78,7 +78,9 @@ impl OrderLists {
         for (order, raw) in level.objects.iter().enumerate() {
             let id = raw.canonical_id();
             let Some(info) = crate::objects::info(id) else { continue };
-            if info.kind != crate::objects::ObjectType::MODIFIER || id == 31 || is_speed_portal(id) {
+            // triggers (type 20) and the area triggers (3006–3015, type 45) walk with the player
+            let trigger = info.kind == crate::objects::ObjectType::MODIFIER || info.kind == crate::objects::ObjectType(45);
+            if !trigger || id == 31 || is_speed_portal(id) {
                 continue;
             }
             if id == 2900 && raw.get(171) == Some("1") {
