@@ -2678,12 +2678,11 @@ impl App {
             // The detail ("_color_") layer defaults to black when the object has no detail channel.
             let detail_channel = st.detail_channel.unwrap_or(if visual.detail_color < 0 { 1010 } else { visual.detail_color as i32 });
             let main_active = game.colors.active(base_channel);
-            // Objects flagged m_isObjectBlack keep a black main sprite whatever their channel.
-            let base = if crate::black::OBJECT_BLACK.binary_search(&(st.canonical as u16)).is_ok() {
-                [0.0; 3]
-            } else {
-                game.colors.object_color(base_channel, main_active, groups, hsv_main)
-            };
+            // Objects flagged m_isObjectBlack keep a black main sprite whatever their channel
+            // (but their glow still takes the channel's color, below).
+            let object_black = crate::black::OBJECT_BLACK.binary_search(&(st.canonical as u16)).is_ok();
+            let unblack = game.colors.object_color(base_channel, main_active, groups, hsv_main);
+            let base = if object_black { [0.0; 3] } else { unblack };
             let detail = game.colors.object_color(detail_channel, main_active, groups, hsv_detail);
             // area tint triggers (3010): toward the channel's color, or an HSV shift (278)
             let (base, detail) = match game.world.area.tint[index] {
@@ -2790,8 +2789,12 @@ impl App {
                     .map_or_else(|| main.replace("_001.png", "_glow_001.png"), |s| s.frame.to_string());
                 if let Some((gw, gh)) = frame_size(&glow) {
                     let t = node_transform(ox, oy, rotation + if child_spin { spin } else { 0.0 }, sx, sy, 0.5, 0.5, gw, gh);
-                    // Glows are white, except ids with m_customGlowColor (`updateVisibility`):
-                    // the light background, or the background shifted s −0.2 v +0.2.
+                    // `GameObject::setObjectColor` (0x5b8708) gives the glow the object's color
+                    // (`setGlowColor`, also for black objects, whose main sprite stays black) —
+                    // white for the default channels, the player's color for P1/P2 objects, the
+                    // shifted color under an area or enter tint. Ids with m_customGlowColor
+                    // (`updateVisibility`) take the light background, or the background shifted
+                    // s −0.2 v +0.2.
                     let glow_color = match crate::black::GLOW_COLOR.binary_search_by_key(&(st.canonical as u16), |g| g.0) {
                         Ok(i) if crate::black::GLOW_COLOR[i].1 => game.colors.display(1007),
                         Ok(_) => {
@@ -2799,11 +2802,13 @@ impl App {
                             let h = Hsv { h: 0.0, s: -0.2, v: 0.2, abs_s: true, abs_v: true };
                             cadence_core::triggers::transform_color(bg, h).map(|v| v as f32 / 255.0)
                         }
-                        Err(_) => [1.0; 3],
+                        Err(_) if object_black => unblack,
+                        Err(_) => base,
                     };
                     // the glow follows the object's opacity (`GameObject::setGlowOpacity`): hidden
                     // or faded objects (channel or group alpha) take their glow with them
-                    push(&glow, t, false, false, tint(glow_color, base_alpha), Blend::Normal, &mut draws);
+                    // the glow batch blends SRC_ALPHA, ONE (real scene dumps: 770,1)
+                    push(&glow, t, false, false, [glow_color[0], glow_color[1], glow_color[2], base_alpha], Blend::Additive, &mut draws);
                 }
             }
             let main = visual.sprites[0].frame;
