@@ -239,8 +239,10 @@ pub enum Btn {
     RateStar(u8),
     RateCancel,
     RateSubmit,
-    /// A color popup's picker (hue ring and saturation / brightness square)
+    /// A color popup's picker (hue ring and saturation / brightness square), and the channel
+    /// color popup's OK
     Picker,
+    ChannelOk,
     /// Your account's pages' row buttons (`ui::social::row_btn`)
     Social(u16),
     // the messages page's back / close
@@ -487,6 +489,41 @@ pub enum CloudDone {
     Loaded(Box<crate::cloud::CloudSave>),
 }
 
+/// Level settings' channel color popup (`ColorSelectPopup` for BG / G / …): the picker at the
+/// color popups' place, the color as a swatch, OK.
+fn draw_channel_picker(c: &mut canvas::Canvas, ctx: &mut Ctx, channel: i32, rgb: [u8; 3]) {
+    let (w, h) = (c.width, c.height);
+    let dx = (w - 569.0) * 0.5;
+    c.rect(0.0, 0.0, w, h, [0.0; 3], 150.0 / 255.0);
+    c.nine_slice("GJ_square01.png", w * 0.5, 160.0, 400.0, 300.0, canvas::Look::default());
+    let name = match channel {
+        1000 => "BG",
+        1001 => "Ground",
+        1009 => "Ground 2",
+        1002 => "Line",
+        1013 => "MG",
+        _ => "MG 2",
+    };
+    c.text("goldFont", &format!("{name} Color"), w * 0.5, 295.0, canvas::Look::scaled(0.9));
+    let (hh, sat, val) = rgb_to_hsv(rgb.map(|v| v as f32 / 255.0));
+    let tint = hsv_to_rgb(hh, 1.0, 1.0).map(|v| (v * 255.0) as u8);
+    c.sprite("huePickerBackground.png", 208.5 + dx, 121.0, canvas::Look::default().anchor(0.0, 0.0));
+    c.sprite("colourPickerBackground.png", 227.5 + dx, 141.0, canvas::Look::default().anchor(0.0, 0.0).rgb(tint));
+    c.sprite("colourPickerOverlay.png", 227.5 + dx, 141.0, canvas::Look::default().anchor(0.0, 0.0));
+    c.sprite("colourPickerShadow.png", 227.5 + dx, 141.0, canvas::Look::default().anchor(0.0, 0.0));
+    let a = (hh / 360.0) * std::f32::consts::TAU - std::f32::consts::PI;
+    c.sprite("colourPicker.png", 283.5 + 60.0 * a.cos() + dx, 196.0 + 60.0 * a.sin(), canvas::Look::default());
+    c.sprite("colourPicker.png", 227.5 + 35.0 + 55.0 * (1.0 - sat) + dx, 141.0 + 35.0 + 55.0 * val, canvas::Look::default());
+    ctx.area(Btn::Picker, 283.5 + dx, 196.0, 160.0, 160.0);
+    c.sprite("GJ_colorBtn_001.png", 140.0 + dx, 196.0, canvas::Look::default().rgb(rgb));
+    c.text("bigFont", &format!("{} {} {}", rgb[0], rgb[1], rgb[2]), 140.0 + dx, 168.0, canvas::Look::scaled(0.4));
+    let bw = login::button_width(c, "OK");
+    let f = ctx.factor(Btn::ChannelOk);
+    c.nine_slice("GJ_button_01.png", w * 0.5, 45.0, bw * f, 31.5 * f, canvas::Look::default());
+    c.text("goldFont", "OK", w * 0.5, 47.0, canvas::Look::scaled(f));
+    ctx.area(Btn::ChannelOk, w * 0.5, 45.0, bw, 31.5);
+}
+
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
@@ -668,8 +705,10 @@ pub struct Ui {
     /// When Save and Load were last pressed (`bak_account` / `sync_account`: 30 s apart).
     cloud_last: [Option<web_time::Instant>; 2],
     cloud_save: bool,
-    /// A color picker being dragged.
+    /// A color picker being dragged, and the level color channel its popup edits (level
+    /// settings' BG, G, G2, Line, MG, MG2).
     picker_drag: bool,
+    channel_pick: Option<i32>,
     /// Which vault line comes next (−1: start at a random one)
     vault_line: i32,
     /// The Vault (`SecretLayer`): the code typed so far, the guard's message (text, color) and
@@ -758,6 +797,7 @@ impl Ui {
             cloud_last: [None; 2],
             cloud_save: false,
             picker_drag: false,
+            channel_pick: None,
             vault_line: -1,
             vault_input: String::new(),
             group_add: 0,
@@ -1072,9 +1112,15 @@ impl Ui {
     fn drag_picker(&mut self) {
         let dx = (self.window_px.0 / self.window_px.1 * 320.0 - 569.0) * 0.5;
         let (mx, my) = (self.mouse.0 - dx, self.mouse.1);
+        let channel = self.channel_pick;
         let Some(e) = self.editor.as_mut() else { return };
-        let Some(o) = e.selection().next() else { return };
-        let rgb = [7, 8, 9].map(|k| o.get(k).and_then(|v| v.parse::<f32>().ok()).unwrap_or(255.0) / 255.0);
+        let rgb = match channel {
+            Some(ch) => e.channel_color(ch).map(|v| v as f32 / 255.0),
+            None => {
+                let Some(o) = e.selection().next() else { return };
+                [7, 8, 9].map(|k| o.get(k).and_then(|v| v.parse::<f32>().ok()).unwrap_or(255.0) / 255.0)
+            }
+        };
         let (mut h, mut sat, mut val) = rgb_to_hsv(rgb);
         let (hx, hy) = (283.5f32, 196.0f32);
         let d = ((mx - hx).powi(2) + (my - hy).powi(2)).sqrt();
@@ -1097,6 +1143,10 @@ impl Ui {
             val = ((sy + 35.0 - py) / 55.0).abs();
         }
         let c = hsv_to_rgb(h, sat, val);
+        if let Some(ch) = channel {
+            e.set_channel_color(ch, c.map(|v| (v * 255.0).round() as u8));
+            return;
+        }
         let vals: Vec<(u16, String)> = [7u16, 8, 9].iter().zip(c).map(|(k, v)| (*k, ((v * 255.0).round() as i32).to_string())).collect();
         e.edit_selected(move |o| {
             for (k, v) in &vals {
@@ -1675,6 +1725,7 @@ impl Ui {
         }
         match id {
             Btn::MenuProfile => self.social = Some(social::Social::open()),
+            Btn::ChannelOk => self.channel_pick = None,
             Btn::WriteField(f) => {
                 if let Some(w) = self.writer.as_mut() {
                     w.field = f;
@@ -2819,9 +2870,10 @@ impl Ui {
                 e.set_setting("kA10", if on { "1" } else { "0" });
                 self.alert = Some(Alert { title: "Options".into(), text: format!("<cg>2-Player mode</c> is <cy>{}</c>.", if on { "on" } else { "off" }), t: 0.0 });
             }
-            // the color channels (BG, Ground, Ground 2, Line, MG, MG2)
+            // the color channels: BG, G, G2, Line, MG, MG2 (the swatches and their labels)
+            0..=5 | 7..=12 => self.channel_pick = Some([1000, 1001, 1009, 1002, 1013, 1014][(i as usize) % 7 % 6]),
             _ => {
-                self.alert = Some(Alert { title: "Colors".into(), text: "Set the level's colors with <cg>Color</c> triggers at the start of the level: a trigger at x 0 sets the channel from the first frame.".into(), t: 0.0 })
+                self.alert = Some(Alert { title: "Colors".into(), text: "Every other channel's color is set with <cg>Color</c> triggers (a trigger at x 0 sets it from the first frame).".into(), t: 0.0 })
             }
         }
     }
@@ -3893,6 +3945,11 @@ impl Ui {
             ctx.buttons.clear();
             let clock = r.t;
             self.popup_anim(&mut canvas, "register", |c| register::draw(r, c, &mut ctx, clock));
+        }
+        if let (Some(ch), Some(e)) = (self.channel_pick, self.editor.as_ref()) {
+            ctx.buttons.clear();
+            let rgb = e.channel_color(ch);
+            self.popup_anim(&mut canvas, "channel", |c| draw_channel_picker(c, &mut ctx, ch, rgb));
         }
         if let Some(s) = &self.social {
             ctx.buttons.clear();

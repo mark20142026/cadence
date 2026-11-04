@@ -676,6 +676,49 @@ impl Editor {
         f.chunks(2).find(|kv| kv[0] == key).and_then(|kv| kv.get(1)).map(|v| v.to_string())
     }
 
+    /// A color channel's starting color in the header (`kS38`: `1_r_2_g_3_b_…_6_<channel>`
+    /// entries, `|` apart); white when it isn't there.
+    pub fn channel_color(&self, channel: i32) -> [u8; 3] {
+        let ks38 = self.setting("kS38").unwrap_or_default();
+        for entry in ks38.split('|') {
+            let f: Vec<&str> = entry.split('_').collect();
+            let get = |k: &str| f.chunks(2).find(|kv| kv[0] == k).and_then(|kv| kv.get(1)).and_then(|v| v.parse::<i32>().ok());
+            if get("6") == Some(channel) {
+                return [get("1"), get("2"), get("3")].map(|v| v.unwrap_or(255).clamp(0, 255) as u8);
+            }
+        }
+        [255, 255, 255]
+    }
+
+    /// Set a channel's starting color (adding its entry when it has none).
+    pub fn set_channel_color(&mut self, channel: i32, rgb: [u8; 3]) {
+        let ks38 = self.setting("kS38").unwrap_or_default();
+        let mut found = false;
+        let mut entries: Vec<String> = ks38
+            .split('|')
+            .filter(|e| !e.is_empty())
+            .map(|entry| {
+                let mut f: Vec<String> = entry.split('_').map(str::to_string).collect();
+                let is = f.chunks(2).any(|kv| kv[0] == "6" && kv.get(1).and_then(|v| v.parse::<i32>().ok()) == Some(channel));
+                if is {
+                    found = true;
+                    for (k, v) in [("1", rgb[0]), ("2", rgb[1]), ("3", rgb[2])] {
+                        if let Some(i) = (0..f.len()).step_by(2).find(|&i| f[i] == k) {
+                            if i + 1 < f.len() {
+                                f[i + 1] = v.to_string();
+                            }
+                        }
+                    }
+                }
+                f.join("_")
+            })
+            .collect();
+        if !found {
+            entries.push(format!("1_{}_2_{}_3_{}_11_255_12_255_13_255_4_-1_6_{channel}_7_1_15_1_18_0_8_1", rgb[0], rgb[1], rgb[2]));
+        }
+        self.set_setting("kS38", &(entries.join("|") + "|"));
+    }
+
     /// Change a level setting (one undo step isn't kept for settings, like the game's).
     pub fn set_setting(&mut self, key: &str, value: &str) {
         let header = if self.header.is_empty() { HEADER.to_string() } else { std::mem::take(&mut self.header) };
@@ -733,6 +776,17 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn channel_colors_in_the_header() {
+        let mut e = Editor::default();
+        assert_eq!(e.channel_color(1000), [40, 125, 255]);
+        e.set_channel_color(1000, [1, 2, 3]);
+        assert_eq!(e.channel_color(1000), [1, 2, 3]);
+        assert_eq!(e.channel_color(1001), [0, 102, 255]);
+        e.set_channel_color(1013, [9, 8, 7]);
+        assert_eq!(e.channel_color(1013), [9, 8, 7]);
+    }
 
     #[test]
     fn places_on_the_grid_and_round_trips() {
