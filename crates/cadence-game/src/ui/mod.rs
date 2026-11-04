@@ -31,6 +31,12 @@ mod login;
 mod register;
 mod social;
 mod share;
+mod shop;
+
+/// A shop item's price (what the game's `GS_6` keeps for it).
+pub fn shop_price(index: u16) -> u32 {
+    shop::item(index).map_or(0, |it| it.3)
+}
 
 use std::collections::HashMap;
 
@@ -377,6 +383,8 @@ pub enum Btn {
     ConfirmNo,
     ConfirmYes,
     MapPromoClose,
+    ShopBuy,
+    ShopCancel,
     DailySafe,
     DailyPlay,
     // editor::Editor
@@ -654,6 +662,7 @@ pub struct Ui {
     /// The settings over the main menu (dropdown, then the toggle pages).
     settings: Option<options::Settings>,
     pub garage: garage::Garage,
+    pub shop: shop::Shop,
     /// The online level being played (its name, and where to go back to).
     online_session: Option<crate::online::LevelInfo>,
     pause: Option<pause::Pause>,
@@ -767,6 +776,7 @@ impl Ui {
             rigs: None,
             settings: None,
             garage: garage::Garage::default(),
+            shop: shop::Shop::default(),
             online_session: None,
             pause: None,
             pause_hidden: false,
@@ -1066,6 +1076,7 @@ impl Ui {
             return social::wanted_sheets(s);
         }
         match self.screen {
+            _ if let Some((replay::Scene::Shop(k), _)) = self.replay => shop::wanted_sheets(k, &self.shop),
             _ if self.replay.is_some() => self.replay.map(|(sc, _)| replay::icon_sheets(sc)).unwrap_or_default(),
             Screen::Garage => self.garage.wanted_sheets(&self.icons()),
             Screen::Online if self.online.popup == Some(replay::Scene::Profile) => {
@@ -1735,6 +1746,7 @@ impl Ui {
                     if !self.progress.settings.contains_key(&key) {
                         self.progress.settings.insert(key, "1".into());
                         self.progress.add_currency(13, reward as i64);
+                        self.progress.add_currency(29, reward as i64);
                         self.progress.save();
                         self.alert = Some(Alert { title: "Quest Complete".into(), text: format!("You got <cl>{reward}</c> diamonds!"), t: 0.0 });
                     }
@@ -1891,7 +1903,10 @@ impl Ui {
                     self.progress.save();
                 }
             }
-            Btn::GarageShop => self.replay = Some((replay::Scene::Shop(0), self.screen)),
+            Btn::GarageShop => {
+                self.shop = shop::Shop::default();
+                self.replay = Some((replay::Scene::Shop(0), self.screen));
+            }
             Btn::GarageShards => self.replay = Some((replay::Scene::Shards, self.screen)),
             Btn::Replay(i) if self.screen == Screen::Online && self.online.popup.is_some() => match self.online.popup_click(i) {
                 online::Effect::Alert(title, text) => self.alert = Some(Alert { title, text, t: 0.0 }),
@@ -2301,6 +2316,12 @@ impl Ui {
                 }
             }
             Btn::MapPromoClose => self.map_promo = false,
+            Btn::ShopBuy | Btn::ShopCancel => {
+                if let shop::Effect::Bought = self.shop.popup(id == Btn::ShopBuy, &mut self.progress) {
+                    self.sounds.push("buyItem03.ogg");
+                    self.progress.save();
+                }
+            }
             Btn::DailyClose | Btn::DailySafe | Btn::DailyPlay | Btn::PathIcon(_) | Btn::NewsClose | Btn::NewsPage(_) => match self.online.click_daily(id) {
                 online::Effect::Alert(title, text) => self.alert = Some(Alert { title, text, t: 0.0 }),
                 online::Effect::Sound(s) => {
@@ -2622,17 +2643,20 @@ impl Ui {
                     })
                 }
             },
-            replay::Scene::Shop(_) => match i {
-                1 => leave(self),
-                0 => self.dialog = Some(Dialog { title: "The Shopkeeper".into(), lines: vec!["Hello there!".into()], page: 0, icon: 1, style: 1, t: 0.0 }),
-                _ => {
-                    self.alert = Some(Alert {
-                        title: "The Shop".into(),
-                        text: "Every icon is already unlocked in Cadence, so there's nothing to buy.".into(),
-                        t: 0.0,
-                    })
+            replay::Scene::Shop(k) => {
+                let Some((x, y)) = replay::button_center(scene, i) else { return };
+                if (x - 24.0).abs() < 1.0 && (y - 297.0).abs() < 1.0 {
+                    return leave(self);
                 }
-            },
+                match self.shop.click(k, (x, y), &self.progress) {
+                    shop::Effect::Say(text, icon) => self.dialog = Some(Dialog { title: "The Shopkeeper".into(), lines: vec![text], page: 0, icon, style: 1, t: 0.0 }),
+                    _ if k == 0 && (x - 154.5).abs() < 1.0 => self.dialog = Some(Dialog { title: "The Shopkeeper".into(), lines: vec!["Hello there!".into()], page: 0, icon: 1, style: 1, t: 0.0 }),
+                    _ if k == 2 && (x - 529.0).abs() < 1.0 => {
+                        self.alert = Some(Alert { title: "Community Shop".into(), text: "The icons in this shop were made by <cg>the community</c>.".into(), t: 0.0 })
+                    }
+                    _ => {}
+                }
+            }
             replay::Scene::Info | replay::Scene::Leaderboard | replay::Scene::Vote | replay::Scene::Profile | replay::Scene::SongInfo | replay::Scene::Assets => leave(self),
             replay::Scene::EditLevel => match i {
                 // Edit: the editor
@@ -3242,7 +3266,18 @@ impl Ui {
                 self.screen = Screen::Garage;
                 self.replay = Some((replay::Scene::Shards, Screen::Garage));
             }
-            "shop" => self.replay = Some((replay::Scene::Shop(page.unwrap_or(0) as u8), Screen::Garage)),
+            "shop" => {
+                self.shop = shop::Shop::default();
+                self.replay = Some((replay::Scene::Shop(page.unwrap_or(0) as u8), Screen::Garage));
+            }
+            // a shop's first item's Buy popup, with orbs and shards to pay for it
+            "shopbuy" => {
+                let k = page.unwrap_or(0) as u8;
+                self.progress.add_currency(14, 50000);
+                self.progress.add_currency(29, 50000);
+                self.shop = shop::Shop { buying: shop::items(k).next().map(|it| it.0), ..shop::Shop::default() };
+                self.replay = Some((replay::Scene::Shop(k), Screen::Garage));
+            }
             "secret" => self.replay = Some((replay::Scene::Secret(page.unwrap_or(1) as u8), Screen::Menu)),
             "treasure" => self.replay = Some((replay::Scene::TreasureRoom, Screen::Creator)),
             "news" => {
@@ -4055,6 +4090,15 @@ impl Ui {
     /// A captured screen or popup; the popups (FLAlertLayers) open with their animation.
     fn draw_replay(&self, canvas: &mut Canvas, ctx: &mut Ctx, scene: replay::Scene) {
         let start = canvas.mark();
+        if let replay::Scene::Shop(k) = scene {
+            canvas.rect(-1.0, -1.0, canvas.width + 2.0, canvas.height + 2.0, [0.0; 3], 1.0);
+            shop::draw(canvas, ctx, k, &self.shop, &self.progress);
+            if let Some(i) = self.shop.buying {
+                ctx.buttons.clear();
+                self.popup_anim(canvas, "shopbuy", |c| shop::draw_buy(c, ctx, i));
+            }
+            return;
+        }
         self.draw_replay_inner(canvas, ctx, scene);
         if replay::is_popup(scene) {
             open_anim(canvas, start, self.open_t(&format!("{scene:?}")));

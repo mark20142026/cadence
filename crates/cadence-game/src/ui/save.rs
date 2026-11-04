@@ -132,9 +132,14 @@ impl Progress {
     }
 
     /// A currency (Cadence keeps the game's stat numbers: 14 orbs, 13 diamonds, 22 orbs ever
-    /// collected, 21 keys).
+    /// collected, 21 keys, 29 diamonds left to spend).
     pub fn currency(&self, stat: u32) -> i64 {
-        self.number(&format!("stat{stat}"), 0.0) as i64
+        let key = format!("stat{stat}");
+        // saves from before the diamond shop kept no stat 29: all their diamonds are unspent
+        if stat == 29 && !self.settings.contains_key(&key) {
+            return self.currency(13);
+        }
+        self.number(&key, 0.0) as i64
     }
 
     pub fn add_currency(&mut self, stat: u32, n: i64) {
@@ -172,6 +177,8 @@ impl Progress {
         self.add_currency(14, orbs);
         self.add_currency(22, orbs);
         self.add_currency(13, diamonds);
+        // 29: the diamonds left to spend (the diamond shop's Diamond Shards)
+        self.add_currency(29, diamonds);
         let keys_due = self.currency(22) / 500;
         let keys = (keys_due - self.currency(21)).max(0);
         self.add_currency(21, keys);

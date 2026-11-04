@@ -23,11 +23,13 @@ pub struct Look {
     pub blend: Blend,
     /// Drawn in grayscale (`CCSpriteGrayscale`), tinted by `color`.
     pub gray: bool,
+    /// The texture's hue turned by these degrees before the tint (`CCSpriteWithHue`).
+    pub hue: f32,
 }
 
 impl Default for Look {
     fn default() -> Look {
-        Look { scale: (1.0, 1.0), rotation: 0.0, anchor: (0.5, 0.5), color: [1.0; 3], opacity: 1.0, flip_x: false, flip_y: false, blend: Blend::Normal, gray: false }
+        Look { scale: (1.0, 1.0), rotation: 0.0, anchor: (0.5, 0.5), color: [1.0; 3], opacity: 1.0, flip_x: false, flip_y: false, blend: Blend::Normal, gray: false, hue: 0.0 }
     }
 }
 
@@ -61,6 +63,11 @@ impl Look {
         self.opacity = o;
         self
     }
+    pub fn hue(mut self, degrees: f32) -> Look {
+        self.hue = degrees;
+        self
+    }
+
     pub fn gray(mut self) -> Look {
         self.gray = true;
         self
@@ -150,7 +157,11 @@ impl Canvas<'_> {
         if look.gray {
             color[3] = -color[3];
         }
-        let instance = sprite_instance(frame, atlas, transform, look.flip_x, look.flip_y, color);
+        let mut instance = sprite_instance(frame, atlas, transform, look.flip_x, look.flip_y, color);
+        if look.hue != 0.0 {
+            // the shader reads a hue turn from the triangle flag's slot (1000 + degrees)
+            instance._pad[0] = 1000.0 + look.hue.clamp(-360.0, 360.0);
+        }
         let instance = match self.clip {
             Some(clip) => match clip_instance(instance, clip) {
                 Some(i) => i,

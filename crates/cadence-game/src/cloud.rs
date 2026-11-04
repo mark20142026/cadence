@@ -143,12 +143,28 @@ pub fn import(game_xml: &str, p: &mut Progress) -> Result<(), String> {
             e.jumps = e.jumps.max(jumps);
         }
     }
-    // the currencies (GS_value stats 13 diamonds, 14 orbs, 21 keys, 22 orbs ever collected)
+    // the currencies (GS_value stats 13 diamonds, 14 orbs, 21 keys, 22 orbs ever collected,
+    // 29 diamonds to spend): what's collected only grows; what's left to spend (14, 29) is the
+    // save's that collected more (the other may have spent it in a shop since)
     if let Some(values) = get(&root, "GS_value").and_then(Value::as_dict) {
-        for stat in [13u32, 14, 21, 22] {
+        for (stat, total) in [(14u32, 22u32), (29, 13)] {
+            if num(values, &total.to_string()) as i64 > p.currency(total) {
+                let v = num(values, &stat.to_string()) as i64;
+                p.add_currency(stat, v - p.currency(stat));
+            }
+        }
+        for stat in [13u32, 21, 22] {
             let v = num(values, &stat.to_string()) as i64;
             if v > p.currency(stat) {
                 p.add_currency(stat, v - p.currency(stat));
+            }
+        }
+    }
+    // the shops' purchases (GS_6: item index → price)
+    if let Some(bought) = get(&root, "GS_6").and_then(Value::as_dict) {
+        for (key, _) in bought {
+            if key.parse::<u16>().is_ok() {
+                p.set_flag(&format!("bought {key}"));
             }
         }
     }
@@ -249,8 +265,14 @@ pub fn merge(game_xml: &str, p: &Progress) -> Result<String, String> {
             }
         }
     }
-    // the currencies: the larger of the two
-    for stat in [13u32, 14, 21, 22] {
+    // the currencies: the larger of the two; what's left to spend from the save that
+    // collected more
+    for (stat, total) in [(14u32, 22u32), (29, 13)] {
+        if p.currency(total).max(0) as u32 >= num(values, &total.to_string()) {
+            set(values, &stat.to_string(), Value::Str(p.currency(stat).max(0).to_string()));
+        }
+    }
+    for stat in [13u32, 21, 22] {
         let mine = p.currency(stat).max(0) as u32;
         if mine > num(values, &stat.to_string()) {
             set(values, &stat.to_string(), Value::Str(mine.to_string()));
@@ -260,6 +282,15 @@ pub fn merge(game_xml: &str, p: &Progress) -> Result<String, String> {
         if add > 0 {
             let v = num(values, stat) + add;
             set(values, stat, Value::Str(v.to_string()));
+        }
+    }
+    let bought = dict_mut(&mut root, "GS_6");
+    for flag in &p.flags {
+        if let Some(index) = flag.strip_prefix("bought ").and_then(|i| i.parse::<u16>().ok()) {
+            if get(bought, &index.to_string()).is_none() {
+                let price = crate::ui::shop_price(index);
+                set(bought, &index.to_string(), Value::Str(price.to_string()));
+            }
         }
     }
     let vars = dict_mut(&mut root, "valueKeeper");

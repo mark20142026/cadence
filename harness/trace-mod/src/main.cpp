@@ -703,6 +703,12 @@ void openGui(std::string const& name) {
     } else if (name == "towerinner") {
         CCDirector::get()->replaceScene(LevelAreaInnerLayer::scene(false));
     } else if (name.rfind("shop", 0) == 0) {
+        // shopN$: with orbs and diamonds to spare (in the copy's home only), so an item's
+        // PurchaseItemPopup opens instead of the shopkeeper's "can't afford" line
+        if (name.find('$') != std::string::npos) {
+            GameStatsManager::sharedState()->setStat("14", 50000);
+            GameStatsManager::sharedState()->setStat("29", 50000);
+        }
         CCDirector::get()->replaceScene(GJShopLayer::scene(static_cast<ShopType>(std::atoi(name.c_str() + 4))));
     } else if (name == "secret1") {
         CCDirector::get()->replaceScene(SecretLayer::scene());
