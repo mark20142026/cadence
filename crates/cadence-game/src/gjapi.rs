@@ -504,6 +504,45 @@ pub fn rate_stars_form(id: &Identity, level_id: i64, stars: i32, rs: &str) -> St
     format!("{}&levelID={level_id}&stars={stars}&secret={SECRET}&rs={rs}&chk={c}", id.base())
 }
 
+/// A level's progress for its leaderboard (`getGJLevelScores211.php`): the best percent, the
+/// attempts, clicks and play time, coins, the daily id; `kind` 0 friends, 1 top, 2 week;
+/// `mode` 0 percent, 1 time, 2 points.
+#[derive(Clone, Debug, Default)]
+pub struct LevelScores {
+    pub level_id: i64,
+    pub percent: i32,
+    pub attempts: i32,
+    pub clicks: i32,
+    pub attempt_time: i32,
+    pub coins: i32,
+    pub daily_id: i32,
+    pub kind: i32,
+    pub mode: i32,
+}
+
+/// `getGJLevelScores211.php` (recorded, its chk pinned with distinct values): s1–s3 the
+/// attempts, clicks and time plus 8354 / 3991 / 4085, s5 a random number, s7 a random string
+/// that also ends the chk, s8 the attempts, s9 coins + 5819, s10 the daily id; the chk is
+/// account, level, percent, time, clicks, attempts, then time/plat/points (0 on a classic
+/// level), the daily id, the salt and s7.
+pub fn level_scores_form(id: &Identity, l: &LevelScores, s5: u32, s7: &str, s13: u32) -> String {
+    let c = chk(&format!("{}{}{}{}{}{}000{}", account_id(id), l.level_id, l.percent, l.attempt_time, l.clicks, l.attempts, l.daily_id), &format!("yPg6pUrtWn0J{s7}"), "39673");
+    format!(
+        "{}&levelID={}&percent={}&time=0&points=0&plat=0&secret={SECRET}&type={}&mode={}&s1={}&s2={}&s3={}&s4=1482&s5={s5}&s6=&s7={s7}&s8={}&s9={}&s10={}&s11=0&s12=0&s13={s13}&s14=0&s15=0&s16=&s17=&s18=0&s19=0&s20=1&chk={c}",
+        id.base(),
+        l.level_id,
+        l.percent,
+        l.kind,
+        l.mode,
+        l.attempts + 8354,
+        l.clicks + 3991,
+        l.attempt_time + 4085,
+        l.attempts,
+        l.coins + 5819,
+        l.daily_id
+    )
+}
+
 /// `rateGJDemon21.php`: its own secret (recorded).
 pub fn rate_demon_form(id: &Identity, level_id: i64, rating: i32) -> String {
     format!("{}&levelID={level_id}&rating={rating}&secret=Wmfp3879gc3", id.base())
@@ -1027,6 +1066,15 @@ mod recorded_forms {
 
     fn tail(s: String) -> String {
         s.split_once("&gjp2=0000000000000000000000000000000000000000").map(|(_, t)| t.to_string()).unwrap_or(s)
+    }
+
+    #[test]
+    fn level_scores_like_the_game() {
+        let l = LevelScores { level_id: 10565745, percent: 77, attempts: 11, clicks: 33, attempt_time: 44, coins: 0, daily_id: 88, kind: 1, mode: 0 };
+        assert_eq!(
+            tail(level_scores_form(&fake(), &l, 444, "EMqPbaZfMU", 1811294208)),
+            "&levelID=10565745&percent=77&time=0&points=0&plat=0&secret=Wmfd2893gb7&type=1&mode=0&s1=8365&s2=4024&s3=4129&s4=1482&s5=444&s6=&s7=EMqPbaZfMU&s8=11&s9=5819&s10=88&s11=0&s12=0&s13=1811294208&s14=0&s15=0&s16=&s17=&s18=0&s19=0&s20=1&chk=VlsHBgcKD1IFB1UOV1MKAgxSAQMKDFNVAAVaBFFXBwpSDlBRD1dUVQ=="
+        );
     }
 
     #[test]

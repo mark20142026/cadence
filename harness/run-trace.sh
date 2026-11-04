@@ -35,7 +35,7 @@ if [ -z "${CADENCE_HARNESS_FRONT:-}" ]; then
 fi
 # CADENCE_HTTP_LOG / CADENCE_HTTP_REDIRECT (the mod's request log and local recorder) pass through.
 extra=()
-for v in CADENCE_HTTP_LOG CADENCE_HTTP_REDIRECT; do
+for v in CADENCE_HTTP_LOG CADENCE_HTTP_REDIRECT CADENCE_LB_VALUES; do
     [ -n "${!v:-}" ] && extra+=(--env "$v=${!v}")
 done
 started="$(pgrep -x "Geometry Dash" || true)"

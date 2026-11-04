@@ -736,6 +736,19 @@ void openGui(std::string const& name) {
             glm->getLeaderboardScores(LeaderboardType::Default, LeaderboardStat::Stars);
             auto level = GJGameLevel::create();
             level->m_levelID = 10565745;
+            // distinct values, so the leaderboard request's chk shows which fields it takes
+            if (std::getenv("CADENCE_LB_VALUES")) {
+                level->m_attempts = 11;
+                level->m_jumps = 22;
+                level->m_clicks = 33;
+                level->m_attemptTime = 44;
+                level->m_normalPercent = 55;
+                level->m_orbCompletion = 66;
+                level->m_newNormalPercent2 = 77;
+                level->m_dailyID = 88;
+                level->m_coins = 2;
+                level->m_practicePercent = 9;
+            }
             glm->getLevelLeaderboard(level, LevelLeaderboardType::Global, LevelLeaderboardMode::Time);
             glm->getLevelLeaderboard(level, LevelLeaderboardType::Friends, LevelLeaderboardMode::Points);
         }

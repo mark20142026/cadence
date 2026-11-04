@@ -472,8 +472,9 @@ pub fn parse_scores(body: &str) -> Vec<Score> {
 }
 
 /// `type`: top, relative (global, around you), creators; friends needs an account.
-pub async fn scores(kind: &str) -> Result<Vec<Score>, String> {
-    let body = crate::gjapi::request("getGJScores20.php", &format!("&type={kind}&count=100&stat=0&secret={SECRET}")).await?;
+/// `stat`: what they're ranked by (0 stars, 1 moons, 2 demons, 3 user coins).
+pub async fn scores(kind: &str, stat: u8) -> Result<Vec<Score>, String> {
+    let body = crate::gjapi::request("getGJScores20.php", &format!("&type={kind}&count=100&stat={stat}&secret={SECRET}")).await?;
     Ok(parse_scores(&body))
 }
 

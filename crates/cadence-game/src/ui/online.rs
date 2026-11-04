@@ -28,6 +28,7 @@ enum Msg {
     News(Vec<crate::online::News>),
     Quests(Vec<(i32, i32, i32, String)>, i64),
     Scores(Vec<crate::online::Score>),
+    LevelScores(Vec<crate::online::Score>),
     Lists(Vec<crate::online::LevelList>, u32),
     Daily(Box<LevelInfo>, i64),
     Gauntlets(Vec<(i32, String)>),
@@ -136,6 +137,11 @@ pub struct Browser {
     pub popup: Option<super::replay::Scene>,
     pub comments: Option<Vec<crate::online::Comment>>,
     pub profile: Option<crate::online::Profile>,
+    /// The level page's leaderboard: its rows (key 3 the percent) once loaded, its tab (0
+    /// friends, 1 top, 2 week), and your progress on the level it sends
+    pub level_scores: Option<Vec<crate::online::Score>>,
+    pub level_scores_kind: i32,
+    pub level_progress: crate::gjapi::LevelScores,
     /// The profile's account (its follow button)
     pub profile_account: i64,
     /// `NewsPopup` over the main menu: the page shown, and the posts once loaded.
@@ -212,6 +218,9 @@ impl Default for Browser {
             popup: None,
             comments: None,
             profile: None,
+            level_scores: None,
+            level_scores_kind: 1,
+            level_progress: Default::default(),
             profile_account: 0,
             news_page: None,
             news: Vec::new(),
@@ -328,12 +337,35 @@ impl Browser {
             _ => "top",
         };
         self.status = "Loading...".into();
+        let stat = self.score_stat;
         self.spawn(async move {
-            match crate::online::scores(kind).await {
+            match crate::online::scores(kind, stat).await {
                 Ok(s) => Msg::Scores(s),
                 Err(e) => Msg::Error(format!("Something went wrong ({e})")),
             }
         });
+    }
+
+    /// `GameLevelManager::getLevelLeaderboard`: this level's scores (accounts only).
+    pub fn load_level_scores(&mut self) {
+        self.level_scores = None;
+        let Some(l) = &self.info else { return };
+        if crate::gjapi::linked_account().is_none_or(|(_, ok)| !ok) {
+            return;
+        }
+        let mut p = self.level_progress.clone();
+        p.level_id = l.id as i64;
+        p.kind = self.level_scores_kind;
+        self.daily_job = Some(crate::net::spawn(async move {
+            let id = crate::gjapi::identity();
+            let s5 = 100 + (crate::gjapi::random() % 900) as u32;
+            let s13 = (crate::gjapi::random() % 2_000_000_000) as u32;
+            let form = crate::gjapi::level_scores_form(&id, &p, s5, &crate::gjapi::random_string(10), s13);
+            match crate::net::post("getGJLevelScores211.php", &form).await {
+                Ok(body) if !body.starts_with('-') => Msg::LevelScores(crate::online::parse_scores(&body)),
+                _ => Msg::LevelScores(Vec::new()),
+            }
+        }));
     }
 
     /// A gauntlet's levels beaten, of how many.
@@ -629,6 +661,10 @@ impl Browser {
                     self.comments = Some(c);
                     self.daily_job = None;
                 }
+                Ok(Msg::LevelScores(s)) => {
+                    self.level_scores = Some(s);
+                    self.daily_job = None;
+                }
                 Ok(Msg::News(n)) => {
                     self.news = n;
                     self.daily_job = None;
@@ -660,7 +696,7 @@ impl Browser {
                 self.status = e;
                 self.job = None;
             }
-            Ok(Msg::Daily(..)) | Ok(Msg::Quests(..)) | Ok(Msg::News(..)) | Ok(Msg::Comments(..)) | Ok(Msg::Profile(..)) => self.job = None,
+            Ok(Msg::Daily(..)) | Ok(Msg::Quests(..)) | Ok(Msg::News(..)) | Ok(Msg::Comments(..)) | Ok(Msg::Profile(..)) | Ok(Msg::LevelScores(..)) => self.job = None,
             Ok(Msg::Lists(l, total)) => {
                 self.status = if l.is_empty() { "Nothing found".into() } else { String::new() };
                 self.lists = l;
@@ -906,7 +942,10 @@ impl Browser {
                 self.popup = Some(super::replay::Scene::Info);
                 self.comments = None;
             }
-            Btn::InfoSide(3) => self.popup = Some(super::replay::Scene::Leaderboard),
+            Btn::InfoSide(3) => {
+                self.popup = Some(super::replay::Scene::Leaderboard);
+                self.load_level_scores();
+            }
             // the creator's name: ProfilePage (registered players only)
             Btn::InfoAuthor => {
                 let Some(acc) = self.info.as_ref().map(|l| l.account_id) else { return Effect::None };
@@ -1630,12 +1669,13 @@ impl Browser {
         const CAPTURED: [&str; 12] = ["GOLIATH", "By Subwoofer", "Version: 1", "ID: 151099654", "Final Macademia", "Autodidactic", "SongID: 1636518", "More By Autodidactic", "ID: 1636518  Size: 1.4MB", "GOLIATH Leaderboard", "Behold", "original soundtrack"];
         let comments_shown = scene == Scene::Info && self.comments.is_some();
         let profile = scene == Scene::Profile;
+        let logged_in = scene == Scene::Leaderboard && crate::gjapi::linked_account().is_some_and(|(_, ok)| ok);
         super::replay::draw(c, ctx, scene, &|t: &str| {
             if let Some(frame) = t.strip_prefix("frame:") {
                 // the capture's player icons
                 return profile && ["player_", "ship_", "bird_", "dart_", "robot_", "spider_", "swing_", "jetpack_"].iter().any(|k| frame.starts_with(k));
             }
-            profile && t != "..." || CAPTURED.iter().any(|k| t.starts_with(k)) || (comments_shown && t == "Load Comments")
+            profile && t != "..." || CAPTURED.iter().any(|k| t.starts_with(k)) || (comments_shown && t == "Load Comments") || (logged_in && ["Create an account", "compare scores", "with other players!"].iter().any(|k| t.starts_with(k)))
         });
         let (song, artist) = song_text(l);
         let dx = cx - 284.5;
@@ -1690,6 +1730,29 @@ impl Browser {
             }
             Scene::Leaderboard => {
                 c.text("goldFont", &format!("{} Leaderboard", l.name), cx, 291.0, Look::scaled(0.6));
+                // logged in: the scores (GJScoreCell's level rows: rank, icon, name, percent)
+                if crate::gjapi::linked_account().is_some_and(|(_, ok)| ok) {
+                    c.nine_slice("square02b_001.png", cx - 25.0, 155.0, 356.0, 220.0, Look::default().rgb([191, 114, 62]));
+                    match &self.level_scores {
+                        None => loading_circle(c, cx - 25.0, 155.0, self.t),
+                        Some(rows) if rows.is_empty() => {
+                            c.text("goldFont", "Nothing here yet", cx - 25.0, 155.0, Look::scaled(0.6));
+                        }
+                        Some(rows) => {
+                            for (i, sc) in rows.iter().take(7).enumerate() {
+                                let y = 245.0 - 30.0 * i as f32 - 15.0 + 30.0 * 0.0;
+                                let shade = if i % 2 == 0 { [161, 88, 44] } else { [194, 114, 62] };
+                                c.nine_slice("square02b_001.png", cx - 25.0, y, 356.0, 30.0, Look::default().rgb(shade));
+                                c.text("goldFont", &sc.rank.max(i as i64 + 1).to_string(), cx - 185.0, y, Look::scaled(0.5));
+                                let base = super::garage::icon_sheet(0, sc.icon.clamp(1, 485));
+                                super::garage::draw_icon(c, &base, cx - 155.0, y, 0.6, super::menu::color_for_idx(sc.color1), super::menu::color_for_idx(sc.color2));
+                                let (nw, _) = c.text_size("goldFont", &sc.name);
+                                c.text("goldFont", &sc.name, cx - 135.0, y, Look::scaled((140.0 / nw.max(1.0)).min(0.6)).anchor(0.0, 0.5));
+                                c.text("goldFont", &format!("{}%", sc.stars), cx + 140.0, y, Look::scaled(0.6).anchor(1.0, 0.5));
+                            }
+                        }
+                    }
+                }
             }
             Scene::Profile => match &self.profile {
                 None => loading_circle(c, cx, 160.0, self.t),
@@ -1732,6 +1795,7 @@ impl Browser {
         let Some(scene) = self.popup else { return Effect::None };
         let close = match scene {
             Scene::Info | Scene::Profile => 4,
+            Scene::Leaderboard => 3,
             _ => 0,
         };
         if i == close {
@@ -1789,6 +1853,12 @@ impl Browser {
                     return Effect::Alert(p.name.clone(), if on { "You are now <cg>following</c> this player." } else { "You are no longer <cr>following</c> this player." }.into());
                 }
             }
+            // LevelLeaderboard: friends / top / week, and Update
+            (Scene::Leaderboard, 0..=2) => {
+                self.level_scores_kind = i as i32;
+                self.load_level_scores();
+            }
+            (Scene::Leaderboard, 4) => self.load_level_scores(),
             (Scene::Info, 0) => {
                 if let Some(l) = &self.info {
                     return Effect::Alert("Level ID".into(), format!("This level's ID is <cy>{}</c>.", l.id));

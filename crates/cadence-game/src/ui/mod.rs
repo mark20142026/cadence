@@ -2186,7 +2186,13 @@ impl Ui {
                 self.commit_trigger_input();
                 self.replay_click(i)
             }
-            Btn::ScoreStat(k) => self.online.score_stat = k,
+            // LeaderboardsLayer: the scores again, ranked by that stat
+            Btn::ScoreStat(k) => {
+                self.online.score_stat = k;
+                if let online::View::Scores(tab) = self.online.view {
+                    self.online.open_scores(tab);
+                }
+            }
             Btn::TrigInput(key) => {
                 self.commit_trigger_input();
                 self.trig_focus = Some((key, String::new()));
@@ -4220,6 +4226,15 @@ impl Ui {
         }
         if let Some(pe) = self.particle_ed.as_mut() {
             pe.update(dt);
+        }
+        // the level page's leaderboard sends your progress there
+        if let Some(id) = self.online.info.as_ref().map(|l| l.id) {
+            let lp = self.progress.get(id);
+            let lv = &mut self.online.level_progress;
+            lv.percent = lp.best as i32;
+            lv.attempts = lp.attempts as i32;
+            lv.clicks = lp.jumps as i32;
+            lv.coins = lp.coins.count_ones() as i32;
         }
         if let Some(u) = self.unlock.as_mut() {
             let before = u.t;
