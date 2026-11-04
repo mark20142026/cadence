@@ -3357,7 +3357,7 @@ impl App {
 
 /// The menu screens `CADENCE_SCREEN` can open for a headless screenshot (`Ui::open_for_screenshot`).
 const MENU_SCREENS: &[&str] = &[
-    "levels", "locked", "online", "settings", "options", "garage", "colors", "stats", "creator", "achievements", "account", "login", "support", "songs", "howto", "video", "parental", "osearch", "oinfo", "odaily", "opacks", "ogauntlets", "oscores", "olists", "oquests", "opaths", "rewards", "news", "editor", "tower", "shop", "shopbuy", "secret", "treasure", "keys", "shards", "register", "accounthelp", "myprofile", "friends", "requests", "acctsettings", "share", "oldmessages",
+    "levels", "locked", "online", "settings", "options", "garage", "colors", "stats", "creator", "achievements", "account", "login", "support", "songs", "howto", "video", "parental", "osearch", "oinfo", "odaily", "opacks", "ogauntlets", "oscores", "olists", "oquests", "opaths", "rewards", "news", "editor", "tower", "shop", "shopbuy", "particle", "secret", "treasure", "keys", "shards", "register", "accounthelp", "myprofile", "friends", "requests", "acctsettings", "share", "oldmessages",
 ];
 
 /// The menus at startup: a level id of 0 opens the main menu, any other starts that level

@@ -49,6 +49,8 @@ pub enum Scene {
     Trigger(u16),
     /// An object's Edit Special popup (`EditorUI::editObject2`), by object id
     Special(u16),
+    /// `CreateParticlePopup`'s Motion, Visual and Extra tabs (`ui::particle`)
+    Particle(u8),
     /// Your own `ProfilePage`, `FriendsProfilePage`, `FRequestProfilePage`,
     /// `GJAccountSettingsLayer` (`ui::social`)
     MyProfile,
@@ -80,6 +82,18 @@ pub enum Field {
     Input { key: u16, x: f32, y: f32, w: f32, h: f32 },
     Toggle { key: u16, x: f32, y: f32, w: f32, h: f32 },
     Slider { key: u16, x: f32, y: f32, min: f32, max: f32 },
+}
+
+/// The centers of a layout's 9-slices with this texture.
+pub fn nine_slices(scene: Scene, name: &str) -> Vec<(f32, f32)> {
+    scene
+        .source()
+        .lines()
+        .filter_map(|l| {
+            let w: Vec<&str> = l.split(' ').collect();
+            (w.first() == Some(&"N") && w.get(1) == Some(&name)).then(|| (f(w.get(2)), f(w.get(3))))
+        })
+        .collect()
 }
 
 /// The popup's slider grooves in layout order (center, scale): the n-th slider field (L
@@ -150,6 +164,9 @@ impl Scene {
             Scene::LevelSettings => include_str!("scenes/levelsettings.txt"),
             Scene::Trigger(id) => trigger_source(id),
             Scene::Special(id) => special_source(id),
+            Scene::Particle(0) => include_str!("scenes/particle_motion.txt"),
+            Scene::Particle(1) => include_str!("scenes/particle_visual.txt"),
+            Scene::Particle(_) => include_str!("scenes/particle_extra.txt"),
             Scene::MyProfile => include_str!("scenes/myprofile.txt"),
             Scene::Friends => include_str!("scenes/friends.txt"),
             Scene::Requests => include_str!("scenes/requests.txt"),

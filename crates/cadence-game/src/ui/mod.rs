@@ -37,6 +37,7 @@ mod chests_table;
 mod treasure;
 pub mod keybinds;
 mod shards;
+mod particle;
 mod keybinds_table;
 mod reward;
 
@@ -70,7 +71,7 @@ const IMAGES: &[&str] = &[
 /// Sheets the menus need beyond the level's.
 const SHEETS: &[&str] = &[
     "GJ_LaunchSheet", "GauntletSheet", "GJ_ShopSheet", "GJ_PathSheet", "GJ_ShopSheet01", "GJ_ShopSheet02", "GJ_ShopSheet03", "DungeonSheet",
-    "SecretSheet", "TowerSheet", "TreasureRoomSheet", "GJ_GameSheetEditor", "CCControlColourPickerSpriteSheet",
+    "SecretSheet", "TowerSheet", "TreasureRoomSheet", "GJ_ParticleSheet", "GJ_GameSheetEditor", "CCControlColourPickerSpriteSheet",
 ];
 /// The menu music (`GameManager::fadeInMenuMusic`).
 const MENU_MUSIC: &str = "menuLoop.mp3";
@@ -419,6 +420,19 @@ pub enum Btn {
     ShardIcon(u8),
     ShardsClose,
     ShardsPage(bool),
+    PartTab(u8),
+    PartInput(u8),
+    PartToggle(u8),
+    PartTexture(u8),
+    PartTexPage(bool),
+    PartInf,
+    PartMax,
+    PartCalc,
+    PartOk,
+    PartSlider(u8),
+    PartZoom(u8),
+    PartCopy,
+    PartPaste,
     DailySafe,
     DailyPlay,
     // editor::Editor
@@ -704,6 +718,8 @@ pub struct Ui {
     keys: Option<keybinds::Keys>,
     /// Shards of Power's page, when open
     shards_page: Option<usize>,
+    /// The custom particle object's editor, when open
+    particle_ed: Option<particle::Editor>,
     /// Alt (Option) held, for the keybinds' chords
     pub held_alt: bool,
     /// Paths of Power: the path page open (0-based), its chest's "Reward!" popup
@@ -832,6 +848,7 @@ impl Ui {
             treasure: treasure::Treasure::default(),
             keys: None,
             shards_page: None,
+            particle_ed: None,
             held_alt: false,
             path_page: None,
             path_reward: false,
@@ -1264,6 +1281,12 @@ impl Ui {
     fn drag_slider(&mut self, id: Btn) {
         let Some(b) = self.buttons.iter().find(|b| b.id == id) else { return };
         let v = ((self.mouse.0 - (b.x - b.hw)) / (2.0 * b.hw)).clamp(0.0, 1.0);
+        if let Btn::PartSlider(f) = id {
+            if let Some(pe) = self.particle_ed.as_mut() {
+                pe.slide(f as usize, v);
+            }
+            return;
+        }
         // a trigger popup's slider: its key over the popup's min..max (`SetupTriggerPopup::
         // sliderChanged`), whole numbers unless the field shows decimals
         if let Btn::TrigSlider(key) = id {
@@ -1358,7 +1381,7 @@ impl Ui {
                 self.drag_picker();
                 return true;
             }
-            if let Some(id @ (Btn::SliderMusic | Btn::SliderSfx | Btn::SliderSetting(_) | Btn::TrigSlider(_))) = hit {
+            if let Some(id @ (Btn::SliderMusic | Btn::SliderSfx | Btn::SliderSetting(_) | Btn::TrigSlider(_) | Btn::PartSlider(_))) = hit {
                 self.slider_drag = Some(id);
                 self.drag_slider(id);
                 return true;
@@ -1442,6 +1465,16 @@ impl Ui {
                 return true;
             }
             return false;
+        }
+        if let Some(pe) = self.particle_ed.as_mut() {
+            match key {
+                K::Backspace => pe.backspace(),
+                K::Enter | K::NumpadEnter => pe.commit(),
+                K::Escape if pe.focus.is_some() => pe.commit(),
+                K::Escape => self.particle_ed = None,
+                _ => {}
+            }
+            return true;
         }
         if let Some(k) = self.keys.as_mut() {
             let (shift, ctrl) = self.held_mods;
@@ -1786,6 +1819,10 @@ impl Ui {
 
     /// Typed text (the online search box). Returns true if the UI used it.
     pub fn text(&mut self, text: &str) -> bool {
+        if let Some(pe) = self.particle_ed.as_mut() {
+            pe.type_text(text);
+            return true;
+        }
         if let Some(k) = self.keys.as_mut() {
             // the search box takes text; the capture popup wants the key itself
             if k.tab == 5 && k.editing.is_none() && !k.settings {
@@ -2602,6 +2639,38 @@ impl Ui {
             Btn::RewardCollect => self.unlock = None,
             Btn::KeysClose => self.keys = None,
             Btn::ShardsClose => self.shards_page = None,
+            // the particle editor's C / P: its settings kept for another particle object
+            Btn::PartCopy => {
+                if let Some(pe) = &self.particle_ed {
+                    self.progress.settings.insert("particlecopy".into(), pe.string());
+                }
+            }
+            Btn::PartPaste => {
+                if let (Some(pe), Some(text)) = (self.particle_ed.as_mut(), self.progress.settings.get("particlecopy").cloned()) {
+                    let keys = pe.keys.clone();
+                    let tab = pe.tab;
+                    *pe = particle::Editor::new(Some(&text), |k| keys.iter().any(|(kk, on)| *kk == k && *on));
+                    pe.tab = tab;
+                }
+            }
+            Btn::PartTab(_) | Btn::PartInput(_) | Btn::PartToggle(_) | Btn::PartTexture(_) | Btn::PartTexPage(_) | Btn::PartInf | Btn::PartMax | Btn::PartCalc | Btn::PartOk | Btn::PartZoom(_) => {
+                if let Some(pe) = self.particle_ed.as_mut()
+                    && pe.click(id)
+                {
+                    // OK: the string and the object keys onto the selected particle objects
+                    let text = pe.string();
+                    let keys = pe.keys.clone();
+                    self.particle_ed = None;
+                    if let Some(e) = self.editor.as_mut() {
+                        e.edit_selected(move |o| {
+                            o.set(145, Some(text.clone()));
+                            for &(k, on) in &keys {
+                                o.set(k, on.then(|| "1".to_string()));
+                            }
+                        });
+                    }
+                }
+            }
             Btn::ShardsPage(next) => {
                 if let Some(pg) = self.shards_page {
                     self.shards_page = Some(if next { (pg + 1) % shards::PAGES } else { (pg + shards::PAGES - 1) % shards::PAGES });
@@ -2899,6 +2968,13 @@ impl Ui {
                     editor::EdEffect::EditObject(_) => {
                         self.alert = Some(Alert { title: "Not yet".into(), text: "This object's settings aren't in Cadence yet.".into(), t: 0.0 });
                     }
+                    // the custom particle object: CreateParticlePopup
+                    editor::EdEffect::EditSpecial(2065) => {
+                        let ed = self.editor.as_ref().and_then(|e| e.selection().next()).map(|o| {
+                            particle::Editor::new(o.get(145), |k| o.get(k).is_some_and(|v| v != "0"))
+                        });
+                        self.particle_ed = Some(ed.unwrap_or_else(|| particle::Editor::new(None, |_| false)));
+                    }
                     editor::EdEffect::EditSpecial(id) if replay::SPECIAL_POPUPS.contains(&id) => {
                         self.trig_focus = None;
                         self.replay = Some((replay::Scene::Special(id), Screen::Editor));
@@ -3058,7 +3134,7 @@ impl Ui {
                 _ => self.edit_level_tool(i),
             },
             replay::Scene::Shards => self.replay = None,
-            replay::Scene::Keys => self.replay = None,
+            replay::Scene::Keys | replay::Scene::Particle(_) => self.replay = None,
             replay::Scene::EditGroup => self.edit_group_click(i),
             replay::Scene::EditColor => self.edit_color_click(i),
             replay::Scene::EditorPause => {}
@@ -3577,6 +3653,15 @@ impl Ui {
                     _ => {}
                 }
                 self.keys = Some(k);
+            }
+            // the particle editor on tab CADENCE_PAGE, over the menu
+            "particle" => {
+                let mut pe = particle::Editor::new(None, |_| false);
+                pe.tab = page.unwrap_or(0).min(3) as u8;
+                for _ in 0..90 {
+                    pe.update(1.0 / 60.0);
+                }
+                self.particle_ed = Some(pe);
             }
             "shards" => {
                 self.screen = Screen::Garage;
@@ -4115,6 +4200,9 @@ impl Ui {
             self.online.beaten = self.progress.levels.iter().filter(|(_, l)| l.best >= 100).map(|(id, _)| *id).collect();
             self.online.gauntlets_claimed = self.progress.flags.iter().filter_map(|f| f.strip_prefix("gauntlet ")?.parse().ok()).collect();
         }
+        if let Some(pe) = self.particle_ed.as_mut() {
+            pe.update(dt);
+        }
         if let Some(u) = self.unlock.as_mut() {
             let before = u.t;
             u.t += dt;
@@ -4384,6 +4472,10 @@ impl Ui {
         if self.screen == Screen::Creator && self.online.daily.is_some() {
             ctx.buttons.clear();
             self.popup_anim(&mut canvas, "daily", |c| self.online.draw_daily(c, &mut ctx));
+        }
+        if let Some(pe) = &self.particle_ed {
+            ctx.buttons.clear();
+            self.popup_anim(&mut canvas, "particle", |c| particle::draw(c, &mut ctx, pe));
         }
         if let Some(pg) = self.shards_page {
             ctx.buttons.clear();
