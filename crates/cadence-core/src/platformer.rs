@@ -396,3 +396,41 @@ impl Player {
         if self.on_slope { self.slope_rotation as f32 } else { 0.0 }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::level::LevelString;
+    use crate::physics::Player;
+    use crate::world::World;
+
+    /// Holding right up a 45° slope (steeper than 40°) the player is forced to slide left: the
+    /// speed falls below the slope's cap and keeps falling until the player slides back down
+    /// (the real re/traces/pfslope run).
+    #[test]
+    fn steep_slopes_force_a_slide() {
+        let level = LevelString::parse("kA13,0,kA22,1;1,289,2,315,3,15;1,1,2,345,3,15;1,1,2,375,3,15;1,1,2,345,3,45;1,1,2,375,3,45");
+        let mut world = World::from_level(&level);
+        world.reset();
+        let mut p = Player::spawn(&world);
+        p.apply_level_settings(&level);
+        let mut on_slope_steps = 0;
+        let mut min_vx = f64::MAX;
+        for step in 0..900 {
+            p.begin_step(&mut world);
+            if step == 10 {
+                p.set_direction(true, 3);
+            }
+            world.pre_step((p.x, p.y));
+            p.step(&world);
+            world.post_step(&p);
+            if p.on_slope {
+                on_slope_steps += 1;
+                assert!(p.platformer.forced_slide_left && !p.platformer.forced_slide_right);
+                min_vx = min_vx.min(p.platformer.x_velocity);
+            }
+        }
+        assert!(on_slope_steps > 20);
+        // The slide takes the speed below the cap (cos 45° of full speed) and then below 0.
+        assert!(min_vx < 0.0, "min vx {min_vx}");
+    }
+}

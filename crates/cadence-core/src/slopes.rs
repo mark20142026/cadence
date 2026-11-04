@@ -53,7 +53,9 @@ impl Player {
         let ceiling = slope_floor_top(obj.slope_dir);
         // "Downhill" (uVar19): moving right when the slope isn't uphill, going left when it is;
         // flipped by gravity.
-        let down = (obj.slope_uphill == self.going_left) ^ ud;
+        // In platformer mode "left" is the velocity's sign, not the facing (bVar6).
+        let left = if self.platformer.on { self.platformer.x_velocity < 0.0 } else { self.going_left };
+        let down = (obj.slope_uphill == left) ^ ud;
         let u27 = false;
         let xspeed = self.base_speed * self.speed as f64;
         // fVar42: the vertical speed of running along this slope.
@@ -294,7 +296,7 @@ impl Player {
         let gsign: i32 = if ud { -1 } else { 1 };
         let mut sign = if down { gsign } else { -gsign };
         // Reversed going left (and again sideways).
-        if self.going_left {
+        if left {
             sign = -sign;
         }
         if self.sideways {
@@ -313,6 +315,21 @@ impl Player {
                 let fast = if ud { v < -5.0 } else { 5.0 < v };
                 if fast {
                     self.y_velocity = round_velocity(v as f64);
+                }
+                // A hard landing (falling faster than 5) on a slope steeper than 40° halves the
+                // platformer speed to the right (not to the left: the game tests v > 0 only).
+                if self.platformer.on && (angle * 57.29578).abs() > 40.0 && v < -5.0 && 0.0 < self.platformer.x_velocity {
+                    self.platformer.x_velocity *= 0.5;
+                }
+                // m_currentSlope2, m_slopeAngle, m_slopeSlidingMaybeRotated; an uphill slope of
+                // 1 radian or more allows no slope jumps (count 3).
+                let uphill = obj.slope_uphill != self.sideways;
+                let pf = &mut self.platformer;
+                pf.slope2 = Some(index);
+                pf.slope_angle = angle;
+                pf.slope2_uphill = uphill;
+                if uphill && 1.0 <= angle {
+                    pf.slope_jump_count = 3;
                 }
             } else {
                 let v = self.y_velocity;
@@ -383,22 +400,25 @@ impl Player {
         let pr = self.rect();
         let wall_left = slope_wall_left(obj.slope_dir);
         let floor_top = slope_floor_top(obj.slope_dir);
-        let _ = dt;
+        let pf = self.platformer.on;
+        // The slope's own movement this step along the run axis against the player's.
+        let run = (self.base_speed * self.speed as f64 * dt as f64) as f32;
+        let moved = if self.sideways { obj.pos.1 as f32 - obj.last_pos.1 } else { obj.pos.0 as f32 - obj.last_pos.0 };
+        // Platformer, on or just off a slope: the wall strips are 5 shorter at both ends.
+        let pad = if pf && (self.on_slope || self.was_on_slope) { 5.0f32 } else { 0.0 };
         // The wall strip, only on the side the player comes from: a wall on the left when the
-        // player is left of the slope. (A wall on the right only counts going left, in
-        // platformer mode or for a slope moving into the player; none of which Cadence has yet.)
+        // player is left of the slope (not going left in classic mode unless the slope runs
+        // ahead of the player); a wall on the right going left, in platformer mode or for a
+        // slope moving into the player, from beyond it.
         let mut hit = false;
-        if wall_left && self.x < sr.x {
-            // Going left the strip is inset by 1 at both ends.
-            let inset = if self.going_left { 1.0 } else { 0.0 };
-            let wall = Rect { x: sr.x, y: sr.y + inset, w: 1.0, h: sr.h + inset * -2.0 };
-            if pr.intersects(&wall) {
-                self.collide_solid_rect(world, index, wall, true);
-            }
-            hit = true;
-        } else if !wall_left && self.going_left && sr.max_x() < self.x {
-            // A wall on the right, met going left from beyond it.
-            let wall = Rect { x: sr.x + sr.w + -1.0, y: sr.y, w: 1.0, h: sr.h };
+        let mut inset = 0.0f32;
+        let left_wall = wall_left && self.x < sr.x && !(self.going_left && !pf && run <= moved);
+        let right_wall = !wall_left && (self.going_left || pf || run < moved) && sr.max_x() < self.x;
+        if left_wall || right_wall {
+            // Classic mode: inset by 1 more going left (left wall) / not going left (right).
+            inset = if pf || self.going_left != left_wall { 0.0 } else { 1.0 };
+            let x = if left_wall { sr.x } else { sr.x + sr.w + -1.0 };
+            let wall = Rect { x, y: pad + inset + sr.y, w: 1.0, h: sr.h + (pad + inset) * -2.0 };
             if pr.intersects(&wall) {
                 self.collide_solid_rect(world, index, wall, true);
             }
@@ -406,9 +426,9 @@ impl Player {
         }
         // The base strip, the flat side opposite the slanted surface, met from beyond it.
         let base = if floor_top {
-            Rect { x: sr.x, y: sr.max_y() - 1.0, w: sr.w, h: 1.0 }
+            Rect { x: inset + sr.x, y: sr.max_y() - 1.0, w: sr.w + inset * -2.0, h: 1.0 }
         } else {
-            Rect { x: sr.x, y: sr.y, w: sr.w, h: 1.0 }
+            Rect { x: inset + sr.x, y: sr.y, w: sr.w + inset * -2.0, h: 1.0 }
         };
         let beyond = if floor_top { base.max_y() <= self.y } else { self.y <= base.max_y() };
         if beyond {
@@ -453,6 +473,11 @@ impl Player {
                 }
             }
             target = if (current - a).abs() <= (current - b).abs() { a } else { b };
+        }
+        // Sliding down a slope steeper than 80° the player stays upright.
+        let pf = &self.platformer;
+        if pf.on && 80.0 < pf.slide_slope_angle && (pf.forced_slide_left || pf.forced_slide_right) {
+            target = 0.0;
         }
         self.ease_rotation(dt, target);
     }
@@ -509,7 +534,19 @@ impl Player {
             if 0.10000000149011612 <= t {
                 m = 1.0;
             }
-            let lv = (m * sv as f64) as f32;
+            let mut lv = (m * sv as f64) as f32;
+            // Platformer: the launch is the speed along the slope, ±|vx·tan(m_slopeAngle)|·1.1
+            // (the sign of the classic one), and only with a direction held fast enough:
+            // |vx| ≥ 5·cos(angle) − 1.
+            let mut allowed = true;
+            if self.platformer.on {
+                let a = self.platformer.slope_angle;
+                let vx = self.platformer.x_velocity;
+                let k = (vx * a.tan() as f64).abs() * 1.100000023841858;
+                lv = (if 0.0 <= lv { k } else { -k }) as f32;
+                let (l, r, _) = self.platformer_direction();
+                allowed = (l || r) && ((a.cos() * 5.0) as f64 + -1.0) <= vx.abs();
+            }
             if std::env::var_os("CADENCE_DEBUG_SLOPE").is_some() {
                 eprintln!("slope exit t {:.4} start {:.4} m {m} sv {sv} lv {lv} v {v}", self.total_time, self.slope_start_time);
             }
@@ -520,7 +557,7 @@ impl Player {
             } else {
                 v <= lv as f64
             };
-            if !skip {
+            if !skip && allowed {
                 // FUN_10037013c: the slope launch.
                 self.rising = true;
                 self.touching_ground = false;
@@ -529,6 +566,15 @@ impl Player {
                 self.y_velocity = round_velocity(lv as f64);
                 self.slope_spin(true);
             }
+        }
+        // Platformer (LAB_10036eca4): leaving a slope while holding the way it slid ends the
+        // slide's speed bonus, and the speed above the cap then fades slowly (m_isMoving).
+        let (l, r, _) = self.platformer_direction();
+        let pf = &mut self.platformer;
+        if 0.0 < pf.slope_speed_bonus && ((l && pf.last_slide_left) || (r && !pf.last_slide_left)) {
+            pf.is_sliding = false;
+            pf.slope_speed_bonus = 0.0;
+            pf.is_moving = true;
         }
         self.slope_velocity = 0.0;
         self.current_slope_yvel = 0.0;
@@ -561,8 +607,12 @@ impl Player {
     /// `hitGround` from a slope surface.
     fn hit_ground_slope(&mut self) {
         let v = self.y_velocity * self.dir();
+        // hitGround's platformer fields, as on blocks (`hit_ground_full`).
+        self.platformer.on_ice = false;
+        self.platformer.is_sliding = false;
         if v <= 5.0 {
             self.on_ground = true;
+            self.platformer.last_land_time = self.total_time;
         }
         // hitGround always zeroes the velocity (a hard landing restores it afterwards).
         self.y_velocity = 0.0;

@@ -88,6 +88,8 @@ pub struct Object {
     /// moving-platform snap reaches 20 per frame).
     pub non_stick: (bool, bool),
     pub extra_sticky: bool,
+    /// Key 193 (`m_isGripSlope` +0x512): a slope that never forces a platformer slide.
+    pub grip_slope: bool,
     /// Custom orbs (type 36): (group 51, key 56 "on", key 504 spawn instead of toggle).
     pub custom_ring: Option<(i32, bool, bool)>,
 }
@@ -382,6 +384,7 @@ impl World {
                 passable: raw.get(134) == Some("1"),
                 non_stick: (raw.get(136) == Some("1"), raw.get(289) == Some("1")),
                 extra_sticky: raw.get(495) == Some("1"),
+                grip_slope: raw.get(193).is_some_and(|v| v.parse::<i32>().unwrap_or(0) != 0),
                 custom_ring: (kind == ObjectType::CUSTOM_RING).then(|| {
                     (raw.get_i32(51).unwrap_or(0), raw.get(56) == Some("1"), raw.get(504) == Some("1"))
                 }),

@@ -486,6 +486,16 @@ pub struct PlatformerState {
     /// `m_collidingWithLeft/Right` (+0x608/+0x610): the block last met on that side.
     pub colliding_left: Option<usize>,
     pub colliding_right: Option<usize>,
+    /// `m_currentSlope2` (+0x5e0): the slope last landed on (collidedWithSlopeInternal's
+    /// hitGround path); `m_slopeAngle` (+0x5f0, its atan(h/w), kept after leaving it);
+    /// `m_slopeSlidingMaybeRotated` (+0x5f4: that slope is uphill, flipped sideways);
+    /// `m_slideSlopeAngle` (+0xb00, degrees) and `m_changedDirectionsTime` (+0xae8) from the
+    /// forced-slide check.
+    pub slope2: Option<usize>,
+    pub slope_angle: f32,
+    pub slope2_uphill: bool,
+    pub slide_slope_angle: f64,
+    pub changed_directions_time: f64,
 }
 
 impl Default for Player {
@@ -1109,8 +1119,9 @@ impl Player {
                 if self.touching_ground {
                     let v = self.y_velocity;
                     let settled = if self.upside_down { v <= 0.25 } else { -0.25 <= v };
-                    // Platformer: a spin running on the ground carries on (0x3753e8).
-                    if settled && !(self.platformer.on && self.spinning) {
+                    // Platformer: a spin running on the ground carries on (0x3753e8). The
+                    // step after leaving a slope (m_wasOnSlope) doesn't ease.
+                    if settled && !self.was_on_slope && !(self.platformer.on && self.spinning) {
                         self.spinning = false;
                         // (convertToClosestRotation returns 0 while dashing)
                         let closest = if self.dashing { 0.0 } else { closest_rotation(self.rotation) };
@@ -1137,7 +1148,9 @@ impl Player {
             Mode::Robot | Mode::Spider => {
                 let v = self.y_velocity;
                 let settled = self.touching_ground && if self.upside_down { v <= 0.25 } else { -0.25 <= v };
-                if settled {
+                if self.was_on_slope {
+                    // Just off a slope: no easing either way (LAB_100375520 / 5528).
+                } else if settled {
                     // convertToClosestRotation(0) returns 0 for the robot and the spider: they
                     // always settle upright, never on their side (real s12-22 after a dash).
                     let closest = 0.0;
@@ -1919,8 +1932,7 @@ impl Player {
                     self.x += dx as f64 as f32;
                 }
             }
-            self.platformer.forced_slide_left = false;
-            self.platformer.forced_slide_right = false;
+            self.slide_check(world);
         }
         let collided = self.collided_object.take();
         let mut moved_away = false;
@@ -1962,6 +1974,30 @@ impl Player {
             self.collide_solid_rect(world, t, world.objects[t].rect, false);
             self.forced_contact = false;
         }
+    }
+
+    /// `performSlideCheck` (0x3702e8, inlined in FUN_10036e834): on (or just off) a slope
+    /// steeper than 40° that isn't a grip slope, the player is forced to slide down it —
+    /// left on an uphill slope right side up, right on a downhill one (mirrored upside down);
+    /// updateMove then pushes the velocity down the slope. Anything else clears both sides.
+    fn slide_check(&mut self, world: &World) {
+        let on = self.on_slope || self.was_on_slope;
+        let pf = &mut self.platformer;
+        let deg = (pf.slope_angle * 57.29578).abs();
+        let slope = pf.slope2.filter(|&s| on && !pf.slope_resnapped && !world.objects[s].grip_slope && deg > 40.0);
+        if slope.is_none() {
+            pf.forced_slide_left = false;
+            pf.forced_slide_right = false;
+            return;
+        }
+        let left = pf.slope2_uphill != self.upside_down;
+        if pf.forced_slide_left != left || pf.forced_slide_right == left {
+            pf.changed_directions_time = self.total_time;
+        }
+        pf.forced_slide_left = left;
+        pf.forced_slide_right = !left;
+        pf.slide_slope_angle = deg as f64;
+        pf.forced_slope_slide = true;
     }
 
     /// Floor (and ceiling in a flying corridor). Touching either calls the game's `hitGround`,
