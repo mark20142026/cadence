@@ -43,6 +43,11 @@ pub fn needed_files(suffix: &str) -> Vec<String> {
         out.push(format!("icons/{icon}{suffix}.plist"));
         out.push(format!("icons/{icon}{suffix}.png"));
     }
+    // the death effects' sheets (only the chosen one is decoded, when a level starts)
+    for sheet in (2..=20).filter_map(crate::death::sheet) {
+        out.push(format!("{sheet}{suffix}.plist"));
+        out.push(format!("{sheet}{suffix}.png"));
+    }
     for single in crate::app::SINGLE_IMAGES {
         out.push(format!("{single}{suffix}.png"));
     }

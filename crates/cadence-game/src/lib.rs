@@ -6,6 +6,9 @@ pub mod app;
 pub mod assets;
 pub mod audio;
 pub mod cloud;
+pub mod death;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod death_check;
 mod color_z;
 mod spin;
 mod black;

@@ -153,8 +153,8 @@ fn push_particles(e: &Emitter, sheet: usize, draws: &mut Vec<Draw>) {
 }
 
 /// A circle wave as an additive triangle fan (`ccDrawFilledCircle`), on the particle texture's
-/// white center.
-fn push_wave(w: &CircleWave, sheet: usize, draws: &mut Vec<Draw>) {
+/// white center. `pixel` is one framebuffer pixel in level units (glLineWidth counts pixels).
+fn push_wave(w: &CircleWave, sheet: usize, pixel: f32, draws: &mut Vec<Draw>) {
     let (radius, alpha) = w.state();
     let n = CircleWave::segments(radius);
     let color = [w.color[0], w.color[1], w.color[2], alpha];
@@ -163,12 +163,14 @@ fn push_wave(w: &CircleWave, sheet: usize, draws: &mut Vec<Draw>) {
         (w.center.0 + radius * a.cos(), w.center.1 + radius * a.sin())
     };
     if w.outline {
-        // ccDrawCircle at glLineWidth 2: a ring one point either side of the radius
+        // ccDrawCircle at glLineWidth w: a ring w/2 pixels either side of the radius (the real
+        // game's 10-pixel death rings are ~4.4 units wide at 1280 x 720)
         let ring = |i: u32, r: f32| {
             let a = i as f32 * std::f32::consts::TAU / n as f32;
             (w.center.0 + r * a.cos(), w.center.1 + r * a.sin())
         };
-        let (r0, r1) = ((radius - 1.0).max(0.0), radius + 1.0);
+        let half = w.line_width * 0.5 * pixel;
+        let (r0, r1) = ((radius - half).max(0.0), radius + half);
         for i in 0..n {
             for (a, b, c) in [(ring(i, r0), ring(i, r1), ring(i + 1, r1)), (ring(i, r0), ring(i + 1, r1), ring(i + 1, r0))] {
                 let instance = triangle_instance(a, b, c, (0.5, 0.5), color);
@@ -717,6 +719,8 @@ pub struct PlayOptions {
     pub quick_checkpoints: bool,
     /// 0061: the spider's teleport effect in the main color instead of the secondary one.
     pub spider_main_color: bool,
+    /// 0100: the chosen death effect in practice mode too (else the default there).
+    pub practice_death_effect: bool,
 }
 
 impl PlayOptions {
@@ -728,6 +732,7 @@ impl PlayOptions {
             auto_checkpoints: p.var("0027", true),
             quick_checkpoints: p.var("0068", false),
             spider_main_color: p.var("0061", false),
+            practice_death_effect: p.var("0100", false),
         }
     }
 }
@@ -1415,21 +1420,30 @@ impl Game {
         0.4 + 0.6 * elastic_out(self.spider_pop / 0.45, 0.35)
     }
 
-    /// `PlayerObject::playDeathEffect`, default effect: `explodeEffect` (grouped, in the main
-    /// color) and a `CCCircleWave` from size·10 to size·90 over 0.5 s, where size is the vehicle
-    /// size (×0.9 when it's at least 1). Both sit at the player's position.
+    /// `PlayerObject::playDeathEffect` (0x1a176c): the death effect chosen in the icon kit (the
+    /// default in practice mode unless option 0100 shows them there), see `crate::death`. All of
+    /// it sits at the player's position, sized by the vehicle size (× 0.9 when it's at least 1).
     fn on_death(&mut self) {
         let p = &self.player;
         let at = (p.x, p.y);
-        if let Some(def) = self.particle_defs.get("explodeEffect.plist") {
-            let [r, g, b] = self.pcol.0;
-            self.effects.spawn(def, at, PositionType::Grouped, Some([r, g, b, 1.0]));
-        }
         let size = if p.size >= 1.0 { p.size * 0.9 } else { p.size };
-        self.effects.waves.push(CircleWave { z: 99, ..CircleWave::new(at, size * 10.0, size * 90.0, 0.5, self.pcol.0) });
+        let mut effect = self.icons.ids[10];
+        if self.practice && !self.opts.practice_death_effect {
+            effect = 1;
+        }
+        let seed = self.effects.next_seed();
+        let defs = |name: &str| self.particle_defs.get(name).cloned();
+        let Some(death) = crate::death::play(effect, at, size, self.pcol, &mut self.effects.rng, seed, &defs) else { return };
+        self.effects.emitters.push(death.emitter);
+        self.effects.waves.extend(death.waves);
+        self.effects.deaths.extend(death.sprite);
+        if !death.shatter {
+            return;
+        }
         // The icon shatter (unless the "no explode shatter" option, game variable 0153, is on):
         // a (size·40)² capture cut into 2–3 × 2–3 pieces (5% of the time one column, 5% one
         // row), flying at the player's speed · 0.72 (vx 0.5v ± v, vy 6 ± 3, 1.4 s).
+        let p = &self.player;
         let rng = &mut self.effects.rng;
         let (r1, r2, r3) = (rng.unit(), rng.unit(), rng.unit());
         let mut rows = (r2 * 2.0) as u32 + 2;
@@ -1718,7 +1732,11 @@ impl App {
             })
             .collect();
         player.apply_level_settings(&level);
-        let icons = self.ui.icons();
+        let mut icons = self.ui.icons();
+        // CADENCE_DEATH_EFFECT=<1..20>: screenshots of a death effect (headless runs read no save)
+        if let Some(e) = std::env::var("CADENCE_DEATH_EFFECT").ok().and_then(|v| v.parse::<u32>().ok()) {
+            icons.ids[10] = e.clamp(1, 20);
+        }
         let icon_bytes = { let (a, b) = icons.colors(); [a, b] };
         let colors = Colors::new(&level, icon_bytes);
         let mut order = Vec::new();
@@ -1917,6 +1935,20 @@ impl App {
                             upload(renderer, &mut sheets.images[before..]);
                         }
                         Err(_) => {
+                            sheets.failed.insert(name);
+                        }
+                    }
+                }
+            }
+            // the chosen death effect's sheet (`GameManager::loadDeathEffect`), only that one
+            let effect = game.icons.ids[10];
+            if let (Some(name), Some(probe)) = (crate::death::sheet(effect), crate::death::probe_frame(effect)) {
+                if !sheets.frames.contains_key(&probe) && !sheets.failed.contains(&name) {
+                    let before = sheets.images.len();
+                    match sheets.load(self.files.as_ref(), "", &name) {
+                        Ok(()) => upload(renderer, &mut sheets.images[before..]),
+                        Err(e) => {
+                            log(&format!("{name}: {e}"));
                             sheets.failed.insert(name);
                         }
                     }
@@ -2128,6 +2160,8 @@ impl App {
         let zoom = if game.camera.zoom > 0.0 { game.camera.zoom } else { 1.0 };
         let view_w = view_w / zoom;
         let view_h = VIEW_HEIGHT / zoom;
+        // one framebuffer pixel in level units (line widths)
+        let pixel = view_h / renderer.size().1.max(1) as f32;
         let fonts = &self.ui.fonts;
         // sized like last frame's, so a big level's list doesn't regrow (and copy) mid-frame
         let mut draws: Vec<Draw> = Vec::with_capacity(game.draw_capacity.max(4096));
@@ -2915,7 +2949,7 @@ impl App {
         }
         if let Some(square) = sheets.frames.get(PARTICLE_TEXTURE) {
             for w in game.effects.waves.iter().filter(|w| w.z < 4) {
-                push_wave(w, square.sheet, &mut draws);
+                push_wave(w, square.sheet, pixel, &mut draws);
             }
             let mut fx: Vec<(&usize, &(i32, Emitter))> = game.effects.objects.iter().collect();
             fx.sort_by_key(|(i, (z, _))| (*z, **i));
@@ -2984,12 +3018,13 @@ impl App {
         // Effects: children of the object layer, so under the ground. All of the game's particle
         // effects blend additively (SRC_ALPHA, ONE) with the white square texture; circle waves are
         // additive filled polygons.
+        // (z 120 and over: after the T layers)
         if let Some(square) = sheets.frames.get(PARTICLE_TEXTURE) {
-            for e in &game.effects.emitters {
+            for e in game.effects.emitters.iter().filter(|e| e.z < 120) {
                 push_particles(e, square.sheet, &mut draws);
             }
-            for w in game.effects.waves.iter().filter(|w| w.z >= 4) {
-                push_wave(w, square.sheet, &mut draws);
+            for w in game.effects.waves.iter().filter(|w| (4..120).contains(&w.z)) {
+                push_wave(w, square.sheet, pixel, &mut draws);
             }
         }
         for sh in &game.effects.shatters {
@@ -3011,6 +3046,25 @@ impl App {
         let (t_base, t_len) = (draws.len(), object_draws.len());
         draws.extend(object_draws);
         marks.place_objects(below_base, below_len, t_base, t_len);
+        // The death effects' parts above the T layers: the first circle wave (z 1000), effect
+        // 13's particles (1000) and the explosion sprite (z 10000 in the object layer).
+        if let Some(square) = sheets.frames.get(PARTICLE_TEXTURE) {
+            for w in game.effects.waves.iter().filter(|w| w.z >= 120) {
+                push_wave(w, square.sheet, pixel, &mut draws);
+            }
+            for e in game.effects.emitters.iter().filter(|e| e.z >= 120) {
+                push_particles(e, square.sheet, &mut draws);
+            }
+        }
+        for d in &game.effects.deaths {
+            let frame = d.frame();
+            if let Some((w, h)) = frame_size(&frame) {
+                let [r, g, b, a] = d.color();
+                let t = node_transform(d.pos.0, d.pos.1, d.rotation, d.scale, d.scale, 0.5, 0.5, w, h);
+                let blend = if d.additive { Blend::Additive } else { Blend::Normal };
+                push(&frame, t, false, false, tint([r, g, b], a), blend, &mut draws);
+            }
+        }
         marks.start[13] = draws.len();
 
         // Ground layers (the game's GJGroundLayer): top edge 1 above the physics floor; 128-wide

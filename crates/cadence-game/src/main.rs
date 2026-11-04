@@ -33,6 +33,11 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // CADENCE_CHECK_DEATH=<dir>: compare the death effects with the harness's captures there
+    if let Some(dir) = std::env::var_os("CADENCE_CHECK_DEATH") {
+        print!("{}", cadence_game::death_check::check_real(&DiskFiles { root }, std::path::Path::new(&dir)));
+        return;
+    }
     let level_id = std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(1);
     let quality = match std::env::var("CADENCE_QUALITY").as_deref() {
         Ok("low") => Quality::Low,
