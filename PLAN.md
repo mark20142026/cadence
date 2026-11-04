@@ -148,7 +148,7 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       proximity, camera key 370, HSV tint modes, [ ] the 2016/3642 guide overlays in the editor.
 - [ ] Editor: [x] pause menu options (settings, export, auto-save, get audio, …), [x] edit
       tools (grid, wrench, color), [x] level page tools, [x] level settings buttons (font,
-      song type, 2-player; [ ] the color picker for the channels), [x] music in the
+      song type, 2-player, [x] the channels' colors with the picker), [x] music in the
       editor, [x] trigger popups for the triggers without one (64 more, 126 in all),
       [x] Edit Special popups (1594 1704 1751 2063 2902 2903 3027), [ ] the particle
       editor's fields (2065), [ ] decimal inputs shown as "1.00",
@@ -160,6 +160,9 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       folders / find / select all, [x] The Safe. [ ] My Lists (level lists of your own),
       [x] Import on the web (a .gmd dropped on the page while playing).
 - [x] Icon kit: the effects pages (trails, death effects). [ ] ship fire / animations pages,
-      [ ] the chosen death effect used when dying.
-- [ ] Odds: the flying-corridor camera transition, platformer slope angle.
+      [ ] the chosen death effect used when dying (PlayerObject::playDeathEffect 0x1a176c:
+      2314 lines, per effect: playerExplosion_NN frames, delays, scales, circle waves, particles).
+- [x] Odds: the flying-corridor camera (cadence_core::camera's corridor slide-in and static y,
+      ported from the decompile), platformer slope angle (m_slopeAngle from the slope ridden;
+      verify_all unchanged at 111/126, [ ] no platformer-slope trace recorded yet).
 - [ ] Each piece checked against the real game (harness in corner mode only), tests, docs.

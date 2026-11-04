@@ -66,8 +66,7 @@ fn node_transform(x: f32, y: f32, rotation: f32, sx: f32, sy: f32, ax: f32, ay: 
 /// - x: holds at 15, then trails the player by `view_width/2 - 75`.
 /// - y: dead zone around the view center (player more than 70 above or 40 below moves the
 ///   target), constant easing 10 with dt 0.25 per step, stored as f32, never below 0.
-/// - Flying corridor: centers on the corridor (the game uses a static-camera transition; not yet
-///   verified).
+/// - Flying corridor: the corridor's ground slide-in and static y (`cadence_core::camera`).
 /// The player's icon sprites at `pos`, rotated `rotation` degrees: each sprite centered on its own
 /// frame size (cocos2d content size). Mini scales the whole icon (eased like the game's scale
 /// animation); upside down it's mirrored vertically.

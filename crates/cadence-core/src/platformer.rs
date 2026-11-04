@@ -390,9 +390,9 @@ impl Player {
         }
     }
 
-    /// `m_slopeAngle` (+0x5f0) of the slope ridden.
+    /// `m_slopeAngle` (+0x5f0) of the slope ridden: the slope's angle with its direction's sign,
+    /// as landing on it set it (`slopes.rs`), 0 off slopes.
     pub(crate) fn slope_angle_f32(&self) -> f32 {
-        // TODO(platformer slopes): the game's stored angle; atan of the rect's aspect for now.
-        0.0
+        if self.on_slope { self.slope_rotation as f32 } else { 0.0 }
     }
 }
