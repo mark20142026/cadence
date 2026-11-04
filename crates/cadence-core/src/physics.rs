@@ -1083,6 +1083,12 @@ impl Player {
             self.order_pass(world);
             self.camera_touch_pass(world);
         }
+        // GJBaseGameLayer::update stores this step's ceiling (+0x6bc) after the trigger walk,
+        // from the corridor as the triggers left it: a corridor a camera mode trigger lays out
+        // isn't a moving ceiling on the next step.
+        if let Some(c) = if self.free_mode { None } else { self.corridor } {
+            self.prev_ceiling = self.camera.corridor_bounds(c).1;
+        }
         // A step that kills the player (or ends the level) leaves the rotation as it was.
         if !self.dead && !self.finished {
             self.update_rotation(self.x - x0, self.y - y0);
@@ -2766,10 +2772,20 @@ impl Player {
     fn camera_action(&mut self, action: crate::camera::CameraAction) {
         match action {
             crate::camera::CameraAction::CameraMode { free, padding, no_snap } => {
+                let was_free = self.free_mode;
                 self.free_mode = free;
                 self.corridor_no_snap = no_snap;
                 if let Some(p) = padding {
                     self.camera_padding = p;
+                }
+                // A change of free mode calls updateDualGround: the corridor is laid out again
+                // around the last mode portal with the trigger's key 370 (snapped or not), or
+                // animated out while free.
+                if was_free != free {
+                    self.corridor = match (self.dual_portal_y, self.partner) {
+                        (Some(y), Some(other)) => Some(corridor_at(y, dual_height(self.mode, other), no_snap)),
+                        _ => solo_corridor(self.mode, self.mode_portal_y, no_snap),
+                    };
                 }
             }
             other => self.pending_camera.push(other),
