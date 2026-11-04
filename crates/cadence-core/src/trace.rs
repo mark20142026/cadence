@@ -19,6 +19,9 @@ pub struct Spec {
     pub speed: u32,
     /// `levelstring <file>`: play this raw level string instead of a main level.
     pub level_string: Option<String>,
+    /// `fastseed <n>`: `GameToolbox::fast_srand(n)` after every level reset (the game seeds it
+    /// from the clock), so random triggers roll the same in both.
+    pub fast_seed: Option<u64>,
     /// `watchgroup <group> <file>` lines: the harness writes the group's first objects'
     /// positions every step there.
     pub watch: Vec<(i32, String)>,
@@ -47,6 +50,7 @@ impl Spec {
                 "out" => spec.out = arg.to_owned(),
                 "speed" => spec.speed = arg.parse().unwrap_or(1),
                 "levelstring" => spec.level_string = Some(arg.to_owned()),
+                "fastseed" => spec.fast_seed = arg.parse().ok(),
                 "watchmax" => spec.watch_max = arg.parse().unwrap_or(4),
                 "watchgroup" => {
                     if let (Ok(group), Some(path)) = (arg.parse(), words.next()) {

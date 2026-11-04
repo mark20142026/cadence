@@ -89,6 +89,7 @@ struct Spec {
     std::vector<std::pair<int, std::string>> deathShots;   // deathshot <frame> <path>: frames after
                                                            // player 1 dies ("%d" = the attempt)
     int iconCube = -1, iconColor1 = -1, iconColor2 = -1;   // playericon <cube> <color1> <color2> (glow off)
+    long long fastSeed = -1;                               // fastseed N: fast_srand(N) after every reset
 };
 
 Spec g_spec;
@@ -158,6 +159,7 @@ bool loadSpec() {
             in >> frame >> path;
             g_spec.deathShots.emplace_back(frame, path);
         }
+        else if (cmd == "fastseed") in >> g_spec.fastSeed;
         else if (cmd == "playericon") in >> g_spec.iconCube >> g_spec.iconColor1 >> g_spec.iconColor2;
         else if (cmd == "watchgroup") {
             int group = 0;
@@ -1548,6 +1550,13 @@ class $modify(TraceView, CCEGLView) {
 };
 
 class $modify(TracePlay, PlayLayer) {
+    // fastseed: the random triggers' generator from a known seed (the game seeds it from the
+    // clock here)
+    void resetLevel() {
+        PlayLayer::resetLevel();
+        if (g_active && g_spec.fastSeed >= 0) GameToolbox::fast_srand(uint64_t(g_spec.fastSeed));
+    }
+
     void destroyPlayer(PlayerObject* player, GameObject* object) {
         // bench: the player can't die (the start's anti-cheat check still goes through)
         if (g_active && (g_spec.benchSecs > 0 || g_spec.noclip) && object != m_anticheatSpike) return;
