@@ -33,6 +33,8 @@ mod social;
 mod share;
 mod shop;
 mod paths;
+mod chests_table;
+mod treasure;
 mod reward;
 
 /// A shop item's price (what the game's `GS_6` keeps for it).
@@ -395,6 +397,10 @@ pub enum Btn {
     PathChest,
     PathRewardOpen,
     RewardCollect,
+    TreasureChest(u8),
+    TreasurePrev,
+    TreasureNext,
+    TreasureClose,
     DailySafe,
     DailyPlay,
     // editor::Editor
@@ -673,6 +679,7 @@ pub struct Ui {
     settings: Option<options::Settings>,
     pub garage: garage::Garage,
     pub shop: shop::Shop,
+    treasure: treasure::Treasure,
     /// Paths of Power: the path page open (0-based), its chest's "Reward!" popup
     path_page: Option<usize>,
     path_reward: bool,
@@ -796,6 +803,7 @@ impl Ui {
             settings: None,
             garage: garage::Garage::default(),
             shop: shop::Shop::default(),
+            treasure: treasure::Treasure::default(),
             path_page: None,
             path_reward: false,
             unlock: None,
@@ -2338,6 +2346,11 @@ impl Ui {
                 }
             }
             // CreatorLayer::onTreasureRoom: closed until 5 keys
+            Btn::CreatorDoor if self.progress.flag("treasureroom") || self.progress.currency(21) >= 5 => {
+                self.progress.set_flag("treasureroom");
+                self.treasure = treasure::Treasure::default();
+                self.replay = Some((replay::Scene::Treasure(0), Screen::Creator));
+            }
             Btn::CreatorDoor => {
                 self.dialog = Some(Dialog {
                     title: "The Keymaster".into(),
@@ -2427,6 +2440,11 @@ impl Ui {
                 }
             }
             Btn::RewardCollect => self.unlock = None,
+            Btn::TreasureChest(_) | Btn::TreasurePrev | Btn::TreasureNext | Btn::TreasureClose => {
+                let effect = self.treasure.click_grid(id, &mut self.progress);
+                let back = self.replay.map_or(Screen::Creator, |(_, b)| b);
+                self.treasure_effect(effect, back);
+            }
             Btn::DailyClose | Btn::DailySafe | Btn::DailyPlay | Btn::NewsClose | Btn::NewsPage(_) => match self.online.click_daily(id) {
                 online::Effect::Alert(title, text) => self.alert = Some(Alert { title, text, t: 0.0 }),
                 online::Effect::Sound(s) => {
@@ -2896,7 +2914,12 @@ impl Ui {
                 1 => self.vault_submit(v),
                 _ => {}
             },
-            replay::Scene::Secret(_) | replay::Scene::TreasureRoom => match i {
+            replay::Scene::Treasure(_) => {
+                let Some(pos) = replay::button_center(scene, i) else { return };
+                let effect = self.treasure.click(pos, &mut self.progress);
+                self.treasure_effect(effect, back);
+            }
+            replay::Scene::Secret(_) => match i {
                 0 => leave(self),
                 _ => {
                     self.vault_line = (self.vault_line + 1).rem_euclid(11);
@@ -3384,7 +3407,15 @@ impl Ui {
                 self.replay = Some((replay::Scene::Shop(k), Screen::Garage));
             }
             "secret" => self.replay = Some((replay::Scene::Secret(page.unwrap_or(1) as u8), Screen::Menu)),
-            "treasure" => self.replay = Some((replay::Scene::TreasureRoom, Screen::Creator)),
+            // CADENCE_PAGE: the page (0–4), 10 + tier: that tier's chests (10 keys to spend)
+            "treasure" => {
+                let n = page.unwrap_or(0);
+                self.treasure = treasure::Treasure { page: (n % 10).min(4) as u8, tier: (n >= 13).then_some((n - 10) as u8), grid_page: 0 };
+                if n >= 13 {
+                    self.progress.add_currency(21, 10);
+                }
+                self.replay = Some((replay::Scene::Treasure(self.treasure.page), Screen::Creator));
+            }
             "news" => {
                 self.online.open_news();
                 for _ in 0..1000 {
@@ -4269,6 +4300,11 @@ impl Ui {
     /// A captured screen or popup; the popups (FLAlertLayers) open with their animation.
     fn draw_replay(&self, canvas: &mut Canvas, ctx: &mut Ctx, scene: replay::Scene) {
         let start = canvas.mark();
+        if let replay::Scene::Treasure(_) = scene {
+            canvas.rect(-1.0, -1.0, canvas.width + 2.0, canvas.height + 2.0, [0.0; 3], 1.0);
+            treasure::draw(canvas, ctx, &self.treasure, &self.progress);
+            return;
+        }
         if let replay::Scene::Shop(k) = scene {
             canvas.rect(-1.0, -1.0, canvas.width + 2.0, canvas.height + 2.0, [0.0; 3], 1.0);
             shop::draw(canvas, ctx, k, &self.shop, &self.progress);
@@ -4945,6 +4981,32 @@ mod tests {
         ui.clicked(Btn::EndReplay);
         assert_eq!(ui.take_actions(), vec![Action::Restart]);
         assert!(!ui.hold_end());
+    }
+}
+
+impl Ui {
+    /// What a Treasure Room click did: the Keymaster's line, a chest opening, a shop, leaving.
+    fn treasure_effect(&mut self, effect: treasure::Effect, back: Screen) {
+        match effect {
+            treasure::Effect::None => {}
+            treasure::Effect::Leave => {
+                self.replay = None;
+                self.screen = back;
+            }
+            treasure::Effect::Say(text) => self.dialog = Some(Dialog { title: "The Keymaster".into(), lines: vec![text], page: 0, icon: 2, style: 2, t: 0.0 }),
+            treasure::Effect::Open(chest, items) => {
+                self.progress.save();
+                self.sounds.push("chestClick.ogg");
+                self.unlock = Some(reward::Unlock { chest, items, t: 0.0 });
+            }
+            treasure::Effect::Shop(k) => {
+                self.shop = shop::Shop::default();
+                self.replay = Some((replay::Scene::Shop(k), back));
+            }
+        }
+        if let Some((replay::Scene::Treasure(_), b)) = self.replay {
+            self.replay = Some((replay::Scene::Treasure(self.treasure.page), b));
+        }
     }
 }
 

@@ -16,7 +16,9 @@ pub enum Scene {
     /// `SecretLayer` (the vault), `SecretLayer2` (vault of secrets), `SecretLayer3` (the
     /// dungeon), `SecretLayer4` (the chamber of time)
     Secret(u8),
-    TreasureRoom,
+    /// `SecretRewardsLayer`'s pages: 0 / 1 the chest tiers, 2 the bonuses, 3 the gold
+    /// chest, 4 the shops' ropes
+    Treasure(u8),
     /// The level page's popups: `InfoLayer`, `LevelLeaderboard`, `LikeItemLayer`,
     /// `ProfilePage`, `SongInfoLayer`, `AudioAssetsBrowser`
     Info,
@@ -63,7 +65,7 @@ pub enum Scene {
 /// The scenes that are FLAlertLayer popups (they open with `FLAlertLayer::show`'s scale-in);
 /// the rest are whole screens (a scene transition) or CCBlockLayers (no animation).
 pub fn is_popup(scene: Scene) -> bool {
-    !matches!(scene, Scene::TowerInner | Scene::Shop(_) | Scene::Secret(_) | Scene::TreasureRoom | Scene::EditLevel | Scene::EditorPause)
+    !matches!(scene, Scene::TowerInner | Scene::Shop(_) | Scene::Secret(_) | Scene::Treasure(_) | Scene::EditLevel | Scene::EditorPause)
 }
 
 /// The Edit Special popups with a captured layout.
@@ -111,7 +113,11 @@ impl Scene {
             Scene::Secret(2) => include_str!("scenes/secret2.txt"),
             Scene::Secret(3) => include_str!("scenes/secret3.txt"),
             Scene::Secret(_) => include_str!("scenes/secret4.txt"),
-            Scene::TreasureRoom => include_str!("scenes/secretrewards.txt"),
+            Scene::Treasure(0) => include_str!("scenes/treasure0.txt"),
+            Scene::Treasure(1) => include_str!("scenes/treasure1.txt"),
+            Scene::Treasure(2) => include_str!("scenes/treasure2.txt"),
+            Scene::Treasure(3) => include_str!("scenes/treasure3.txt"),
+            Scene::Treasure(_) => include_str!("scenes/treasure4.txt"),
             Scene::Info => include_str!("scenes/info.txt"),
             Scene::Leaderboard => include_str!("scenes/leaderboard.txt"),
             Scene::Vote => include_str!("scenes/vote.txt"),
