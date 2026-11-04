@@ -173,6 +173,10 @@ impl Progress {
         let part = |total: i64, pct: u32| ((pct as f32 / 100.0) * total as f32) as i64;
         // orbs only for completing (main and rated online levels); diamonds as you progress
         let orbs = if new >= 100 && old < 100 { Self::base_orbs(main, id, stars) } else { 0 };
+        // the stars (or moons) a first completion collects level the active path
+        if new >= 100 && old < 100 && stars > 0 {
+            super::paths::collect(self, stars as i64);
+        }
         let diamonds = if diamonds_level && (1..=10).contains(&stars) { part(stars as i64 + 2, new) - part(stars as i64 + 2, old) } else { 0 };
         self.add_currency(14, orbs);
         self.add_currency(22, orbs);

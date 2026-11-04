@@ -148,6 +148,7 @@ pub fn type_name(kind: u8, id: u16) -> &'static str {
         14 => "Jetpack",
         15 => "Ship Fire",
         _ => match id {
+            6..=15 => ["The Path of Fire", "The Path of Ice", "The Path of Poison", "The Path of Shadow", "The Path of Lava", "The Path of Earth", "The Path of Blood", "The Path of Metal", "The Path of Light", "The Path of Souls"][id as usize - 6],
             4 => "Master Emblem",
             16 => "Music Customizer",
             17 => "Music Unlocker",
@@ -234,8 +235,14 @@ pub fn draw_item(c: &mut Canvas, kind: u8, id: u16, x: f32, y: f32, s: f32, dim:
         10 => c.sprite(&format!("player_special_{id:02}_001.png"), x, y, look(Look::scaled(1.1 * s))),
         11 => c.sprite(&format!("explosionIcon_{id:02}_001.png"), x, y, look(Look::scaled(1.1 * s))),
         15 => c.sprite(&format!("shipfireIcon_{id:02}_001.png"), x, y, look(Look::scaled(1.1 * s))),
+        12 if (6..=15).contains(&id) => c.sprite(&format!("pathIcon_{:02}_001.png", id - 5), x, y, look(Look::scaled(s))),
         _ => c.sprite(&format!("gjItem_{id:02}_001.png"), x, y, look(Look::scaled(1.1 * s))),
     }
+}
+
+/// The icon sheet an icon reward needs (None for colors, trails, …).
+pub fn item_sheet(kind: u8, id: u16) -> Option<String> {
+    icon_kind(kind).map(|k| garage::icon_sheet(k, id as u32))
 }
 
 /// The icon sheets a page needs.
@@ -308,7 +315,12 @@ pub fn draw_buy(c: &mut Canvas, ctx: &mut Ctx, index: u16) {
         name.insert(0, '\n');
     }
     let what = if currency(shop) == 29 { "<cc>Diamond Shards</c>" } else { "<cj>Mana Orbs</c>" };
-    let text = format!("Do you want to <cg>buy</c> this <co>{name}</c>\nfor <cy>{}</c> {what}?", points(price));
+    // the paths are unlocked, not bought
+    let text = if kind == 12 && (6..=15).contains(&id) {
+        format!("Do you want to <cg>unlock</c><co>{name}</c>\nfor <cy>{}</c> {what}?", points(price))
+    } else {
+        format!("Do you want to <cg>buy</c> this <co>{name}</c>\nfor <cy>{}</c> {what}?", points(price))
+    };
     let lines = canvas::rich_lines(c, "bigFont", &text, 999.0);
     canvas::draw_rich(c, "bigFont", &lines, cx, cy - 13.0, 0.4, 35.0, 255);
     for (id, frame, label, x, ls) in [(Btn::ShopCancel, "GJ_button_06.png", "Cancel", cx - 40.5, 0.4149), (Btn::ShopBuy, "GJ_button_01.png", "Buy", cx + 40.5, 0.6)] {

@@ -32,6 +32,8 @@ mod register;
 mod social;
 mod share;
 mod shop;
+mod paths;
+mod reward;
 
 /// A shop item's price (what the game's `GS_6` keeps for it).
 pub fn shop_price(index: u16) -> u32 {
@@ -385,6 +387,14 @@ pub enum Btn {
     MapPromoClose,
     ShopBuy,
     ShopCancel,
+    PathBack,
+    PathInfo,
+    PathUnlock,
+    PathActive,
+    PathReward(u8),
+    PathChest,
+    PathRewardOpen,
+    RewardCollect,
     DailySafe,
     DailyPlay,
     // editor::Editor
@@ -663,6 +673,15 @@ pub struct Ui {
     settings: Option<options::Settings>,
     pub garage: garage::Garage,
     pub shop: shop::Shop,
+    /// Paths of Power: the path page open (0-based), its chest's "Reward!" popup
+    path_page: Option<usize>,
+    path_reward: bool,
+    /// A chest opening (`RewardUnlockLayer`) and the achievements' banners waiting their turn
+    unlock: Option<reward::Unlock>,
+    banners: std::collections::VecDeque<reward::Banner>,
+    /// The achievements unlocked when last checked (None until the first check), and when
+    ach_known: Option<std::collections::BTreeSet<&'static str>>,
+    ach_check: f32,
     /// The online level being played (its name, and where to go back to).
     online_session: Option<crate::online::LevelInfo>,
     pause: Option<pause::Pause>,
@@ -777,6 +796,12 @@ impl Ui {
             settings: None,
             garage: garage::Garage::default(),
             shop: shop::Shop::default(),
+            path_page: None,
+            path_reward: false,
+            unlock: None,
+            banners: std::collections::VecDeque::new(),
+            ach_known: None,
+            ach_check: 0.0,
             online_session: None,
             pause: None,
             pause_hidden: false,
@@ -1072,6 +1097,20 @@ impl Ui {
 
     /// Icon sheets the menus need loaded before they draw.
     pub fn wanted_sheets(&self) -> Vec<String> {
+        let mut v = self.wanted_sheets_screen();
+        if self.online.paths_open {
+            v.extend(paths::wanted_sheets(self.path_page));
+        }
+        if let Some(b) = self.banners.front() {
+            v.extend(achievements::reward_sheet(&b.reward));
+        }
+        if let Some(u) = &self.unlock {
+            v.extend(u.items.iter().filter_map(|it| shop::item_sheet(it.1, it.2)));
+        }
+        v
+    }
+
+    fn wanted_sheets_screen(&self) -> Vec<String> {
         if let Some(s) = &self.social {
             return social::wanted_sheets(s);
         }
@@ -2268,7 +2307,10 @@ impl Ui {
                         self.online.open_gauntlets();
                     }
                     "Quests" => self.online.open_quests(),
-                    "Paths" => self.online.paths_open = true,
+                    "Paths" => {
+                        self.online.paths_open = true;
+                        self.path_page = None;
+                    }
                     "Lists" => {
                         open(self);
                         self.online.open_lists();
@@ -2317,12 +2359,75 @@ impl Ui {
             }
             Btn::MapPromoClose => self.map_promo = false,
             Btn::ShopBuy | Btn::ShopCancel => {
+                let item = self.shop.buying;
                 if let shop::Effect::Bought = self.shop.popup(id == Btn::ShopBuy, &mut self.progress) {
-                    self.sounds.push("buyItem03.ogg");
+                    match self.path_page {
+                        // a path unlocked (GJPathPage::didPurchaseItem): it becomes the active
+                        // one when none is
+                        Some(i) if item == Some(paths::store_item(i)) => {
+                            self.sounds.push("unlockPath.ogg");
+                            if paths::active(&self.progress) == Some(i) || !self.progress.settings.contains_key("activepath") {
+                                paths::set_active(&mut self.progress, i);
+                            }
+                        }
+                        _ => self.sounds.push("buyItem03.ogg"),
+                    }
                     self.progress.save();
                 }
             }
-            Btn::DailyClose | Btn::DailySafe | Btn::DailyPlay | Btn::PathIcon(_) | Btn::NewsClose | Btn::NewsPage(_) => match self.online.click_daily(id) {
+            Btn::PathIcon(i) => {
+                self.path_page = Some(i as usize % 10);
+                self.path_reward = false;
+            }
+            Btn::PathBack => self.path_page = None,
+            Btn::PathInfo => {
+                self.alert = Some(Alert {
+                    title: "Paths of Power".into(),
+                    text: "When you activate a path, <cy>Stars</c> and <cl>Moons</c> you <cg>collect</c> will level up your <co>Path</c>. You can unlock multiple paths, but <cr>only one</c> can be <cr>active</c> at a time.".into(),
+                    t: 0.0,
+                })
+            }
+            Btn::PathUnlock => {
+                if let Some(i) = self.path_page {
+                    let item = paths::store_item(i);
+                    let price = shop::item(item).map_or(0, |it| it.3) as i64;
+                    if self.progress.currency(14) >= price {
+                        self.shop.buying = Some(item);
+                    } else {
+                        self.alert = Some(Alert { title: format!("The Path of {}", paths::NAMES[i]), text: "You cannot <cg>afford</c> that <cl>path</c>.".into(), t: 0.0 });
+                    }
+                }
+            }
+            Btn::PathActive => {
+                if let Some(i) = self.path_page {
+                    if progress_open_path(&self.progress, i) {
+                        paths::set_active(&mut self.progress, i);
+                        self.progress.save();
+                    }
+                }
+            }
+            Btn::PathReward(k) => {
+                if let Some(i) = self.path_page {
+                    let id = format!("geometry.ach.path{:02}.{:02}", i + 1, k);
+                    if let Some(a) = achievements_table::ACHIEVEMENTS.iter().find(|a| a.0 == id) {
+                        let done = achievements::unlocked(a.0, a.3, &self.progress);
+                        self.alert = Some(Alert { title: a.1.into(), text: if done { a.2 } else { a.3 }.into(), t: 0.0 });
+                    }
+                }
+            }
+            Btn::PathChest => self.path_reward = true,
+            Btn::PathRewardOpen => {
+                self.path_reward = false;
+                if let Some(i) = self.path_page
+                    && let Some(items) = paths::claim(&mut self.progress, i)
+                {
+                    self.progress.save();
+                    self.sounds.push("chestClick.ogg");
+                    self.unlock = Some(reward::Unlock { chest: 6, items: items.to_vec(), t: 0.0 });
+                }
+            }
+            Btn::RewardCollect => self.unlock = None,
+            Btn::DailyClose | Btn::DailySafe | Btn::DailyPlay | Btn::NewsClose | Btn::NewsPage(_) => match self.online.click_daily(id) {
                 online::Effect::Alert(title, text) => self.alert = Some(Alert { title, text, t: 0.0 }),
                 online::Effect::Sound(s) => {
                     self.sounds.push(s);
@@ -3294,6 +3399,27 @@ impl Ui {
             "opaths" => {
                 self.screen = Screen::Creator;
                 self.online.paths_open = true;
+                // CADENCE_PAGE 1–10: that path's page; 11–20: the same unlocked, 350 into it
+                // (the captures' made-up state); 21: every path unlocked at 500; 30: a path's
+                // chest opening; 31: an achievement's banner
+                match page.unwrap_or(0) {
+                    n @ 1..=10 => self.path_page = Some(n - 1),
+                    n @ 11..=20 => {
+                        self.progress.set_flag(&format!("bought {}", paths::store_item(n - 11)));
+                        self.progress.add_currency(30 + (n - 11) as u32, 350);
+                        paths::set_active(&mut self.progress, n - 11);
+                        self.path_page = Some(n - 11);
+                    }
+                    21 => {
+                        for i in 0..10 {
+                            self.progress.set_flag(&format!("bought {}", paths::store_item(i)));
+                            self.progress.add_currency(30 + i as u32, 500);
+                        }
+                    }
+                    30 => self.unlock = Some(reward::Unlock { chest: 6, items: paths::CHESTS[0].to_vec(), t: 10.0 }),
+                    31 => self.banners.push_back(reward::Banner { title: "Firestarter".into(), reward: "color_54".into(), t: 1.0 }),
+                    _ => {}
+                }
             }
             "oquests" => {
                 self.screen = Screen::Creator;
@@ -3740,16 +3866,16 @@ impl Ui {
                         if kind > 0 {
                             let items = if kind == 1 { state.small_items.clone() } else { state.big_items.clone() };
                             if let Some(it) = items {
-                                let orbs = self.progress.number("stat14", 0.0) + it.orbs as f32;
-                                let diamonds = self.progress.number("stat13", 0.0) + it.diamonds as f32;
-                                self.progress.set_number("stat14", orbs);
-                                self.progress.set_number("stat13", diamonds);
-                                self.progress.save();
-                                let mut text = format!("<cl>{}</c> Orbs and <cy>{}</c> Diamonds", it.orbs, it.diamonds);
-                                if !it.items.is_empty() {
-                                    text.push_str(&format!(" and {} item{}", it.items.len(), if it.items.len() == 1 { "" } else { "s" }));
+                                // RewardUnlockLayer: orbs, diamonds, then the items (shards, keys)
+                                let mut rewards = vec![(7u8, 0u8, 0u16, it.orbs.max(0) as u32), (8, 0, 0, it.diamonds.max(0) as u32)];
+                                rewards.retain(|r| r.3 > 0);
+                                rewards.extend(it.items.iter().filter(|&&i| i > 0).map(|&i| (i as u8, 0, 0, 1)));
+                                for &(item, k, id, n) in &rewards {
+                                    paths::add_reward(&mut self.progress, item, k, id, n);
                                 }
-                                self.alert = Some(Alert { title: if kind == 1 { "Small Chest" } else { "Big Chest" }.into(), text, t: 0.0 });
+                                self.progress.save();
+                                self.sounds.push("chestClick.ogg");
+                                self.unlock = Some(reward::Unlock { chest: kind as u8, items: rewards, t: 0.0 });
                             }
                         }
                         self.chests = Some((state, web_time::Instant::now()));
@@ -3765,6 +3891,40 @@ impl Ui {
         }
         if let Some(w) = self.writer.as_mut() {
             w.t += dt;
+        }
+        if let Some(u) = self.unlock.as_mut() {
+            let before = u.t;
+            u.t += dt;
+            // RewardUnlockLayer's sounds: the chest lands, opens, each reward comes out
+            for (at, sound) in [(0.36, "chestLand.ogg"), (1.8, "chestOpen01.ogg")] {
+                if before < at && u.t >= at {
+                    self.sounds.push(sound);
+                }
+            }
+            for k in 0..u.items.len() {
+                let at = 1.8 + 0.25 * k as f32;
+                if before < at && u.t >= at {
+                    self.sounds.push("reward01.ogg");
+                }
+            }
+        }
+        if let Some(b) = self.banners.front_mut() {
+            b.t += dt;
+            if b.t >= reward::BANNER_TIME {
+                self.banners.pop_front();
+            }
+        }
+        // newly unlocked achievements drop their banner (checked twice a second)
+        self.ach_check -= dt;
+        if self.ach_check <= 0.0 {
+            self.ach_check = 0.5;
+            let now: std::collections::BTreeSet<&'static str> = achievements_table::ACHIEVEMENTS.iter().filter(|a| achievements::unlocked(a.0, a.3, &self.progress)).map(|a| a.0).collect();
+            if let Some(known) = &self.ach_known {
+                for a in achievements_table::ACHIEVEMENTS.iter().filter(|a| now.contains(a.0) && !known.contains(a.0)) {
+                    self.banners.push_back(reward::Banner { title: a.1.into(), reward: a.4.into(), t: 0.0 });
+                }
+            }
+            self.ach_known = Some(now);
         }
         // the quests' progress: what was collected since each one arrived (orbs, user coins,
         // stars), remembered from the first time it showed
@@ -4015,7 +4175,19 @@ impl Ui {
         }
         if self.screen == Screen::Creator && self.online.paths_open {
             ctx.buttons.clear();
-            self.popup_anim(&mut canvas, "paths", |c| self.online.draw_paths(c, &mut ctx));
+            self.popup_anim(&mut canvas, "paths", |c| paths::draw_layer(c, &mut ctx, &self.progress));
+            if let Some(i) = self.path_page {
+                ctx.buttons.clear();
+                self.popup_anim(&mut canvas, "pathpage", |c| paths::draw_page(c, &mut ctx, &self.progress, i));
+                if let Some(item) = self.shop.buying {
+                    ctx.buttons.clear();
+                    self.popup_anim(&mut canvas, "shopbuy", |c| shop::draw_buy(c, &mut ctx, item));
+                }
+                if self.path_reward {
+                    ctx.buttons.clear();
+                    self.popup_anim(&mut canvas, "pathreward", |c| paths::draw_reward_popup(c, &mut ctx));
+                }
+            }
         }
         if self.screen == Screen::Creator && self.online.quests_open {
             ctx.buttons.clear();
@@ -4067,9 +4239,16 @@ impl Ui {
             ctx.buttons.clear();
             draw_confirm(cf, &mut canvas, &mut ctx);
         }
+        if let Some(u) = &self.unlock {
+            ctx.buttons.clear();
+            reward::draw(&mut canvas, &mut ctx, u);
+        }
         if let Some(a) = &self.alert {
             ctx.buttons.clear();
             draw_alert(a, &mut canvas, &mut ctx);
+        }
+        if let Some(b) = self.banners.front() {
+            reward::draw_banner(&mut canvas, b);
         }
         if let Some((t, _)) = self.fade {
             canvas.rect(-1.0, -1.0, canvas.width + 2.0, canvas.height + 2.0, [0.0; 3], fade_alpha(t));
@@ -4767,4 +4946,9 @@ mod tests {
         assert_eq!(ui.take_actions(), vec![Action::Restart]);
         assert!(!ui.hold_end());
     }
+}
+
+/// A path that can be made the active one: unlocked and not yet at 1000.
+fn progress_open_path(p: &save::Progress, i: usize) -> bool {
+    paths::unlocked(p, i) && paths::progress(p, i) < 1000
 }

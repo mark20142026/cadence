@@ -534,10 +534,18 @@ int g_guiTab = -1;  // garageN: the icon kit's tab to select once it's up
 int g_guiItem = -1;  // <layer>:N: the Nth menu button (depth first) to press once it's up
 std::vector<int> g_guiMore;  // creator:N/M/K: more buttons, pressed 150 frames apart
 int g_guiShotFrame = 140;  // when the frame is saved (online screens wait for the server)
+// .../late:N: the presses as usual, the frame saved N frames after the last (animations)
+int g_guiLate = 0;
 int g_pauseFrames = -1;  // frames since pausegui paused the level
 int g_endFrames = -1;    // frames since endgui let the level complete
 
+/// A gui name with a third press (/then3label: or /then3frame:), which times the others earlier.
+bool threePresses(std::string const& name) {
+    return name.find("/then3label:") != std::string::npos || name.find("/then3frame:") != std::string::npos;
+}
+
 void openGui(std::string const& name) {
+    g_guiLate = name.find("/late:") != std::string::npos ? std::atoi(name.c_str() + name.find("/late:") + 6) : 0;
     auto scene = CCDirector::get()->getRunningScene();
     if (name == "settings") {
         auto l = OptionsLayer::create();
@@ -557,6 +565,55 @@ void openGui(std::string const& name) {
         auto l = GameSettingsLayer::create(nullptr, 0);
         l->show();
         KeybindingsLayer::create(l)->show();
+    } else if (name == "dump:chests") {
+        // every special chest the game defines (paths' rewards, gauntlets', the vaults' and
+        // the treasure room's): key, chest id, reward type, then each object (special reward
+        // item, unlock type, item id, total). Written next to the screenshot (.chests.txt).
+        auto gsm = GameStatsManager::sharedState();
+        gsm->createSecretChestItems();
+        gsm->createSpecialChestItems();
+        auto path = g_spec.guis[g_guiIndex].second + ".chests.txt";
+        if (auto out = std::fopen(path.c_str(), "w")) {
+            for (auto dict : {gsm->m_allSpecialChests, gsm->m_allTreasureRoomChests}) {
+                if (!dict) continue;
+                for (auto [key, obj] : CCDictionaryExt<std::string, GJRewardItem*>(dict)) {
+                    std::fprintf(out, "%s %d %d", key.c_str(), obj->m_chestID, static_cast<int>(obj->m_rewardType));
+                    if (obj->m_rewardObjects) {
+                        for (auto o : CCArrayExt<GJRewardObject*>(obj->m_rewardObjects)) {
+                            std::fprintf(out, " %d:%d:%d:%d", static_cast<int>(o->m_specialRewardItem), static_cast<int>(o->m_unlockType), o->m_itemID, o->m_total);
+                        }
+                    }
+                    std::fprintf(out, "\n");
+                }
+            }
+            for (int i = 1; i <= 10; i++) std::fprintf(out, "pathkey %d %s\n", i, gsm->getPathRewardKey(i).c_str());
+            std::fclose(out);
+        }
+    } else if (name.rfind("paths", 0) == 0) {
+        // GJPathsLayer, opened like the Creator menu's button. paths$: orbs to spare (the
+        // copy's home only), so a path's Unlock opens its PurchaseItemPopup; paths%: the Path
+        // of Fire 350 stars into its levels
+        if (name.find('$') != std::string::npos) GameStatsManager::sharedState()->setStat("14", 50000);
+        if (name.find('%') != std::string::npos) GameStatsManager::sharedState()->setStat("30", 350);
+        // paths#: the Path of Fire bought outright (store item 121), active; paths^: at 1000
+        if (name.find('#') != std::string::npos) {
+            GameStatsManager::sharedState()->setStat("14", 50000);
+            GameStatsManager::sharedState()->purchaseItem(121);
+        }
+        if (name.find('^') != std::string::npos) GameStatsManager::sharedState()->setStat("30", 1000);
+        // paths&: every path bought, each 500 into its levels (their pages' colors and rewards)
+        if (name.find('&') != std::string::npos) {
+            auto gsm = GameStatsManager::sharedState();
+            gsm->setStat("14", 500000);
+            for (int i = 0; i < 10; i++) {
+                gsm->purchaseItem(121 + i);
+                gsm->setStat(std::to_string(30 + i).c_str(), 500);
+            }
+        }
+        auto c = CreatorLayer::create();
+        scene->addChild(c);
+        c->onPaths(nullptr);
+        if (threePresses(name)) g_guiShotFrame = 300;
     } else if (name == "videoadv") {
         MoreVideoOptionsLayer::create()->show();
     } else if (name.rfind("opt", 0) == 0) {
@@ -632,7 +689,7 @@ void openGui(std::string const& name) {
         if (std::getenv("CADENCE_HTTP_REDIRECT")) {
             if (auto menu = scene->getChildByType<MenuLayer>(0)) menu->onMyProfile(nullptr);
         }
-        if (name.find("/then3label:") != std::string::npos) g_guiShotFrame = 300;
+        if (threePresses(name)) g_guiShotFrame = 300;
     } else if (name.rfind("acct", 0) == 0) {
         // acctRegister, acctHelp, acctMore, acctLogin: the Account page, then that button.
         // (Never Save/Load: run these with a logged-out or fake-account home and
@@ -767,6 +824,7 @@ void openGui(std::string const& name) {
     } else if (name.rfind("search", 0) == 0 && name.rfind("searchx", 0) != 0) {
         CCDirector::get()->replaceScene(LevelSearchLayer::scene(0));
     }
+    g_guiShotFrame += g_guiLate;
 }
 
 // The display's notch area: on a notched screen the full-screen viewport's top rows are never
@@ -956,7 +1014,7 @@ void stepGui() {
         if (g_guiItem < int(items.size())) items[g_guiItem]->activate();
         g_guiItem = -1;
     }
-    else if (g_guiFrame == lead + g_guiShotFrame - 2 && name.find("/dumpbuild") != std::string::npos) {
+    else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - 2 && name.find("/dumpbuild") != std::string::npos) {
         // the editor's build tabs: every CreateMenuItem's object id, tab by tab
         if (auto ui = CCDirector::get()->getRunningScene()->getChildByType<LevelEditorLayer>(0) ? CCDirector::get()->getRunningScene()->getChildByType<LevelEditorLayer>(0)->m_editorUI : nullptr) {
             if (FILE* out = std::fopen((path + ".build").c_str(), "w")) {
@@ -973,7 +1031,7 @@ void stepGui() {
             }
         }
     }
-    else if (g_guiFrame == lead + g_guiShotFrame - 80 && name.find("/edit:") != std::string::npos) {
+    else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - 80 && name.find("/edit:") != std::string::npos) {
         // .../edit:<group|object|special>:<object id>: in the editor, place the object, select
         // it and open its Edit Group / Edit Object / Edit Special popup
         auto spec = name.substr(name.find("/edit:") + 6);
@@ -993,27 +1051,31 @@ void stepGui() {
             else if (kind == "pause") ui->onPause(nullptr);
         }
     }
-    else if (g_guiFrame == lead + g_guiShotFrame - (name.find("/then3label:") != std::string::npos ? 120 : 40) && name.find("/thenframe:") != std::string::npos) {
+    else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - (threePresses(name) ? 120 : 40) && name.find("/thenframe:") != std::string::npos) {
         // .../thenframe:<frame>: press the visible button whose sprite shows <frame> (safer than
         // an index: the walk order counts hidden items)
         auto want = name.substr(name.find("/thenframe:") + 11);
         pressFrame(want.substr(0, want.find('/')));
     }
-    else if (g_guiFrame == lead + g_guiShotFrame - 40 && name.find("/then3label:") != std::string::npos) {
+    else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - 40 && name.find("/then3frame:") != std::string::npos) {
+        auto want = name.substr(name.find("/then3frame:") + 12);
+        pressFrame(want.substr(0, want.find('/')));
+    }
+    else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - 40 && name.find("/then3label:") != std::string::npos) {
         // a third press (three-step paths: a page, a notice's OK, a button)
         auto want = name.substr(name.find("/then3label:") + 12);
         pressLabel(want.substr(0, want.find('/')));
     }
-    else if (g_guiFrame == lead + g_guiShotFrame - (name.find("/then3label:") != std::string::npos ? 80 : 15) && name.find("/then2label:") != std::string::npos) {
+    else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - (threePresses(name) ? 80 : 15) && name.find("/then2label:") != std::string::npos) {
         auto want = name.substr(name.find("/then2label:") + 12);
         pressLabel(want.substr(0, want.find('/')));
     }
-    else if (g_guiFrame == lead + g_guiShotFrame - 15 && name.find("/then2frame:") != std::string::npos) {
+    else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - (threePresses(name) ? 80 : 15) && name.find("/then2frame:") != std::string::npos) {
         // .../then2frame:<frame>: a second press, on what the first opened
         auto want = name.substr(name.find("/then2frame:") + 12);
         pressFrame(want.substr(0, want.find('/')));
     }
-    else if (g_guiFrame == lead + g_guiShotFrame - 40 && name.find("/then:") != std::string::npos) {
+    else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - 40 && name.find("/then:") != std::string::npos) {
         // .../edit:...:<id>/then:N: once the popup is up, press its Nth button (depth first)
         int n = std::atoi(name.c_str() + name.find("/then:") + 6);
         std::vector<CCMenuItemSpriteExtra*> items;
