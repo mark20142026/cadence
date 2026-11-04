@@ -125,6 +125,9 @@ the web page (`?noclip&nocache`).
 | `CADENCE_LEVEL_FILE=<file>` | `?level=<id>` | Play a saved level string (web: `bench/<id>.txt`). |
 | `CADENCE_DEBUG_CAMERA`, `_COLORS=<ids>`, `_FX`, `_ORDER`, `_WORLD`, `_COUNTS`, `_OBJ=<id>` | | Logs for camera triggers, channel colors, shader/gradient state, the order-channel walk, world stats, physics counters, one object type. |
 | `CADENCE_DUMP_DRAWS=<file>` | | Every sprite drawn in the screenshot frame (for `tools/sprite_diff.py`). |
+| `CADENCE_DEATH_EFFECT=<1..20>` | | Screenshots: the death effect to play (headless runs read no save). |
+| `CADENCE_CHECK_DEATH=<dir>` | | Compare the 20 death effects with the harness's `deathshot` captures in `<dir>` and exit. |
+| `CADENCE_EDITOR_LEVEL=<file>`, `CADENCE_EDITOR_CAM=x,y` | | Editor screenshots: these objects (a level string), nothing selected, BPM markers on, the view's bottom left. |
 
 ## Benchmarks
 
@@ -207,7 +210,7 @@ Besides inputs, a spec can ask for `screenshot <step> <file>`, `dumplevel <file>
 object with its rect), `particles <step> <file.csv>` (every live particle system: position in
 the level, settings, plus `<file>.layers` with the object layer's z order), `triggers
 <file.csv>` (every trigger the game fires, with its settings and the player's position) and
-`watchgroup <group> <file.csv>` (positions of a group's first objects each step, with their node
+`deatheffect N` (per attempt), `playericon <cube> <c1> <c2>`, `deathshot <frame> <file>` (frames after player 1 dies: screenshot, scene, particles, circle waves), `fastseed N` (`fast_srand(N)` after every reset; `cadence verify` honors it too), `gui editlevel:0/edit:string:<file>` (a level string's objects in the editor), `watchgroup <group> <file.csv>` (positions of a group's first objects each step, with their node
 opacity, scale, color and visibility; `watchmax N` objects, 4 by default). For
 benchmarks: `bench <seconds> <file>`, `noclip`, `corner` (never activates itself; the window is
 parked on top past the screen's bottom-right corner, ignoring the mouse; launch it with

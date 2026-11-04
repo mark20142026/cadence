@@ -143,9 +143,11 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       Area Stop, Reset, Persistent Item, Progress, BG Effect, BG/MG speed, Touch, Spawn Particle,
       Checkpoint, Edit SFX/Song; 1931/3655 confirmed inert; 2016/3642 editor-only. Checked
       against real-game traces (advanced follow, keyframes, enter effects, camera, reverse).
-      Still open: group parents/linked objects in advanced follow & area, keyframe curves /
-      reference-only / closed loops, the game's random rolls, edit SFX/song speed and
-      proximity, camera key 370, HSV tint modes, [ ] the 2016/3642 guide overlays in the editor.
+      [x] the game's random rolls (fast_rand, traced with a fixed seed), [x] camera key 370,
+      [x] area tint HSV mode (enter tint's was ported), [x] area triggers fire by position,
+      [x] the 2016/3642 guide overlays in the editor. Still open: group parents/linked objects
+      in advanced follow & area, keyframe curves / reference-only / closed loops, edit
+      SFX/song speed and proximity.
 - [ ] Editor: [x] pause menu options (settings, export, auto-save, get audio, …), [x] edit
       tools (grid, wrench, color), [x] level page tools, [x] level settings buttons (font,
       song type, 2-player, [x] the channels' colors with the picker), [x] music in the
@@ -164,9 +166,10 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       (shards unlock and level them), the shops buying with orbs/diamonds, the chest
       opening animation (RewardUnlockLayer).
 - [x] Icon kit: the effects pages (trails, death effects). [ ] ship fire / animations pages,
-      [ ] the chosen death effect used when dying (PlayerObject::playDeathEffect 0x1a176c:
-      2314 lines, per effect: playerExplosion_NN frames, delays, scales, circle waves, particles).
+      [x] the chosen death effect used when dying (PlayerObject::playDeathEffect 0x1a176c:
+      all 20 checked against real captures, `CADENCE_CHECK_DEATH`).
 - [x] Odds: the flying-corridor camera (cadence_core::camera's corridor slide-in and static y,
       ported from the decompile), platformer slope angle (m_slopeAngle from the slope ridden;
-      verify_all unchanged at 111/126, [ ] no platformer-slope trace recorded yet).
+      verify_all unchanged at 111/126, [x] platformer-slope trace recorded: re/traces/pfslope,
+      [ ] it differs from step 259: uphill the real speed falls faster, see JOURNAL).
 - [ ] Each piece checked against the real game (harness in corner mode only), tests, docs.

@@ -1498,3 +1498,70 @@ are in the scratch `DecompileTyped.java`; with them Ghidra keeps the float expre
   visible 3662 (`generateVisibilityGroups` 0xd8030: group 51's objects activate together in
   `preUpdateVisibility`; Cadence's culling already draws anything in view, so nothing to do);
   BPM 3642 is an editor guide.
+
+## Death effects, editor guides, fast_rand, camera 370, area HSV (2026-11-05, death agent)
+
+- **playDeathEffect** (0x1a176c): the effect id is GameManager +0x368 − +0x36c (the seeded
+  value); in practice mode it's the default unless the player's `m_practiceDeathEffect` (+0x7fb,
+  game variable 0100) is set. The player fades out over 0.05 s (`CCFadeTo` tag 4). A switch on
+  id − 2 (jump table at 0x1008e14c0) holds one case per effect 2–20, the default case is effect
+  1. Each case: a `CCSprite` of `playerExplosion_NN_001` (NN = id − 1; 15, 17–20 start from
+  `_002`) added to the object layer (`m_objectLayer`, PlayLayer +0xf50) at z 10000, at the
+  player (6 higher for 9, 13–16), scale = size · roll (size = vehicle size × 0.9 when ≥ 1;
+  rolls 1.5 ± 0.2, 1.2 ± 0.2, 1.4 ± 0.2, 1.2 ± 0.1, 1.25 ± 0.15, 1.3 ± 0.15, 1.3 ± 0.2,
+  0.8 + 0.1R, 1 ± 0.1, 1.5 ± 0.3, 1.25 ± 0.1, 0.9 + 0.2R, 1 + 0.4R, 1 + 0.2R, 1.4 + 0.4R,
+  1 + 0.3R, 1 + 0.2R, 1 + 0.3R, 1 + 0.3R for 2..20), rotation ±45 (8: ±90, 9: −45R, 16: 360R,
+  18/19: ±180, 7/11/17: none, 14: 90/180/270 at a quarter each in turn), additive
+  (`setBlendFunc(GL_SRC_ALPHA, GL_ONE)`) for 9, 11, 14, 15, 18; a `CCAnimation` of frames
+  start..last at a rolled delay (e.g. 2: frames 1 or 2 (coin) to 11 at 0.05 + 0.01R), then
+  `removeMeAndCleanup`; beside it `CCDelayTime(d · a)` + `CCFadeOut(d · b)` — for 12–15 the case
+  builds that sequence but never runs it, 16 and 20 have none, 7 uses fixed 0.44 / 0.33.
+  Effect 11 tints white → main color over 2 delays, then → secondary over 8. The particles:
+  `explodeEffect`, `explodeEffectGrav` or `explodeEffectVortex` grouped, at z 99 / 101 / 1000,
+  with their own start / end colors (vars 0,0,0,1), speed × 0.8–1.2, node scale (size, the
+  sprite's scale or both), position spread × 1.2, start / end size × 0.5–1.2 / × 0.1–0.5, angle
+  spread 30 and normal blending for the fire ones (4, 7, 17, 19, 20). Two `CCCircleWave`s:
+  size·10 → size·(85..125) over 0.4–0.6 s (or delay × 10 / 14), the first at z 1000 (over the T
+  layers), the second at z 99 drawn as a ring (+0x160 = 1, line width +0x164 = 10 pixels:
+  `glLineWidth` counts framebuffer pixels), colors and opacity mods per effect (table in
+  `crates/cadence-game/src/death.rs`). Every effect but 20 ends with the shatter
+  (`ExplodeItemNode`, game variable 0153 off). The sheet is loaded by
+  `PlayLayer::setupHasCompleted` → `GameManager::loadDeathEffect` only for the chosen effect.
+  Actions (sprite animation, fades, the waves' tweens) start one frame late: cocos2d's first
+  action step runs at elapsed 0, so frame 1 after death still shows the created frame / the
+  start radius. The death sound is `explode_11.ogg` for every effect.
+- **Checked**: the harness's new `deatheffect N` (per attempt), `playericon` and `deathshot
+  <frame> <path>` (frames after death: screenshot, scene dump, particle systems, every
+  CCCircleWave's radius / opacity / color / outline / width / opacity mod) recorded all 20 on
+  Stereo Madness's first spike; `CADENCE_CHECK_DEATH=<dir>` reads the real rolls back (sprite
+  scale, rotation, first frame and delay fitted to the captured frames) and steps Cadence's
+  effect with them: 20/20 agree in every frame, opacity, color, position, blend, wave radius /
+  alpha and particle setting.
+- **Editor guides**: Camera Guide 2016 (`LevelEditorLayer::updateDebugDraw` 0xba678, keys 371
+  zoom held to 0.4..3, 28 / 29 offset, 506 preview opacity; drawn only above 0): a green
+  480 × 320 ÷ zoom rectangle, and an orange (255, 128, 0) one of the window's size ÷ zoom when
+  the window isn't 3:2, both centered on the object plus the offset with the center held at
+  least half the height up; a yellow line at the object's x (minus the layer's gameplay offset
+  +0x2a4 ÷ zoom, 0 in the editor) across the green one; CCDrawNode lines of radius 0.25 ÷ the
+  layer scale. BPM 3642 (`DrawGridLayer::draw` 0xbda9c, only with GameManager's
+  `showBPMMarkers` +0x39a, saved, off by default, toggled by the edit tab's `edit_eBPMBtn`):
+  keys 498 BPM, 499 speed index (0 normal 311.58, 1 slow 251.16, 2 fast 387.42, 3 faster 468,
+  4 fastest 576 units/s), 501 beats per bar, 500 disabled, 10 duration; a 1-pixel line every
+  speed · 60 / (BPM · max(1, 501)) from the object's x for duration · speed, every 501st yellow
+  and the rest orange (all yellow when 501 < 1).
+- **fast_rand** (`GameToolbox::fast_rand` 0x44d2b8): seed = seed · 214013 + 2531011 (64-bit),
+  result (seed >> 16) & 0x7fff; `fast_rand_0_1` = that / 32767. Seeded by `fast_srand` in
+  `PlayLayer::resetLevel` from `gettimeofday` (seconds · microseconds) unless a stored seed
+  (+0x3208) is used. Random 1912: rand01 · 100 ≤ chance; advanced random 2068
+  (`getRandomGroupID` 0x161e14): k = round(sum of weights · rand01) and the first entry whose
+  running sum reaches k. Advanced follow, spawn triggers' variance and `tryGetObject` draw from
+  the same generator.
+- **Camera key 370** (+0x6e0 → GJBaseGameLayer +0x312, set by `updateCameraMode` and by the
+  mode portal in `playerWillSwitchMode`): `animateInDualGroundNew` doesn't floor the corridor
+  to the 30 grid.
+- **Area tint HSV** (`processAreaTintGroupAction` 0xfaafc, key 278): per target with weight
+  v < 1, the object's current color through `transformColor(getMultipliedHSV(1 − v, hsv 49))`;
+  `getMultipliedHSV(k)` (0x44aa84): h · k, s and v · k when absolute, else 1 + (x − 1) · k.
+  Area triggers (3006–3015) are object type 45 and fire by position like type 20 triggers.
+- **Platformer slopes**: `m_slopeAngle` (+0x5f0) keeps its value off slopes in the real traces
+  (0.785 after leaving a 45° slope); `updateMove` only reads it while on the slope.
