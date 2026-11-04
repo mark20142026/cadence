@@ -131,6 +131,53 @@ impl Progress {
         self.levels.iter().filter(|(id, _)| **id > 5100 || (23..1000).contains(*id) && **id != 3001).map(|(_, p)| p.coins.count_ones()).sum()
     }
 
+    /// A currency (Cadence keeps the game's stat numbers: 14 orbs, 13 diamonds, 22 orbs ever
+    /// collected, 21 keys).
+    pub fn currency(&self, stat: u32) -> i64 {
+        self.number(&format!("stat{stat}"), 0.0) as i64
+    }
+
+    pub fn add_currency(&mut self, stat: u32, n: i64) {
+        let v = self.currency(stat) + n;
+        self.set_number(&format!("stat{stat}"), v.max(0) as f32);
+    }
+
+    /// `GameStatsManager::getBaseCurrency`: a level's orbs for completing it. Main levels: 20
+    /// per star + 20 (the demons 14, 18, 20: 400); rated online levels by stars (2–10:
+    /// 40, 60, 100, 140, 180, 220, 280, 340, 400; table at 0x1008df040).
+    pub fn base_orbs(main: bool, id: i32, stars: i32) -> i64 {
+        if main {
+            return if matches!(id, 14 | 18 | 20) { 400 } else { stars as i64 * 20 + 20 };
+        }
+        const TABLE: [i64; 9] = [40, 60, 100, 140, 180, 220, 280, 340, 400];
+        if (2..=10).contains(&stars) { TABLE[(stars - 2) as usize] } else { 0 }
+    }
+
+    /// A new best on a level: the orbs (and on daily / gauntlet levels the diamonds) for the
+    /// progress gained, as the game counts them (`awardDiamondsForLevel`: the total times the
+    /// new percent, minus the total times the percent already rewarded); every 500 orbs
+    /// collected bring a key (`shouldAwardSecretKey`). Returns (orbs, diamonds, keys) gained.
+    pub fn award_progress(&mut self, id: i32, main: bool, stars: i32, percent: u32, diamonds_level: bool) -> (i64, i64, i64) {
+        let key = format!("rewarded{id}");
+        let old = self.number(&key, 0.0) as u32;
+        let new = percent.min(100);
+        if new <= old {
+            return (0, 0, 0);
+        }
+        self.set_number(&key, new as f32);
+        let part = |total: i64, pct: u32| ((pct as f32 / 100.0) * total as f32) as i64;
+        // orbs only for completing (main and rated online levels); diamonds as you progress
+        let orbs = if new >= 100 && old < 100 { Self::base_orbs(main, id, stars) } else { 0 };
+        let diamonds = if diamonds_level && (1..=10).contains(&stars) { part(stars as i64 + 2, new) - part(stars as i64 + 2, old) } else { 0 };
+        self.add_currency(14, orbs);
+        self.add_currency(22, orbs);
+        self.add_currency(13, diamonds);
+        let keys_due = self.currency(22) / 500;
+        let keys = (keys_due - self.currency(21)).max(0);
+        self.add_currency(21, keys);
+        (orbs, diamonds, keys)
+    }
+
     /// Load from Cadence's save (empty if there is none).
     pub fn load() -> Progress {
         let mut p = read().map(|t| Progress::parse(&t)).unwrap_or_default();
@@ -201,6 +248,19 @@ fn write(text: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rewards_like_the_game() {
+        let mut p = super::Progress::default();
+        // Stereo Madness (1 star): 40 orbs once, on completion
+        assert_eq!(p.award_progress(1, true, 1, 100, false), (40, 0, 0));
+        assert_eq!(p.award_progress(1, true, 1, 100, false), (0, 0, 0));
+        // a 10-star daily: diamonds with progress (12 at 100%), 400 orbs on completion
+        assert_eq!(p.award_progress(5, false, 10, 50, true), (0, 6, 0));
+        assert_eq!(p.award_progress(5, false, 10, 100, true), (400, 6, 0));
+        // 500 orbs collected: a key
+        assert_eq!(p.award_progress(14, true, 10, 100, false), (400, 0, 1));
+    }
+
     use super::*;
 
     #[test]

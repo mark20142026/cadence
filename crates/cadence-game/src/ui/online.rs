@@ -68,6 +68,9 @@ const DIFFS: [(i32, f32); 8] = [(-1, -162.8), (1, -120.8), (2, -73.6), (3, -26.4
 const LENS: [(&str, f32); 6] = [("Tiny", -122.8), ("Short", -72.6), ("Medium", -13.4), ("Long", 40.7), ("XL", 79.6), ("Plat.", 119.7)];
 
 pub struct Browser {
+    /// Each quest's progress (collected since it arrived) and whether it was claimed, filled
+    /// by the menus from the progress each frame.
+    pub quest_state: Vec<(i64, bool)>,
     /// The Rate Difficulty popup: the stars chosen (0 none).
     pub rating: Option<u8>,
     /// My Levels: the folder shown (0 all), the name filter and whether it's being typed, the
@@ -160,6 +163,7 @@ pub struct Browser {
 impl Default for Browser {
     fn default() -> Browser {
         Browser {
+            quest_state: Vec::new(),
             rating: None,
             my_folder: 0,
             my_find: None,
@@ -1904,8 +1908,25 @@ impl Browser {
             c.text("goldFont", &format!("Collect {amount} {what}."), cx - 140.0, y + 9.0, Look::scaled(0.5).anchor(0.0, 1.0));
             c.sprite("GJ_bigDiamond_001.png", cx + 118.0, y, Look::scaled(0.8));
             c.text("bigFont", &format!("{reward}x"), cx + 98.0, y, Look::scaled(0.6).anchor(1.0, 0.5));
-            c.sprite("GJ_progressBar_001.png", cx - 140.0, y - 13.0, Look::default().anchor(0.0, 1.0).scale_xy(0.5, 0.525).rgb([0, 0, 0]).alpha(125));
-            c.text("bigFont", &format!("0/{amount}"), cx - 55.0, y - 18.0, Look::scaled(0.28));
+            let (got, claimed) = self.quest_state.get(k).copied().unwrap_or((0, false));
+            let got = got.clamp(0, *amount as i64);
+            if claimed {
+                c.text("goldFont", "Claimed", cx - 55.0, y - 18.0, Look::scaled(0.5));
+            } else if got >= *amount as i64 {
+                // ChallengeNode: done, the Claim button
+                let id = Btn::QuestClaim(k as u8);
+                let f = ctx.factor(id);
+                c.nine_slice("GJ_button_01.png", cx - 55.0, y - 18.0, 80.0 * f, 25.0 * f, Look::default());
+                c.text("goldFont", "Claim", cx - 55.0, y - 16.5, Look::scaled(0.6 * f));
+                ctx.area(id, cx - 55.0, y - 18.0, 80.0, 25.0);
+            } else {
+                c.sprite("GJ_progressBar_001.png", cx - 140.0, y - 13.0, Look::default().anchor(0.0, 1.0).scale_xy(0.5, 0.525).rgb([0, 0, 0]).alpha(125));
+                let frac = got as f32 / (*amount).max(1) as f32;
+                if frac > 0.0 {
+                    c.sprite("GJ_progressBar_001.png", cx - 139.0, y - 14.0, Look::default().anchor(0.0, 1.0).scale_xy(0.5 * 0.98 * frac, 0.45).rgb([0, 255, 0]));
+                }
+                c.text("bigFont", &format!("{got}/{amount}"), cx - 55.0, y - 18.0, Look::scaled(0.28));
+            }
         }
         let left = (self.quests_left as f32 - self.t).max(0.0) as i64;
         if !self.quests.is_empty() {

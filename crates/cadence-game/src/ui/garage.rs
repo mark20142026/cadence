@@ -174,13 +174,14 @@ impl Garage {
         c.sprite("floorLine_001.png", cx, h - 110.0, Look::default().scale_xy(1.6, 1.0));
 
         // the stats, top right: number, then icon
+        let stars: u32 = p.levels.iter().filter(|(_, l)| l.best >= 100).map(|(id, _)| super::level_info(*id).stars).sum();
         let stats = [
-            ("GJ_starsIcon_001.png", 0u32),
+            ("GJ_starsIcon_001.png", stars),
             ("GJ_moonsIcon_001.png", 0),
             ("GJ_coinsIcon_001.png", p.secret_coins()),
-            ("GJ_coinsIcon2_001.png", 0),
-            ("currencyOrbIcon_001.png", 0),
-            ("GJ_diamondsIcon_001.png", 0),
+            ("GJ_coinsIcon2_001.png", p.user_coins()),
+            ("currencyOrbIcon_001.png", p.currency(14) as u32),
+            ("GJ_diamondsIcon_001.png", p.currency(13) as u32),
             ("currencyDiamondIcon_001.png", 0),
         ];
         for (i, (icon, n)) in stats.iter().enumerate() {

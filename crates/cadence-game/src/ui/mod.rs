@@ -235,6 +235,8 @@ pub enum Btn {
     // the search's Advanced Options popup
     FilterToggle(u8),
     FilterClose,
+    // a finished quest's Claim
+    QuestClaim(u8),
     // the level page's Rate Difficulty popup
     RateStar(u8),
     RateCancel,
@@ -1726,6 +1728,18 @@ impl Ui {
         match id {
             Btn::MenuProfile => self.social = Some(social::Social::open()),
             Btn::ChannelOk => self.channel_pick = None,
+            // a quest's reward: its diamonds, once
+            Btn::QuestClaim(k) => {
+                if let Some((kind, amount, reward, name)) = self.online.quests.get(k as usize).cloned() {
+                    let key = format!("questdone {kind} {amount} {name}").replace(' ', "_");
+                    if !self.progress.settings.contains_key(&key) {
+                        self.progress.settings.insert(key, "1".into());
+                        self.progress.add_currency(13, reward as i64);
+                        self.progress.save();
+                        self.alert = Some(Alert { title: "Quest Complete".into(), text: format!("You got <cl>{reward}</c> diamonds!"), t: 0.0 });
+                    }
+                }
+            }
             Btn::WriteField(f) => {
                 if let Some(w) = self.writer.as_mut() {
                     w.field = f;
@@ -3425,8 +3439,13 @@ impl Ui {
             // PlayLayer::destroyPlayer saves the normal-mode best.
             let pct = (status.percent as u32).min(100);
             let p = self.progress.entry(id);
-            if pct > p.best {
+            if pct > p.best && !status.practice {
                 p.best = pct;
+                // a daily level's diamonds come with progress, not only completion
+                if let Some(info) = self.online_session.as_ref().filter(|l| l.id == id && l.daily_index > 0) {
+                    let stars = info.stars;
+                    self.progress.award_progress(id, false, stars, pct, true);
+                }
             }
             self.progress.save();
         }
@@ -3447,6 +3466,18 @@ impl Ui {
             }
             s.new_coins = new;
             s.completed = true;
+            // the level's rewards for the progress gained (main levels; rated online levels from
+            // their page; dailies give diamonds)
+            if !status.practice && id != -100 {
+                let main = (1..=22).contains(&id) || id == 3001 || (5001..=5004).contains(&id);
+                let (stars, daily) = if main {
+                    (level_info(id).stars as i32, false)
+                } else {
+                    let info = self.online_session.as_ref().filter(|l| l.id == id);
+                    (info.map_or(0, |l| l.stars), info.is_some_and(|l| l.daily_index > 0))
+                };
+                self.progress.award_progress(id, main, stars, 100, daily);
+            }
             // your own level completed in normal mode from its page: verified
             if id == -100 && !status.practice && !self.editor_playtest {
                 if let Some(slot) = self.verify_slot {
@@ -3699,6 +3730,29 @@ impl Ui {
         }
         if let Some(w) = self.writer.as_mut() {
             w.t += dt;
+        }
+        // the quests' progress: what was collected since each one arrived (orbs, user coins,
+        // stars), remembered from the first time it showed
+        if self.online.quests_open && !self.online.quests.is_empty() {
+            let stars: i64 = self.progress.levels.iter().filter(|(_, l)| l.best >= 100).map(|(id, _)| level_info(*id).stars as i64).sum();
+            let totals = [self.progress.currency(22), self.progress.user_coins() as i64, stars];
+            let quests = self.online.quests.clone();
+            let mut state = Vec::new();
+            for (kind, amount, _, name) in quests {
+                let tag = format!("{kind} {amount} {name}").replace(' ', "_");
+                let total = totals[(kind as usize).clamp(1, 3) - 1];
+                let base_key = format!("questbase {tag}").replace(' ', "_");
+                let base = match self.progress.settings.get(&base_key).and_then(|v| v.parse::<i64>().ok()) {
+                    Some(b) => b,
+                    None => {
+                        self.progress.settings.insert(base_key, total.to_string());
+                        self.progress.save();
+                        total
+                    }
+                };
+                state.push((total - base, self.progress.settings.contains_key(&format!("questdone_{tag}"))));
+            }
+            self.online.quest_state = state;
         }
         // the editor's Auto-Save: every 5 minutes of editing
         if self.screen == Screen::Editor && self.progress.var("autosave", false) {

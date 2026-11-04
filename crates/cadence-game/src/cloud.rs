@@ -143,6 +143,15 @@ pub fn import(game_xml: &str, p: &mut Progress) -> Result<(), String> {
             e.jumps = e.jumps.max(jumps);
         }
     }
+    // the currencies (GS_value stats 13 diamonds, 14 orbs, 21 keys, 22 orbs ever collected)
+    if let Some(values) = get(&root, "GS_value").and_then(Value::as_dict) {
+        for stat in [13u32, 14, 21, 22] {
+            let v = num(values, &stat.to_string()) as i64;
+            if v > p.currency(stat) {
+                p.add_currency(stat, v - p.currency(stat));
+            }
+        }
+    }
     // coins: main levels' `unique_<id>_<n>` and the vaults' `unique_<name>` in GS_value, online
     // levels' `<id>_<n>` in GS_3 (verified) and GS_4 (pending)
     if let Some(values) = get(&root, "GS_value").and_then(Value::as_dict) {
@@ -238,6 +247,13 @@ pub fn merge(game_xml: &str, p: &Progress) -> Result<String, String> {
             if key.split('_').count() == 3 {
                 new_coins += 1;
             }
+        }
+    }
+    // the currencies: the larger of the two
+    for stat in [13u32, 14, 21, 22] {
+        let mine = p.currency(stat).max(0) as u32;
+        if mine > num(values, &stat.to_string()) {
+            set(values, &stat.to_string(), Value::Str(mine.to_string()));
         }
     }
     for (stat, add) in [("3", new_levels), ("6", new_stars), ("8", new_coins)] {
