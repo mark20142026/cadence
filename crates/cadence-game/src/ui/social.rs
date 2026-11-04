@@ -24,9 +24,12 @@ pub enum Page {
     /// The legacy messages: 0 received, 1 sent
     Messages(u8),
     Notifications,
+    /// Your comments on levels (`InfoLayer` in comment-history mode)
+    History,
 }
 
 pub enum Msg {
+    History(Vec<crate::online::Comment>),
     Notifications(Result<usize, ()>),
     Messages(Vec<social::Message>),
     Opened(Box<social::Message>),
@@ -50,6 +53,8 @@ pub enum Effect {
 }
 
 pub struct Social {
+    /// Your comment history.
+    pub history: Option<Vec<crate::online::Comment>>,
     /// The notifications' count, or an error (`NotificationsPage`).
     pub notifications: Option<Result<usize, ()>>,
     /// The legacy messages listed, and the one opened.
@@ -73,7 +78,7 @@ pub fn row_btn(what: u16, row: usize) -> Btn {
 
 impl Social {
     pub fn open() -> Social {
-        let mut s = Social { notifications: None, messages: None, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
+        let mut s = Social { history: None, notifications: None, messages: None, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
         s.load();
         s
     }
@@ -136,6 +141,17 @@ impl Social {
                 })
             }
             Page::Settings => return,
+            Page::History => {
+                self.history = None;
+                crate::net::spawn(async {
+                    let id = crate::gjapi::identity();
+                    let user = id.account.as_ref().map_or(0, |a| a.user_id);
+                    match crate::net::post("getGJCommentHistory.php", &crate::gjapi::comment_history_form(&id, user, 0, false)).await {
+                        Ok(b) if !b.trim().starts_with('-') => Msg::History(crate::online::parse_comments(&b).0),
+                        _ => Msg::History(Vec::new()),
+                    }
+                })
+            }
             Page::Notifications => {
                 self.notifications = None;
                 crate::net::spawn(async {
@@ -191,6 +207,7 @@ impl Social {
             Msg::Users(u) => self.users = Some(u),
             Msg::Messages(m) => self.messages = Some(m),
             Msg::Notifications(n) => self.notifications = Some(n),
+            Msg::History(h) => self.history = Some(h),
             Msg::Opened(m) => self.open_message = Some(*m),
             Msg::Error(e) => {
                 self.users.get_or_insert_with(Vec::new);
@@ -230,6 +247,7 @@ impl Social {
             Page::Settings => 0.0,
             Page::Messages(_) => self.messages.as_ref().map_or(0, Vec::len) as f32 * 50.0 - 188.0,
             Page::Notifications => 0.0,
+            Page::History => s_len(&self.history) as f32 * 44.0 - 176.0,
         };
         self.scroll = (self.scroll + delta).clamp(0.0, rows.max(0.0));
     }
@@ -294,7 +312,11 @@ impl Social {
             (Page::Messages(_), Btn::Replay(11)) if !self.busy() => self.load(),
             (Page::Messages(_), Btn::Replay(_)) => {}
             (Page::Profile, Btn::Replay(28)) => return Effect::Write { to: None, title: "Add Comment" },
-            (Page::Profile, Btn::Replay(20)) => return Effect::Alert("Comment History".into(), "Your comments on levels show on each level's page.".into()),
+            (Page::Profile, Btn::Replay(20)) => self.go(Page::History),
+            (Page::History, Btn::MsgClose) => {
+                self.stack.pop();
+                self.load();
+            }
             (Page::Profile, Btn::Social(code)) => {
                 let (what, row) = (code / 1000, (code % 1000) as usize);
                 let Some(post) = self.profile.as_ref().and_then(|p| p.2.get(row)).cloned() else { return Effect::None };
@@ -420,6 +442,7 @@ pub fn draw(s: &Social, c: &mut Canvas, ctx: &mut Ctx) {
         // over your profile, as the game opens it
         Page::Messages(tab) => draw_messages(s, c, ctx, dx, tab),
         Page::Notifications => draw_notifications(s, c, ctx, dx),
+        Page::History => draw_history(s, c, ctx, dx),
         Page::Settings => {
             draw_profile(s, c, ctx, dx);
             ctx.buttons.clear();
@@ -680,6 +703,52 @@ fn draw_messages(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32, tab: u8) {
     c.clip = None;
 }
 
+fn s_len<T>(v: &Option<Vec<T>>) -> usize {
+    v.as_ref().map_or(0, Vec::len)
+}
+
+/// Your comment history: the comments popup's frame and its comment rows (44 high: your name,
+/// the level's percent, the text, likes, age).
+fn draw_history(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
+    let cx = 284.5 + dx;
+    c.nine_slice("GJ_square01.png", cx, 160.0, 440.0, 290.0, Look::default());
+    c.text("bigFont", "Comment History", cx, 285.0, Look::scaled(0.8));
+    ctx.button(c, Btn::MsgClose, "GJ_closeBtn_001.png", 74.5 + dx, 295.0, Look::default(), 1.5);
+    let (ax, top) = (107.5 + dx, 253.0);
+    for (x, flip) in [(ax, false), (ax + 354.0, true)] {
+        c.sprite("GJ_commentSide_001.png", x, 77.0, Look::default().anchor(if flip { 1.0 } else { 0.0 }, 0.0).scale_xy(if flip { -1.0 } else { 1.0 }, 5.9));
+    }
+    let Some(list) = &s.history else {
+        super::online::loading_circle(c, cx, 160.0, s.t);
+        return;
+    };
+    if list.is_empty() {
+        c.text("goldFont", "No comments", cx, 160.0, Look::scaled(0.6));
+        return;
+    }
+    let name = crate::gjapi::linked_account().map(|(n, _)| n).unwrap_or_default();
+    c.clip = Some([ax, 77.0, ax + 354.0, top]);
+    for (i, cm) in list.iter().enumerate() {
+        let y = top - 44.0 * (i as f32 + 1.0) + s.scroll;
+        if y + 44.0 < 77.0 || y > top {
+            continue;
+        }
+        let shade = if i % 2 == 0 { [161.0, 88.0, 44.0] } else { [194.0, 114.0, 62.0] };
+        c.rect(ax, y, 354.0, 44.0, shade.map(|v| v / 255.0), 1.0);
+        c.text("goldFont", &name, ax + 10.0, y + 33.0, Look::scaled(0.5).anchor(0.0, 0.5));
+        if cm.percent > 0 {
+            let (uw, _) = c.text_size("goldFont", &name);
+            c.text("bigFont", &format!("{}%", cm.percent), ax + 16.0 + uw * 0.5, y + 33.0, Look::scaled(0.35).anchor(0.0, 0.5));
+        }
+        let (tw, _) = c.text_size("chatFont", &cm.text);
+        c.text("chatFont", &cm.text, ax + 10.0, y + 15.0, Look::scaled((330.0 / tw.max(1.0)).min(0.7)).anchor(0.0, 0.5));
+        c.text("bigFont", &cm.likes.to_string(), ax + 330.0, y + 33.0, Look::scaled(0.3).anchor(1.0, 0.5));
+        c.sprite("GJ_likesIcon_001.png", ax + 342.0, y + 33.0, Look::scaled(0.5));
+        c.text("chatFont", &cm.age, ax + 346.0, y + 6.0, Look::scaled(0.5).anchor(1.0, 0.5).rgb([0, 0, 0]).alpha(140));
+    }
+    c.clip = None;
+}
+
 /// `NotificationsPage`: its layout, and the list's state (none, or an error).
 fn draw_notifications(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
     replay::draw_where(c, ctx, Scene::Notifications, &|k, name, _, _| !(k == 'T' && name == "Something went wrong"));
@@ -806,7 +875,7 @@ pub fn wanted_sheets(s: &Social) -> Vec<String> {
     let mut v: Vec<String> = match s.page() {
         Page::Profile => s.profile.as_ref().map(|(p, _, _)| (0..9).map(|k| super::garage::icon_sheet(k, p.icons[k])).collect()).unwrap_or_default(),
         Page::Friends(_) | Page::Requests(_) => s.users.iter().flatten().map(|u| super::garage::icon_sheet((u.icon_type as usize).min(8), u.icon)).collect(),
-        Page::Settings | Page::Messages(_) | Page::Notifications => Vec::new(),
+        Page::Settings | Page::Messages(_) | Page::Notifications | Page::History => Vec::new(),
     };
     v.sort();
     v.dedup();
