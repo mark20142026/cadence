@@ -173,6 +173,24 @@ impl AreaState {
     }
 }
 
+/// `getEasedAreaValue` / `getEnterEasingValue` without the cache: type 0 linear; types 3, 7, 8, 9
+/// computed directly; else linear between the game's table values at the hundredths
+/// (`m_enterEasingValues` +0x2f68: eased(i / 100)).
+pub fn table_eased(t: f32, kind: i32, rate: f32) -> f32 {
+    if kind == 0 {
+        return t;
+    }
+    if matches!(kind, 3 | 7 | 8 | 9) {
+        return crate::easing::eased(t, rate, kind);
+    }
+    let s2 = t * 100.0;
+    let idx = (s2 as i32).clamp(0, 100);
+    let at = |i: i32| crate::easing::eased(i.min(100) as f32 / 100.0, rate, kind);
+    let (a, b) = (at(idx), at(idx + 1));
+    let frac = ((s2 as i32) as f32).mul_add(-0.01, t);
+    (frac * (b - a)).mul_add(100.0, a)
+}
+
 /// Section index along one axis (`reorderObjectSection`: pos · 0.01, clamped, 0 below 0).
 fn section(v: f32) -> i32 {
     if 0.0 < v {

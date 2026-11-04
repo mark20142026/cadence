@@ -1386,3 +1386,115 @@ re/build/trace-mod/bindings (`GJShaderState` starts at ShaderLayer +0x198).
   once. Cadence keeps them as camera triggers (position, order channel, touch), the art in force in
   `Camera::art` (so deaths reset it and checkpoints keep it), and loads every image they can switch
   to with the level's own. Dash uses BG 53 → 25 → 53 (x 15105, channel 10 at 15765, 21405).
+
+## The remaining 2.2 triggers (2026-11-04 night, trigger agent; decompiles from a copy of re/ghidra)
+
+Dispatch is `EffectGameObject::triggerObject` (0x1599a8): one switch on the object id; camera ids go
+through `CameraTriggerGameObject::triggerObject` (0x17820c), items through
+`ItemTriggerGameObject::triggerObject` (0x17de74). Keys come from each class's
+`customObjectSetup`: the value strings are an array indexed by key (`*param_2 + key·0x18`), the
+"present" flags another (`*param_3 + key·8`); an absent float or int is 0 unless the code sets a
+default. Helper prototypes for the decompiler (floats in s registers, CCPoint results through x8)
+are in the scratch `DecompileTyped.java`; with them Ghidra keeps the float expressions
+`processAdvancedFollowAction` otherwise loses. Ids and what they do in play:
+
+- **Advanced follow (3016)** (`triggerAdvancedFollowCommand` 0xf1584, `processAdvancedFollowActions`
+  0xfdfe8 / `processAdvancedFollowAction` 0xff8e4, run in `GJBaseGameLayer::update` after the
+  player follows and before the follow triggers). An instance (trigger, group 51, target: group
+  71, −1 / −2 players 138 / 200, −3 the camera 201, control id 534) per trigger; the same trigger
+  again restarts it. Instances sort by priority 365 (highest first). Per object of the group, a
+  state (velocity, direction, eased angle, smoothed steer force); the target's position, with a
+  delay 292 from a history recorded each step (`updateSavePositionObjects`): i = ceil(delay /
+  (1/240) in f64), the sample i steps back moved toward the next newer one by i − f; not enough
+  history means no move. Skipped if out of range 308 or (336) the object is off. The start speed
+  300 / direction 563 (`getFollowSpeedVal` 0xfef2c: angle (90 − dir)°, turned by group 560's
+  movement or away from group 565) goes to the instance's first object only (its +0x1f flag is set
+  after one object), set the first time (572: 1 always, 2 add). Acceleration 334 · 0.01. Mode 367:
+  0 velocity = distance / easing 361 (≤ 1: snap, moved by 1 not dt); 1 friction 558 · 0.01 then
+  acceleration along the normalized distance (`ccpNormalize` 0x1002d2fa8 turns (0, 0) into (1, 0)),
+  both blended toward 357 / 561 inside 359 by t = 1 − d / near (fused); 2 steering: the direction
+  turns toward the target by at most the smoothed steer force (316, or 318 below speed 322 with
+  337, 320 from speed 324 with 338, 330 when braking: 326 > 0, speed > 332 and the turn > 328°),
+  smoothed by force · 0.01 − s over 10 per step; velocity rotated with fused sin/cos; braking
+  takes |326 · dir · dt| off each axis and the step's acceleration; acceleration along the target
+  direction with 305. Modes 0/1: the direction eases toward the velocity's angle (frozen under
+  364) by 363. Angles wrap with n = ceil(floor(|a| / π) · 0.5) turns (fma). Speed cap 298 (vx alone
+  with x only 306, vy with y only 307). Rotate (339): a quarter of wrap180(fma(angle, −57.29578, 90)
+  + offset 340 − rotation) per step, for objects that can rotate freely. 571: an object it moved
+  isn't moved again by lower priorities that step. Edit (3660, `modifyObjectPhysics` 0xff7fc): the
+  velocity × 566 / 568 plus a start speed; re-target (3661): the instances of the advanced follow
+  triggers in group 51 (or with control id 51 when 535) follow the new target. Variances use
+  `m_varianceValues` (+0x100c) at the object's `m_varianceIndex` (+0x3ec) + k; Cadence hashes.
+  Group parents / linked objects moving as one (`m_targetGroups` +0xf00, `getSpecialKey` keys
+  280 / 281) aren't ported.
+- **Edge fade margin** (`m_fadeMargin` +0x34c, set at 0x1005ad3d4): not half the width — the size
+  (content size × |scale|, swapped when turned a quarter, the diagonal at other angles) over 30
+  gives width / 2 − 15, else 0. A 30-unit block fades from its center. (Real traces: Cadence's old
+  half-width margin was 15 units early.)
+- **Keyframes (3032 objects, 3033 trigger)** (`FUN_1000e6070`, `createKeyframeCommand` 0x26a6fc,
+  `prepareMoveActions` mode 5). Keyframe objects: 373 group, 374 index, 10 duration to the next,
+  30 / 85 easing, 71 / 557 the group spawned when reached and its delay, 377 spawn at 95%, 536
+  direction (1 / 2 force the turn's sign), 537 revolutions, 375 / 379 reference-only time modes,
+  378 curve (`KeyframeObject::setupSpline`), 376 close loop. The trigger: 76 animation group (the
+  keyframe objects), 51 target (else the first keyframe's 51), 71 center, mods 520 time, 521 /
+  545 position, 522 rotation, 523 / 546 scale: absent mods are 0, a y mod of 0 takes the x one
+  (end of `customObjectSetup` 0x15c158), the time mod is at least 0.0001 — a 3033 without 520
+  finishes at once. Positions and scales are taken relative to the first keyframe and scaled by
+  the mods; each keyframe keeps its change from the previous one; per step, finished segments
+  count fully and the current one by its eased progress; the summed offset (f32), rotation and
+  1 + summed scale changes become this step's move (into the group's sum), and a rotation and a
+  scale of each object in place (real traces: nothing orbits). Groups reached spawn at the next
+  step's start. Not ported: curves, reference-only runs, close loop, the center object's own
+  rotation turning the moves (the +0x628 list).
+- **Enter effects** (`updateActiveEnterEffect` 0xd918c, `PlayLayer::updateVisibility` 0x7ae88,
+  `applyEnterEffect` 0x7c570, `applyCustomEnterEffect` 0x7bdd0, `stopCustomEnterEffect` 0xd9c10).
+  Codes per enter channel (344, objects choose theirs with 343) and side (217: 0 both, 1 enter =
+  right of the view's middle, 2 exit): 22 → −2 (none, fade only), 23 −6, 24 −5, 25 −7, 26 −8, 27 −3,
+  28 −4, 55 −11, 56 −10, 57 −9, 58 −12, 59 −13, 1915 −14 (no effect and no edge fade), 3017–3021 −15
+  (custom). Every channel starts at −2 each attempt. The old codes lock on the object
+  (`m_enterType` +0x3f0 / `m_exitType` +0x3f2) when it starts entering and release at t = 0 or 1;
+  UI-pinned objects (+0x541) are −14. Custom effects: a list per channel and side, the same effect
+  id replacing; t = side · ((x − (edge + 220)) + var) / int(222 + var), deadzone 282, t ≥ 1 skips;
+  move 218 at angle 231 − 90 (or 237 / 239 × side with 241), rotate 270, scale 233 / 235, fade (the
+  eased t times the opacity), tint 260 / 265 (not eased: the channel's share is 265 · (1 − t)), all
+  eased by 242 / 243 except the tint. The rotate accumulator starts at 1 (0x10007bf24 stores 1.0
+  into both the opacity and the rotation slot): an entering object with a rotate effect is 1°
+  off. Custom effects have no edge fade. Enter stop (3023) removes the channel's effects with its
+  id (all for 0); an emptied channel is −2 again. Not ported: `m_intrinsicDontFade` (+0x409, no fade
+  under −2 for some ids), the transitions of the edit-enter triggers.
+- **Camera**: gameplay offset 2901 (`updateGameplayOffsetX/Y` 0x104bec: +0x2a4 / +0x2ac, ints of
+  28 / 29, axis 101, 58 / 59 "don't divide by the zoom"; 75 by default); camera mode 2925
+  (`updateCameraMode` 0xe0c78: free mode 111, with 112 the padding 114 (0..1) and easing 113
+  (1..40), like a mode portal); camera edge 2062 (`updateCameraEdge` 0x104a94: edge 164 → +0x420
+  left, +0x424 right, +0x428 up, +0x42c down = group 51). In `updateCamera` the limits are max x =
+  right.x − w/z, max y = up.y − h/z (else m_maxGameplayY − 150 − h/z), min x = max(left.x, 15),
+  min y = down.y if > 0 (else 0); the target clamps to them inside the per-axis loop, the easing
+  grows toward 24 over the last 60 units (an edge set by a trigger, or in platformer mode) unless
+  moving away, then clamps again after the loop. Camera guide 2016 returns at once (editor
+  guide).
+- **Small ones**: random 1912 (fast_rand · 100 ≤ chance 10 → spawn 51, else 71); BG effect on /
+  off 1818 / 1819 (`PlayLayer::toggleBGEffectVisibility` 0x82ca8: the glitter, +0x399d, never reset
+  between attempts); reverse 1917 (`reversePlayer` → `doReversePlayer(!left)` at once, not in
+  platformer: the going-left flag is set on the trigger's step, before the camera);
+  end 1931 calls `PlayLayer::activateEndTrigger`, which is empty (`ret`) — inert, as is 3655
+  (`FUN_1000e58fc` is empty); the end trigger with effects is 3600 (`activatePlatformerEndTrigger`);
+  area stop 3024 (`controlAreaEffectWithID(51, −1, 0)`); reset 3618 (`activateResetTrigger`
+  0x102164: group 51's collectibles (type 30) and breakables (21) re-arm, checkpoints too); persistent
+  item 3641 (80 item, 491 on, 492 all, 493 reset, 494 timer: values survive restarts,
+  `transferPersistentItems`); UI progress 3663 (`FUN_1000e5900`, platformer only: progress
+  +0x340 = 602 or item 95's count, added with 603 else at least the old value, 0..99, then item 80);
+  BG speed 3606 / MG speed 3612 (`updateBGArtSpeed` / `updateMGArtSpeed`: keys 143 / 144, |v| > 999
+  → 0.1 / 0.1 and 0.3 / 0.5); touch 1595 (`runTouchTriggerCommand` + `GJEffectManager::playerButton`
+  0x2713b4: 81 hold, 82 toggle mode 0 flip / 1 on / 2 off, 198 1 = player 2 only, 2 = player 1
+  only, 89 dual mode; with an active dual-mode touch trigger player 1's presses only drive the
+  triggers); spawn particle 3608 (`spawnParticleTrigger` 0x110b0c / 0xe4648: copies of the 2065
+  objects of group 51 around group 71's main object (or the trigger), offsets 547 / 548 ± 549 / 550,
+  rotation 552 ± 553 (+ the position object's with 551), scale 554 ± 555; each copy keeps its offset
+  from the particle group's main object, turned and scaled; never-ending systems get duration 0);
+  checkpoint 2063 (platformer: `PlayLayer::processCheckpoints` 0x7e75c spawns 604, marks a
+  checkpoint at the trigger, the player (138) or group 71's main object, spawns 51; respawns spawn
+  448); edit song 3605 / edit SFX 3603 (`activateSongEditTrigger` 0x10eddc, `applySFXEditTrigger`
+  0x112928: channel 432, 417 stop, 418 volume 406 over 10, 419 speed 404 via `pitchForIdx`); link
+  visible 3662 (`generateVisibilityGroups` 0xd8030: group 51's objects activate together in
+  `preUpdateVisibility`; Cadence's culling already draws anything in view, so nothing to do);
+  BPM 3642 is an editor guide.

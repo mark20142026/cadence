@@ -1200,15 +1200,21 @@ void watchGroup(GJBaseGameLayer* layer, int group, std::string const& path, int 
     if (!f) f = std::fopen(path.c_str(), "w");
     if (!f) return;
     std::fprintf(f, "%d", step);
-    if (auto objects = layer->getStaticGroup(group)) {
+    // (decorations aren't in the static groups: fall back to the whole group)
+    auto objects = layer->getStaticGroup(group);
+    if (!objects || objects->count() == 0) objects = layer->getGroup(group);
+    if (objects) {
         int n = 0;
         for (auto obj : CCArrayExt<GameObject*>(objects)) {
             auto p = obj->getPosition();
             auto r = obj->getObjectRect();
             auto raw = reinterpret_cast<char*>(obj);
             double rx, ry; std::memcpy(&rx, raw + 0x3b0, 8); std::memcpy(&ry, raw + 0x3b8, 8);
-            std::fprintf(f, ",%d:%.9g:%.9g:%.9g:rect=%.9g:%.9g:real=%.9g:%.9g", obj->m_objectID, p.x, p.y,
-                obj->getRotation(), r.origin.x, r.origin.y, rx, ry);
+            // node opacity, scale, color and visibility (enter effects, keyframes, fades)
+            auto c = obj->getColor();
+            std::fprintf(f, ",%d:%.9g:%.9g:%.9g:rect=%.9g:%.9g:real=%.9g:%.9g:op=%d:sc=%.9g:%.9g:col=%d.%d.%d:vis=%d",
+                obj->m_objectID, p.x, p.y, obj->getRotation(), r.origin.x, r.origin.y, rx, ry, int(obj->getOpacity()),
+                obj->getScaleX(), obj->getScaleY(), int(c.r), int(c.g), int(c.b), int(obj->isVisible()));
             if (++n >= g_spec.watchMax) break;
         }
     }

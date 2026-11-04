@@ -193,7 +193,8 @@ The `cadence` binary (crate `cadence-tools`) inspects game data:
 | `cadence replay <spec> <out.csv>` | Simulate a spec and write traces (`%d` in the path writes every attempt). |
 | `cadence diff <real.csv> <ours.csv>` | First step where two traces differ. |
 | `cadence verify <spec>` | Simulate every attempt of a spec and compare with the real game's traces: position, velocity, flags, rotation and camera, bit for bit. |
-| `cadence features <level>` | List what a level uses that the physics doesn't handle yet (object types, triggers). |
+| `cadence features <level or file>` | List what a level (a main level's id, or a level file) uses that Cadence doesn't handle yet (object types, triggers). |
+| `cadence watch <spec>` | Simulate a spec's first attempt (a main level or its `levelstring` file) and write each `watchgroup` next to the harness's file as `<file>.ours`: per step the group's first objects with their drawn position, rotation, f64 position, enter-effect opacity and scale. |
 | `cadence route <level> <n> <out%d.csv>` | Search inputs that survive in the simulation; prints a harness spec. |
 | `cadence rects <level>` | Every collidable object's collision rect and radius (compare with the harness's `dumplevel`). |
 
@@ -206,7 +207,8 @@ Besides inputs, a spec can ask for `screenshot <step> <file>`, `dumplevel <file>
 object with its rect), `particles <step> <file.csv>` (every live particle system: position in
 the level, settings, plus `<file>.layers` with the object layer's z order), `triggers
 <file.csv>` (every trigger the game fires, with its settings and the player's position) and
-`watchgroup <group> <file.csv>` (positions of a group's first objects each step). For
+`watchgroup <group> <file.csv>` (positions of a group's first objects each step, with their node
+opacity, scale, color and visibility; `watchmax N` objects, 4 by default). For
 benchmarks: `bench <seconds> <file>`, `noclip`, `corner` (never activates itself; the window is
 parked on top past the screen's bottom-right corner, ignoring the mouse; launch it with
 `open -g` as `tools/bench_pair.py` does, since AppKit activates a directly started app before

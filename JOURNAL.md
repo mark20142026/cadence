@@ -890,6 +890,51 @@ NOTES "Shader and gradient triggers".
 - Benchmarks that don't get in the way (Mark working on the laptop): both programs park their window on top past the main screen's bottom-right corner (only a 320 × 200-point piece shows above the Dock, mouse passes through), never activated, music playing muted. A fully hidden or covered window can't be used: macOS stops pacing it by vsync (Cadence ran 240× fast once) and the real game stops drawing. The real game's window is 1280 × 720 points (it draws 1280 × 720 pixels and the system scales them up), so shrinking it would change the work. Cadence: CADENCE_CORNER (winit with_active(false), AlwaysOnTop, activate_ignoring_other_apps(false), then AppKit setFrameOrigin/setIgnoresMouseEvents via objc2) and CADENCE_BENCH_AUDIO. Harness mod: `corner` (run loop timer from mod load parks the window, since no frame is drawn while it's covered; NSApplication activate calls no-op) and `mute`. A directly started copy was still activated when the Claude app was in front (AppKit activates at the end of launching, before mods load), so tools/bench_pair.py launches it with `open -g -n -W --env …` and the mod writes `# rusage` (getrusage CPU, proc start → exit wall, lifetime peak footprint) in place of /usr/bin/time. A watchdog marks any run whose program came to the front and gives the front back.
 - Corner benchmark, all 15 heavy levels, Mark working meanwhile (BENCHMARKS.md, second table): no run came to the front. Mean CPU 39.5% vanilla / 29.0% Cadence / 28.9% Cadence + draw cache; MB 701 / 593 / 606; >20 ms frames 1351 / 21 / 37; Cadence 60 FPS everywhere, vanilla drops on 7 levels (Lag Machine 48.3). The draw cache saves no measurable CPU (kept: pixel-identical); Lag Machine's cache-only slow frames were run-to-run noise (repeats 75/62 off vs 82/86 on). The real game's CPU is much higher here than in the morning's focused runs (~22%), so the two tables aren't comparable to each other.
 - Ready for a first push (nothing committed): `git add -n .` is 223 files, 5.7 MB, none from the game, the RE workspace, screenshots or bench levels. Checked for secrets, account data and personal paths (none; the server salts in gjapi.rs are the publicly documented ones). Added LICENSE (MIT, as Cargo.toml already said); `.gitignore` gains `tools/re/names-*.tsv` (function names copied from the unlicensed Geode bindings; ghidra.sh now rebuilds it with bro_names.py), `__pycache__/`, `*.pyc`, `.DS_Store`; `.claude/launch.json` serves `web` by relative path; ghidra.sh takes GHIDRA_HEADLESS / GHIDRA_JAVA_HOME. README: performance line matches the corner benchmark (the old "35–50% less memory" no longer held on 4 of 15 levels), what's left out of the repository, license section. `cargo test --workspace --release` 71 passed, release and web builds clean.
+
+## 2026-11-04 night (trigger agent): the remaining 2.2 triggers
+
+Worked in a worktree branch; the decompiles from a scratch copy of re/ghidra, with helper
+prototypes (float arguments in s registers, CCPoint results through x8) so Ghidra keeps the
+float maths. What the game does is in NOTES ("The remaining 2.2 triggers").
+
+- **Advanced follow 3016 / 3660 / 3661** (`advfollow.rs`): ported from the instructions of
+  `processAdvancedFollowAction`, fused multiply-adds and all. Checked with the harness on two test
+  levels (watchgroup, 800 steps each, 9 object groups): mode 0 easing, mode 1 friction/accel with x
+  only and a start speed, mode 2 steering with low/high/break forces, target direction and rotate
+  to direction, a 0.5 s delay, following the camera, a re-target, an edit (speed × 0.5), two
+  instances with priority and exclusivity: every object's f64 position equals the real game's to
+  print precision (≤ 5e-7, 5e-6 past x 1000) every step, rotations to 3e-5.
+- **Keyframes 3032 / 3033** (`keyframes.rs`): two test levels (two and four keyframes, easing 2 /
+  3, scale 2 and 0.5 × 1.5, a revolution, direction, position / rotation / time mods, a spawn on
+  reaching a keyframe): positions, rotations and scales match the real game exactly. Findings:
+  absent mods are 0 (a 3033 without key 520 finishes instantly), y mods default to x, rotation and
+  scale act on each object in place. The spawned move on a decoration shows the per-frame batching
+  of decoration moves (real values change every 4 steps; the totals agree) — not keyframe-specific.
+  Not ported: curves, reference-only runs, close loop.
+- **Enter effects** (`enter.rs`; the renderer now asks the world instead of a list by x): two test
+  levels with custom move / fade / scale / rotate, exit-only effects, legacy 23 / 56 / 58, enter
+  channels, enter stop and 1915: drawn position, opacity and scale match the real game on every
+  visible step (2,300 object-steps; the real node values lag a rendered frame). The rotate effect's
+  extra 1° (the game's accumulator starts at 1) shows in the real node rotation too. Found on the
+  way: the edge fade margin is width / 2 − 15 over 30 wide, else 0 (Cadence faded from the far side,
+  15 units early for 30-unit blocks) — fixed for every level's fade.
+- **Camera**: gameplay offset 2901 (twice, one "don't zoom"), camera edge 2062 (right edge): the
+  camera is bit-exact with the real game over 1,500 steps (`cadence verify`). Camera mode 2925 is
+  unit-tested only (parsing, clamps).
+- **Reverse 1917**: the player trace matches until the real player dies past x 0 (488 steps); the
+  going-left flag is set on the trigger's step (applied before the camera).
+- Unit-tested, not traced: random 1912 (own random sequence), area stop 3024, reset 3618,
+  persistent item 3641, UI progress 3663, BG effect 1818 / 1819, BG / MG speed 3606 / 3612, touch
+  1595, spawn particle 3608 (copies emitters in the app), platformer checkpoint 2063 (app respawn),
+  edit song / SFX 3605 / 3603 (volume fades, speed, stop of trigger sounds; the speed index is
+  taken as semitones). 1931 and 3655 are inert in play (their handlers are empty), 2016 / 3642 are
+  editor guides (not drawn as guides: the editor overlay is ui/editor.rs), 3662 link visible needs
+  nothing in Cadence's culling.
+- Tools: `cadence watch <spec>` (group traces from Cadence, now with `levelstring` specs),
+  `cadence features` takes a level file and knows every trigger; the harness's watchgroup falls back
+  to the whole group (decorations aren't in static groups) and records opacity / scale / color /
+  visibility.
+- `cargo test --workspace --release` green (52 core tests, 18 new); verify_all 111/126 as before.
 - Published: first commit 316b45c pushed to https://github.com/mark20142026/cadence (public, branch main, 223 files). Commits use the account's GitHub noreply address (set in this repo's config only). This entry is not committed yet.
 
 ## 2026-11-04 night — v0.0.2: web online play, account screens

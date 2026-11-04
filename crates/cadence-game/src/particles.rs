@@ -884,6 +884,17 @@ impl Effects {
         self.emitters.push(e);
     }
 
+    /// A one-shot system with the node's rotation and scale (spawn particle triggers' copies).
+    pub fn spawn_node(&mut self, def: &ParticleDef, position: (f32, f32), position_type: PositionType, rotation: f32, scale: (f32, f32)) {
+        self.seed = self.seed.wrapping_add(0x9e3779b97f4a7c15);
+        let mut e = Emitter::new(def.clone(), position, self.seed);
+        e.position_type = position_type;
+        e.rotation = rotation;
+        e.scale = scale;
+        e.auto_remove = true;
+        self.emitters.push(e);
+    }
+
     /// Advance by one frame (cocos2d updates particles once per frame with the frame's delta).
     /// Keep an emitter for each visible object that has one: `visible` gives (level index,
     /// object id, center, rotation, scale). Objects that left the view lose theirs.

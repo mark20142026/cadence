@@ -285,8 +285,7 @@ struct LevelVisual {
     particles: Vec<(usize, String)>,
     /// Each object's spin in degrees per second (0: none), see `spin_rate`.
     spin: Vec<f32>,
-    /// Enter effect triggers (22–28, 55–59) by x, as `applyEnterEffect` codes.
-    enter: Vec<(f32, i32)>,
+
     /// Each object's fields the frame needs, parsed once at load (not from text every frame).
     statics: Vec<ObjStatic>,
     /// Culling: positions in `order` by x column (COLUMN wide, from `column0`), and the
@@ -502,6 +501,8 @@ struct ObjStatic {
     /// keys 64 (don't fade), 67 (don't enter), 96 (no glow); editor layers 20 and 61
     no_fade: bool,
     no_enter: bool,
+    /// key 343: the enter channel (0..100) whose enter effect the object takes
+    enter_channel: i16,
     no_glow: bool,
     layers: (i32, i32),
 }
@@ -523,6 +524,7 @@ impl ObjStatic {
             detail_channel: o.get_i32(22),
             no_fade: o.get(64) == Some("1"),
             no_enter: o.get(67) == Some("1"),
+            enter_channel: o.get_i32(343).unwrap_or(0).clamp(0, 100) as i16,
             no_glow: o.get(96) == Some("1"),
             layers: (o.get_i32(20).unwrap_or(0), o.get_i32(61).unwrap_or(0)),
         }
@@ -556,33 +558,10 @@ fn culling_columns(order: &[(i32, i32, usize)], statics: &[ObjStatic], can_move:
     (columns, lo, movable)
 }
 
-impl LevelVisual {
-    /// The enter effect in force with the player at `x` (−1: none, just the edge fade).
-    /// Mapping from `GJBaseGameLayer::updateActiveEnterEffect` 0xd918c.
-    fn enter_code(&self, x: f32) -> i32 {
-        self.enter.iter().take_while(|e| e.0 <= x).last().map_or(-1, |e| e.1)
-    }
-}
 
-/// An enter effect trigger's `applyEnterEffect` code: 22 none, 23 from below, 24 from above,
-/// 25 from the left, 26 from the right, 27 scale in, 28 scale down, 55 random direction,
-/// 56/57 diagonals, 58/59 from the near/far vertical edge.
-fn enter_effect_code(id: i32) -> Option<i32> {
-    Some(match id {
-        22 => -2,
-        23 => -6,
-        24 => -5,
-        25 => -7,
-        26 => -8,
-        27 => -3,
-        28 => -4,
-        55 => -11,
-        56 => -10,
-        57 => -9,
-        58 => -12,
-        59 => -13,
-        _ => return None,
-    })
+/// `FMODAudioEngine::pitchForIdx`: a speed index in semitones (−12..12) as a playback rate.
+fn pitch_for_index(index: i32) -> f32 {
+    2f32.powf(index.clamp(-12, 12) as f32 / 12.0)
 }
 
 /// An object's spin (`EnhancedGameObject::customSetup` 0x5bb8dc, turned each frame by
@@ -648,9 +627,17 @@ struct Game {
     draw_capacity: usize,
     /// Static objects' finished sprites from earlier frames (see `DrawCache`).
     draw_cache: DrawCache,
+    /// Each object's enter effect lock (`m_enterType` / `m_exitType`, cadence_core::enter), and
+    /// the world epoch they belong to (a restart clears them).
+    enter_locks: Vec<cadence_core::enter::EnterLock>,
+    enter_epoch: u64,
     step_accumulator: f64,
     last_frame: Instant,
     holding: bool,
+    /// The button state the touch triggers (1595) last saw, and whether a dual-mode one keeps
+    /// the presses from the player.
+    button_seen: bool,
+    dual_touch: bool,
     /// Platformer left/right held (buttons 2 and 3), and what the player was last told.
     direction: [bool; 2],
     direction_sent: [bool; 2],
@@ -704,6 +691,12 @@ struct Game {
     /// auto checkpoint waiting to be committed (`PlayerObject::tryPlaceCheckpoint`).
     practice: bool,
     checkpoints: Vec<Checkpoint>,
+    /// The last platformer checkpoint (2063) touched, with the group it spawns on a respawn
+    /// (key 448): a death restarts from it (`PlayLayer::processCheckpoints`).
+    platformer_checkpoint: Option<(Checkpoint, i32)>,
+    /// The song channel the music plays on (song triggers' key 432; the level's own song is
+    /// channel 0), for edit song triggers.
+    music_channel: i32,
     pending_checkpoint: Option<Checkpoint>,
     /// The options that change play (game variables, from the save).
     opts: PlayOptions,
@@ -912,8 +905,10 @@ impl Game {
         let center = |c: &Camera| (c.x + self.view_w / z(c) * 0.5, c.y + VIEW_HEIGHT / z(c) * 0.5);
         let ((x0, y0), (x1, y1)) = (center(&before), center(&self.camera));
         let zoom = z(&self.camera);
-        self.bg_pos[0] += (1.0 - 2.0 * self.camera.flip) * (x0 - x1) * zoom * 0.1;
-        self.bg_pos[1] += (y0 - y1) * zoom * 0.1;
+        // the speed factors (+0x314, BG speed triggers 3606; 0.1 by default)
+        let (sx, sy) = self.world.bg_speed;
+        self.bg_pos[0] += (1.0 - 2.0 * self.camera.flip) * (x0 - x1) * zoom * sx;
+        self.bg_pos[1] += (y0 - y1) * zoom * sy;
     }
 
     /// The middle ground scrolls by the camera's movement over its scale (the game's speed
@@ -921,7 +916,9 @@ impl Game {
     fn scroll_mg(&mut self, dx: f32) {
         if self.mg.is_some() {
             let s = self.mg_scale();
-            self.mg_x = (self.mg_x - dx * 0.55 * (1.0 - 2.0 * self.camera.flip) / s).rem_euclid(256.0) - 256.0;
+            // (scaled by MG speed triggers' x factor, +0x31c: 0.3 by default)
+            let k = 0.55 * self.world.mg_speed.0 / 0.3;
+            self.mg_x = (self.mg_x - dx * k * (1.0 - 2.0 * self.camera.flip) / s).rem_euclid(256.0) - 256.0;
         }
     }
 
@@ -1012,10 +1009,11 @@ impl Game {
     /// Song triggers (1934) fired this step: the custom song from the song cache (downloaded
     /// with the level), from its start time. Volume, speed, fades and channels aren't ported.
     fn play_trigger_songs(&mut self) {
-        for (id, start_ms, _volume, _looped) in std::mem::take(&mut self.world.songs) {
+        for (id, start_ms, _volume, _looped, channel) in std::mem::take(&mut self.world.songs) {
             if self.practice || id <= 0 {
                 continue;
             }
+            self.music_channel = channel;
             let name = crate::online::song_name(id);
             if crate::online::have(&name) {
                 self.audio.play_music(&name, start_ms as f32 / 1000.0);
@@ -1031,7 +1029,7 @@ impl Game {
         for (id, volume) in std::mem::take(&mut self.world.sfx) {
             let name = crate::online::sfx_name(id);
             if crate::online::have(&name) {
-                self.audio.play_effect_volume(&name, volume);
+                self.audio.play_trigger_effect(&name, volume);
             }
         }
     }
@@ -1042,6 +1040,7 @@ impl Game {
         }
         if let Some((file, offset)) = &self.song {
             self.audio.play_music(file, *offset);
+            self.music_channel = 0;
         }
     }
 
@@ -1070,6 +1069,102 @@ impl Game {
         if self.practice {
             if let Some(cp) = self.checkpoints.last().cloned() {
                 self.load_checkpoint(cp);
+            }
+        } else if let Some((cp, respawn)) = self.platformer_checkpoint.clone() {
+            self.load_checkpoint(cp);
+            if respawn > 0 {
+                self.world.spawn_group(respawn);
+            }
+        }
+    }
+
+    /// A platformer checkpoint (2063) was touched (`PlayLayer::processCheckpoints` 0x7e75c):
+    /// spawn 604 first, a checkpoint at the trigger (or the player with 138, or group 71's main
+    /// object), spawn 51 after. A respawn from it spawns 448.
+    fn checkpoint_trigger(&mut self) {
+        let Some(order) = self.world.checkpoint.take() else { return };
+        let Some(raw) = self.level.objects.get(order as usize) else { return };
+        let (before, after, respawn) = (raw.get_i32(604).unwrap_or(0), raw.get_i32(51).unwrap_or(0), raw.get_i32(448).unwrap_or(0));
+        let by_player = raw.get(138) == Some("1");
+        let target = raw.get_i32(71).unwrap_or(0);
+        if before > 0 {
+            self.world.spawn_group(before);
+        }
+        let at = if by_player {
+            (self.player.x, self.player.y)
+        } else if let Some((x, y)) = (target > 0).then(|| self.world.group_main_position(target)).flatten() {
+            (x as f32, y as f32)
+        } else {
+            let (x, y) = self.world.level_position(order as usize);
+            (x as f32, y as f32)
+        };
+        let mut cp = self.snapshot();
+        cp.player.x = at.0;
+        cp.player.y = at.1;
+        self.platformer_checkpoint = Some((cp, respawn));
+        if after > 0 {
+            self.world.spawn_group(after);
+        }
+    }
+
+    /// Spawn particle triggers (3608) fired this step: a copy of each custom particle object
+    /// (2065) of the particle group, placed by its offset from the group's main object (turned
+    /// and scaled with the trigger's rotation and scale) around the spawn point
+    /// (`GJBaseGameLayer::spawnParticleTrigger` 0xe4648). Systems that never end burst once.
+    fn spawn_trigger_particles(&mut self) {
+        for (group, at, rotation, scale) in std::mem::take(&mut self.world.particle_spawns) {
+            let members: Vec<u32> = self.world.members_of(group).to_vec();
+            let main = members.first().map(|&o| self.world.level_position(o as usize));
+            for o in members {
+                let index = o as usize;
+                let Some(text) = self.level.particles.iter().find(|p| p.0 == index).map(|p| p.1.clone()) else { continue };
+                let Some((mut def, grouped)) = crate::particles::ParticleDef::from_gd_string(&text) else { continue };
+                if def.duration < 0.0 {
+                    def.duration = 0.0;
+                }
+                let obj = &self.level.objects[index];
+                let (px, py) = self.world.level_position(index);
+                let position = match main {
+                    Some((mx, my)) => {
+                        let (dx, dy) = ((px - mx) as f32, (py - my) as f32);
+                        // cocos rotations are clockwise
+                        let (s, c) = (-rotation).to_radians().sin_cos();
+                        let (rx, ry) = (dx * c - dy * s, dx * s + dy * c);
+                        (at.0 + rx * scale, at.1 + ry * scale)
+                    }
+                    None => at,
+                };
+                let s = obj.get_f32(32).unwrap_or(1.0);
+                let node_scale = (obj.get_f32(128).unwrap_or(s) * scale, obj.get_f32(129).unwrap_or(s) * scale);
+                let node_rotation = obj.get_f32(6).unwrap_or(0.0) + rotation;
+                self.effects.spawn_node(&def, position, if grouped { PositionType::Grouped } else { PositionType::Relative }, node_rotation, node_scale);
+            }
+        }
+    }
+
+    /// Edit song / edit SFX triggers (3605 / 3603) fired this step: stop the channel, or change
+    /// its volume / speed (`applySFXEditTrigger` 0x112928). Songs: the music when it plays on
+    /// the trigger's channel; SFX: the sounds SFX triggers started.
+    fn apply_audio_edits(&mut self) {
+        for edit in std::mem::take(&mut self.world.audio_edits) {
+            if edit.song {
+                if edit.channel != self.music_channel {
+                    continue;
+                }
+                if edit.stop {
+                    self.audio.stop_music();
+                    continue;
+                }
+                if let Some(v) = edit.volume {
+                    self.audio.fade_music(v, edit.duration);
+                }
+                if let Some(speed) = edit.speed {
+                    self.audio.set_music_speed(pitch_for_index(speed));
+                }
+            } else if edit.stop {
+                self.audio.stop_effects();
+            } else if let Some(v) = edit.volume {
+                self.audio.set_effects_volume(v);
             }
         }
     }
@@ -1432,7 +1527,12 @@ impl Game {
             }
             self.step_count += 1;
             self.player.begin_step(&self.world);
-            if self.holding != self.player.holding {
+            if self.holding != self.button_seen {
+                // touch triggers (`GJEffectManager::playerButton` in `handleButton`)
+                self.button_seen = self.holding;
+                self.dual_touch = self.world.player_button(self.holding, false);
+            }
+            if self.holding != self.player.holding && !(self.dual_touch && self.holding) {
                 self.player.set_button(self.holding, &self.world);
                 // JumpPush / JumpRelease for event triggers
                 self.world.player_events(&[if self.holding { 69 } else { 70 }]);
@@ -1443,6 +1543,7 @@ impl Game {
                     self.player.set_direction(self.direction[i], button);
                 }
             }
+            self.world.observe(self.player.dual.as_ref().map(|p| (p.x, p.y)), (self.player.camera.x, self.player.camera.y));
             self.world.pre_step((self.player.x, self.player.y));
             self.player.step(&self.world);
             self.world.post_step(&self.player);
@@ -1464,6 +1565,9 @@ impl Game {
             }
             self.play_trigger_songs();
             self.play_trigger_sfx();
+            self.apply_audio_edits();
+            self.spawn_trigger_particles();
+            self.checkpoint_trigger();
             self.take_coins();
             self.auto_checkpoint();
             self.step_wave_trail();
@@ -1471,6 +1575,7 @@ impl Game {
                 self.colors.frame(dt);
                 self.fx.frame(dt, &self.world, &self.player);
                 self.meter.step(self.audio.peak());
+                self.audio.update(dt);
                 self.step_trail();
             }
             // CADENCE_NOCLIP (stress runs): deaths don't count, the run goes on
@@ -1628,7 +1733,8 @@ impl App {
                 // emitters, text, counters...) use an editor button as their sprite, which the
                 // game never shows in play. Text, counters and particle emitters draw something
                 // else instead (not ported yet).
-                if !in_editor && v.sprites.first().is_some_and(|s| s.frame.starts_with("edit_")) && obj.id() != 914 {
+                // Keyframe objects (3032) are the editor's markers of an animation path.
+                if !in_editor && ((v.sprites.first().is_some_and(|s| s.frame.starts_with("edit_")) && obj.id() != 914) || obj.id() == 3032) {
                     continue;
                 }
                 // Hidden objects (key 135, m_isHide) collide but are never drawn.
@@ -1676,12 +1782,7 @@ impl App {
                 // (moved in below, once nothing else reads the level: one copy, not two)
                 objects: Vec::new(),
                 spin: level.objects.iter().enumerate().map(|(i, o)| spin_rate(o, i)).collect(),
-                enter: {
-                    let mut e: Vec<(f32, i32)> =
-                        level.objects.iter().filter_map(|o| Some((o.x(), enter_effect_code(o.id())?))).collect();
-                    e.sort_by(|a, b| a.0.total_cmp(&b.0));
-                    e
-                },
+
                 particles: level
                     .objects
                     .iter()
@@ -1738,9 +1839,13 @@ impl App {
             tick_ms: 0.0,
             draw_capacity: 0,
             draw_cache: DrawCache::default(),
+            enter_locks: Vec::new(),
+            enter_epoch: 0,
             step_accumulator: 0.0,
             last_frame: Instant::now(),
             holding: false,
+            button_seen: false,
+            dual_touch: false,
             direction: [false; 2],
             direction_sent: [false; 2],
             death_timer: 0.0,
@@ -1780,6 +1885,8 @@ impl App {
             mg_x: 0.0,
             practice: false,
             checkpoints: Vec::new(),
+            platformer_checkpoint: None,
+            music_channel: 0,
             pending_checkpoint: None,
             opts: PlayOptions::default(),
             icons,
@@ -1896,11 +2003,14 @@ impl App {
                 // Every button event of the step in spec order: 1 jumps, 2/3 are left/right.
                 for &(down, button) in inputs.get(&step).into_iter().flatten() {
                     if button == 1 {
-                        game.player.set_button(down, &game.world);
+                        if !game.world.player_button(down, false) || !down {
+                            game.player.set_button(down, &game.world);
+                        }
                     } else {
                         game.player.set_direction(down, button);
                     }
                 }
+                game.world.observe(game.player.dual.as_ref().map(|p| (p.x, p.y)), (game.player.camera.x, game.player.camera.y));
                 game.world.pre_step((game.player.x, game.player.y));
                 game.player.step(&game.world);
                 game.world.post_step(&game.player);
@@ -2091,7 +2201,8 @@ impl App {
         // to 0.001) and scaled by `mg_scale`.
         if let Some((a, b, base_y)) = &game.mg {
             let s = game.mg_scale();
-            let f = 0.5f32;
+            // f: the MG speed's y factor (MG speed triggers 3612; 0.5 by default)
+            let f = game.world.mg_speed.1;
             let node_y = (base_y + game.camera.mg_offset) * ((1.0 - f) + f * zoom) - f * game.camera.y;
             let (fa, fb) = (format!("{a}.png"), format!("{b}.png"));
             let (c1, c2) = (game.colors.display(1013), game.colors.display(1014));
@@ -2223,8 +2334,16 @@ impl App {
         };
         let debug_obj = std::env::var("CADENCE_DEBUG_OBJ").ok().and_then(|v| v.parse::<i32>().ok());
         let prof = dev_flag("debug_slow");
-        // the enter effect in force (it depends on the player's x only: once per frame)
-        let enter_code = game.level.enter_code(game.player.x);
+        // Enter effects (cadence_core::enter): each object's lock, cleared on a restart; how far
+        // in from the view's edges an effect can reach (custom effects have their own lengths).
+        if game.enter_epoch != game.world.epoch || game.enter_locks.len() != game.level.objects.len() {
+            game.enter_epoch = game.world.epoch;
+            game.enter_locks = vec![Default::default(); game.level.objects.len()];
+        }
+        let enter_margin = game.world.enter.custom.iter().flatten().flatten().fold(70.0f32, |m, e| {
+            m.max(e.length.abs() + e.length_var.abs() + e.offset.abs() + e.offset_var.abs() + 1.0)
+        });
+        let enter_view = cadence_core::enter::EnterView { left: cam_x, width: view_w, cam_y, win_h: VIEW_HEIGHT };
         // per object type (static sprite trees only): each sprite's frame, the draw order (by z
         // under/over the parent) and whether it is a portal back
         let mut types: crate::fxhash::FxMap<i32, TypeSprites> = Default::default();
@@ -2379,7 +2498,7 @@ impl App {
                 && game.world.area.tint[index].0 == 0
                 && !game.level.ui_objects.contains_key(&index)
                 && !game.level.pulse_groups.contains_key(&index)
-                && (ox - cam_x).min(cam_x + view_w - ox) >= 70.0
+                && (ox - cam_x).min(cam_x + view_w - ox) >= enter_margin
             {
                 let base = st.main_channel.unwrap_or(visual.base_color as i32);
                 let detail = st.detail_channel.unwrap_or(if visual.detail_color < 0 { 1010 } else { visual.detail_color as i32 });
@@ -2429,15 +2548,43 @@ impl App {
                 log(&format!("obj {} at ({ox},{oy}) z {z_layer} base {base:?} detail {detail:?} channels {base_channel}/{detail_channel} sprites {:?}",
                     st.id, visual.sprites.iter().map(|s| (s.frame, s.role == SpriteRole::Detail, s.visible)).collect::<Vec<_>>()));
             }
-            // Edge fade (`PlayLayer::updateVisibility` 0x7ae88): objects within 70 units of the
-            // view's left or right edge fade out, opacity = int(clamp(distance / 70, 0, 1)·255)
-            // measured from the object's far edge; "don't fade" (key 64) objects don't.
-            let fade = if st.no_fade {
-                1.0
-            } else {
-                let half = objects::info(st.canonical).map_or(15.0, |i| i.width * 0.5) * sx.abs();
-                let distance = if ox < cam_x + view_w * 0.5 { (ox + half) - cam_x } else { (cam_x + view_w) - (ox - half) };
-                ((distance / 70.0).clamp(0.0, 1.0) * 255.0) as i32 as f32 / 255.0
+            // Edge fade and enter effects (`PlayLayer::updateVisibility` 0x7ae88, enter.rs):
+            // objects within 70 units of the view's left or right edge fade out, opacity =
+            // int(clamp(distance / 70, 0, 1)·255) measured from the object's far edge ("don't
+            // fade" objects, key 64, don't), and move / scale / turn / tint by the enter effect.
+            let enter = {
+                let eo = cadence_core::enter::EnterObject {
+                    x: ox,
+                    y: oy,
+                    margin: objects::info(st.canonical).map_or(0.0, |i| cadence_core::enter::fade_margin(i.width, i.height, (sx, sy), rotation)),
+                    channel: st.enter_channel as i32,
+                    ignore_enter: st.no_enter,
+                    ignore_fade: st.no_fade,
+                    ui: game.level.ui_objects.contains_key(&index),
+                    no_scale: audio_scale(st.canonical).is_some(),
+                    seed: index as u32,
+                };
+                game.world.enter.apply(&eo, &enter_view, &mut game.enter_locks[index])
+            };
+            let fade = enter.opacity;
+            // enter tints (3021): toward the channel's color, or an HSV shift
+            let (base, detail) = match enter.tint {
+                Some((channel, share, main, det)) => {
+                    let to = game.colors.active(channel).map(|v| v as f32 / 255.0);
+                    let mix = |c: [f32; 3]| [0, 1, 2].map(|k| c[k] + (to[k] - c[k]) * share);
+                    (if main { mix(base) } else { base }, if det { mix(detail) } else { detail })
+                }
+                None => (base, detail),
+            };
+            let (base, detail) = match enter.hsv {
+                Some((h, main, det)) => {
+                    let shift = |c: [f32; 3]| {
+                        let u = c.map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8);
+                        cadence_core::triggers::transform_color(u, h).map(|v| v as f32 / 255.0)
+                    };
+                    (if main { shift(base) } else { base }, if det { shift(detail) } else { detail })
+                }
+                None => (base, detail),
             };
             // area fade triggers (3009) on top
             let fade = fade * game.world.area.opacity[index];
@@ -2451,41 +2598,9 @@ impl App {
             };
             let (base_alpha, detail_alpha) =
                 (fade * game.colors.object_opacity(base_channel, groups), fade * game.colors.object_opacity(detail_channel, groups));
-            // Enter effect (`PlayLayer::applyEnterEffect` 0x7c570) by the current enter trigger:
-            // t from the object's center to the near edge.
-            let (ox, oy, sx, sy) = {
-                let left = ox < cam_x + view_w * 0.5;
-                let t = (if left { ox - cam_x } else { (cam_x + view_w) - ox } / 70.0).clamp(0.0, 1.0);
-                let code = enter_code;
-                if t >= 1.0 || st.no_enter || code > -3 {
-                    (ox, oy, sx, sy)
-                } else {
-                    let away = (1.0 - t) * 100.0;
-                    let lower = oy <= cam_y + view_h * 0.5;
-                    let pulses = audio_scale(st.canonical).is_some();
-                    let angle = |a: f32| {
-                        let r = (a - 90.0).to_radians();
-                        (ox + away * r.cos(), oy + away * r.sin(), sx, sy)
-                    };
-                    match code {
-                        -3 if !pulses => (ox, oy, sx * t, sy * t),
-                        -4 if !pulses => {
-                            let k = (1.0 - t) * 0.75 + 1.0;
-                            (ox, oy, sx * k, sy * k)
-                        }
-                        -5 => (ox, oy + away, sx, sy),
-                        -6 => (ox, oy - away, sx, sy),
-                        -7 => (ox - away, oy, sx, sy),
-                        -8 => (ox + away, oy, sx, sy),
-                        -9 => angle(if lower { 45.0 } else { 135.0 }),
-                        -10 => angle(if lower { -45.0 } else { -135.0 }),
-                        -11 => angle(((index as u64).wrapping_mul(0x9e3779b97f4a7c15) >> 40) as f32 / (1u64 << 24) as f32 * 360.0 - 180.0),
-                        -12 => angle(if lower { 0.0 } else { 180.0 }),
-                        -13 => angle(if lower { 180.0 } else { 360.0 }),
-                        _ => (ox, oy, sx, sy),
-                    }
-                }
-            };
+            // the enter effect's move, scale and turn
+            let (ox, oy, sx, sy) = (ox + enter.dx, oy + enter.dy, sx * enter.scale.0, sy * enter.scale.1);
+            let rotation = rotation + enter.rotation;
             let (base_blends, detail_blends) = (game.colors.blending(base_channel), game.colors.blending(detail_channel));
             // this type's sprite tree, resolved once per frame (fixed trees) or for this object
             let fixed = anim_sprites.is_none() && color_child.is_none();
@@ -2722,7 +2837,9 @@ impl App {
         // Glitter while flying, centered on the view (z 0 in the object layer: over the B
         // layers, under the player).
         let flying = matches!(game.player.mode, Mode::Ship | Mode::Ufo | Mode::Wave | Mode::Swing) && !game.player.dead;
-        game.effects.sync_glitter(flying, (cam_x + view_w * 0.5, cam_y + view_h * 0.5), game.pcol.0, (view_w, view_h));
+        // (BG effect off triggers, 1819, keep it off: `toggleBGEffectVisibility`)
+        let glitter = flying && !game.world.bg_effect_off;
+        game.effects.sync_glitter(glitter, (cam_x + view_w * 0.5, cam_y + view_h * 0.5), game.pcol.0, (view_w, view_h));
         if let (Some(e), Some(square)) = (&game.effects.glitter, sheets.frames.get(PARTICLE_TEXTURE)) {
             push_particles(e, square.sheet, &mut draws);
         }

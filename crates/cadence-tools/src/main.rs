@@ -20,6 +20,7 @@ fn main() -> ExitCode {
             Ok(())
         })(),
         ["replay", spec, out] => replay(spec, out),
+        ["watch", spec] => watch(spec),
         ["verify", spec] => verify(spec),
         ["route", level, count, out_pattern] => route(level, count, out_pattern),
         ["proute", level, waypoints, out_pattern] => route_platformer(level, waypoints, out_pattern),
@@ -144,6 +145,7 @@ fn simulate_both(
             press(&mut player, world, down, button);
         }
         let cam = player.camera;
+        world.observe(player.dual.as_ref().map(|p| (p.x, p.y)), (cam.x, cam.y));
         world.pre_step((player.x, player.y));
         player.step(world);
         if was_dashing && !player.dashing {
@@ -197,20 +199,128 @@ fn simulate_both(
 }
 
 /// One button event (`GJBaseGameLayer::handleButton`): 1 jumps, 2/3 are left/right.
-fn press(player: &mut cadence_core::physics::Player, world: &cadence_core::world::World, down: bool, button: u8) {
+/// Touch triggers (1595) see the jump button first (`GJEffectManager::playerButton`); a
+/// dual-mode one keeps presses from the player.
+fn press(player: &mut cadence_core::physics::Player, world: &mut cadence_core::world::World, down: bool, button: u8) {
     if button == 1 {
-        player.set_button(down, world);
+        let dual = world.player_button(down, false);
+        if !(dual && down) {
+            player.set_button(down, world);
+        }
     } else {
         player.set_direction(down, button);
     }
 }
 
+/// The world of a spec: its `levelstring` file (a raw or encoded level string) or main level.
+fn load_spec_world(spec: &cadence_core::trace::Spec) -> Result<cadence_core::world::World, Box<dyn std::error::Error>> {
+    let Some(path) = &spec.level_string else { return load_world(spec.level) };
+    let bytes = std::fs::read(path)?;
+    let text = String::from_utf8_lossy(&bytes);
+    let text = if text.trim_start().starts_with("H4sI") || !text.contains(';') { decode_level_bytes(&bytes)? } else { text.into_owned() };
+    Ok(world_of(LevelString::parse(&text)))
+}
+
 fn load_world(level: i32) -> Result<cadence_core::world::World, Box<dyn std::error::Error>> {
     let level_path = format!("{}/levels/{}.txt", gd_resources(), level);
     let level = LevelString::parse(&decode_level_bytes(&std::fs::read(&level_path)?)?);
+    Ok(world_of(level))
+}
+
+/// A world for a level, with its camera triggers and settings kept for `spawn_player`.
+fn world_of(level: LevelString) -> cadence_core::world::World {
     CAMERA_TRIGGERS.with(|c| *c.borrow_mut() = cadence_core::camera::CameraTriggers::from_level(&level));
     LEVEL_SETTINGS.with(|c| *c.borrow_mut() = Some(level.clone()));
-    Ok(cadence_core::world::World::from_level(&level))
+    cadence_core::world::World::from_level(&level)
+}
+
+/// `cadence watch <spec>`: simulate the spec's first attempt and write each `watchgroup`'s
+/// objects every step next to the harness's file (`<file>.ours`): `step,id:x:y:rot:real=x:y`
+/// per object (the level object's f64 position as the game's +0x3b0/+0x3b8, its turned
+/// rotation), plus `:op=` opacity-related state is left to screenshots.
+fn watch(spec_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let spec = cadence_core::trace::Spec::parse(&std::fs::read_to_string(spec_path)?);
+    let mut world = load_spec_world(&spec)?;
+    world.sched_every = spec.speed;
+    if let Ok(text) = std::fs::read_to_string(spec.out_path(0)) {
+        world.sched_phase = cadence_core::trace::sched_index(&text).unwrap_or(0);
+    }
+    let level = LEVEL_SETTINGS.with(|c| c.borrow().clone()).unwrap_or_default();
+    let view_w = std::env::var("CADENCE_VIEW_W").ok().and_then(|v| v.parse().ok()).unwrap_or(569.0);
+    let inputs = spec.buttons.first().cloned().unwrap_or_default();
+    world.reset();
+    let mut player = spawn_player(&world);
+    // each watched group's first objects by level order (the game's group array order)
+    let groups: Vec<(Vec<usize>, String)> = spec
+        .watch
+        .iter()
+        .map(|(g, path)| {
+            let members: Vec<usize> = level.objects.iter().enumerate().filter(|(_, o)| o.groups().contains(g)).map(|(i, _)| i).take(spec.watch_max).collect();
+            (members, format!("{path}.ours"))
+        })
+        .collect();
+    let mut outs: Vec<String> = vec![String::new(); groups.len()];
+    // enter effects as `PlayLayer::updateVisibility` applies them (per step here): the drawn
+    // position, opacity and scale
+    let mut locks = vec![cadence_core::enter::EnterLock::default(); level.objects.len()];
+    for step in 0..spec.steps {
+        player.begin_step(&world);
+        for &(down, button) in inputs.get(&step).map(|v| v.as_slice()).unwrap_or(&[]) {
+            press(&mut player, &mut world, down, button);
+        }
+        world.observe(player.dual.as_ref().map(|p| (p.x, p.y)), (player.camera.x, player.camera.y));
+        world.pre_step((player.x, player.y));
+        player.step(&world);
+        world.post_step(&player);
+        player.step_camera(&world, view_w);
+        for (k, (members, _)) in groups.iter().enumerate() {
+            let mut line = format!("{step}");
+            for &i in members {
+                let (x, y) = world.level_position(i);
+                let o = &level.objects[i];
+                let rot = o.get_f32(6).unwrap_or(0.0) + world.turned[i];
+                let scale = o.get_f32(32).unwrap_or(1.0);
+                let sx = o.get_f32(128).unwrap_or(scale) * world.scaled[i].0;
+                let sy = o.get_f32(129).unwrap_or(scale) * world.scaled[i].1;
+                let eo = cadence_core::enter::EnterObject {
+                    x: x as f32,
+                    y: y as f32,
+                    margin: cadence_core::objects::info(o.canonical_id()).map_or(0.0, |inf| cadence_core::enter::fade_margin(inf.width, inf.height, (sx, sy), rot)),
+                    channel: o.get_i32(343).unwrap_or(0).clamp(0, 100),
+                    ignore_enter: o.get(67) == Some("1"),
+                    ignore_fade: o.get(64) == Some("1"),
+                    ui: false,
+                    no_scale: false,
+                    seed: i as u32,
+                };
+                let z = if player.camera.zoom > 0.0 { player.camera.zoom } else { 1.0 };
+                let view = cadence_core::enter::EnterView { left: player.camera.x, width: view_w / z, cam_y: player.camera.y, win_h: 320.0 };
+                let e = world.enter.apply(&eo, &view, &mut locks[i]);
+                line.push_str(&format!(
+                    ",{}:{}:{}:{}:real={}:{}:op={}:sc={}:{}",
+                    o.id(),
+                    x as f32 + e.dx,
+                    y as f32 + e.dy,
+                    rot + e.rotation,
+                    x,
+                    y,
+                    (e.opacity * 255.0).round() as i32,
+                    sx * e.scale.0,
+                    sy * e.scale.1
+                ));
+            }
+            outs[k].push_str(&line);
+            outs[k].push('\n');
+        }
+        if player.dead || player.finished || world.level_end {
+            break;
+        }
+    }
+    for (k, (_, path)) in groups.iter().enumerate() {
+        std::fs::write(path, &outs[k])?;
+        eprintln!("wrote {path}");
+    }
+    Ok(())
 }
 
 thread_local! {
@@ -238,7 +348,7 @@ const PLAN_VIEW_W: f32 = 493.0;
 /// Replay the first attempt of a spec and write the trace.
 fn replay(spec_path: &str, out_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let spec = cadence_core::trace::Spec::parse(&std::fs::read_to_string(spec_path)?);
-    let mut world = load_world(spec.level)?;
+    let mut world = load_spec_world(&spec)?;
     world.sched_every = spec.speed;
     // The scheduler phase from the real trace when there is one.
     if let Ok(text) = std::fs::read_to_string(spec.out_path(0)) {
@@ -280,7 +390,7 @@ fn legacy_dash_ends(text: &str, rows: &[cadence_core::trace::Row]) -> BTreeMap<u
 fn verify(spec_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     use cadence_core::trace::parse_csv;
     let spec = cadence_core::trace::Spec::parse(&std::fs::read_to_string(spec_path)?);
-    let mut world = load_world(spec.level)?;
+    let mut world = load_spec_world(&spec)?;
     world.sched_every = spec.speed;
     let (mut matched, mut total, mut steps) = (0, 0, 0usize);
     let (mut rot_max, mut rot_sum, mut rot_n) = (0.0f32, 0.0f64, 0usize);
@@ -712,8 +822,13 @@ fn route_platformer(level: &str, waypoints: &str, out_pattern: &str) -> Result<(
         anchor: (f32, f32, u32),
     }
     let apply = |p: &mut Player, w: &cadence_core::world::World, ev: &[(u32, bool, u8)]| {
+        // (the planner shares worlds between routes: touch triggers aren't run here)
         for &(_, down, b) in ev {
-            press(p, w, down, b);
+            if b == 1 {
+                p.set_button(down, w);
+            } else {
+                p.set_direction(down, b);
+            }
         }
     };
     let mut worlds = vec![base_world.clone()];
@@ -969,18 +1084,31 @@ fn rects(level: &str) -> Result<(), Box<dyn std::error::Error>> {
 fn features(level: &str) -> Result<(), Box<dyn std::error::Error>> {
     use cadence_core::objects::{self, ObjectType};
     use std::collections::BTreeMap;
-    let level_path = format!("{}/levels/{}.txt", gd_resources(), level);
-    let level = LevelString::parse(&decode_level_bytes(&std::fs::read(&level_path)?)?);
+    // a main level's id, or a level file (a downloaded level or a raw level string)
+    let level_path = if std::path::Path::new(level).is_file() { level.to_string() } else { format!("{}/levels/{}.txt", gd_resources(), level) };
+    let bytes = std::fs::read(&level_path)?;
+    let text = String::from_utf8_lossy(&bytes);
+    let level = if text.contains(";1,") && !text.trim_start().starts_with("H4sI") { LevelString::parse(&text) } else { LevelString::parse(&decode_level_bytes(&bytes)?) };
     let handled_kinds = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29, 32, 34, 35, 37, 38, 47];
-    let handled_triggers = [
+    // every trigger the world, the camera or the order walk runs (groups.rs, camera.rs,
+    // order.rs), and the editor-only / inert ones (1931 end and 3655 do nothing in play, 2016
+    // camera guide and 3642 BPM are editor guides)
+    let mut handled_triggers = vec![
         29, 30, 31, 104, 105, 200, 201, 202, 203, 221, 717, 718, 743, 744, 899, 900, 901, 915, 1049, 1268, 1334,
         1346, 1347, 1611, 1616, 1913, 1914, 1916, 1935, 2899, 2900, 2902, 3600,
+        1595, 1612, 1613, 1811, 1812, 1814, 1815, 1816, 1817, 1818, 1819, 1912, 1917, 1931, 1932, 1934, 2015, 2016,
+        2062, 2063, 2066, 2067, 2068, 2901, 2925, 3016, 3022, 3023, 3024, 3032, 3033, 3602, 3603, 3604, 3605, 3606,
+        3607, 3608, 3609, 3612, 3613, 3614, 3615, 3617, 3618, 3619, 3620, 3640, 3641, 3642, 3655, 3660, 3661, 3662,
+        3663,
     ];
+    handled_triggers.extend(3006..=3010);
+    handled_triggers.extend(3017..=3021);
+    handled_triggers.extend(3029..=3031);
     // Triggers that only change how things look or sound (enter effects 22–28 and 55–59, trail
     // 32/33, pulse 1006, alpha 1007, gradient 2903, shaders 2904–2924, middle ground 2999,
     // background/ground/middle-ground swaps 3029–3031, sound effects 3602/3603): listed apart,
     // they don't affect the physics.
-    let mut visual_triggers = vec![22, 23, 24, 25, 26, 27, 28, 32, 33, 55, 56, 57, 58, 59, 1006, 1007, 1520, 1585];
+    let mut visual_triggers = vec![22, 23, 24, 25, 26, 27, 28, 32, 33, 55, 56, 57, 58, 59, 1006, 1007, 1520, 1585, 1915];
     visual_triggers.extend(2903..=2924);
     visual_triggers.extend([2999, 3029, 3030, 3031, 3602, 3603]);
     let mut kinds: BTreeMap<i32, (usize, BTreeMap<i32, usize>)> = BTreeMap::new();
