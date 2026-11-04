@@ -1016,3 +1016,33 @@ untouched), home re/home (re/home-anon for the editor).
   pass; cam370 matches every position but its ship start's visual rotation at step 0 (as other
   ship-start levels); pfslope fails as above). `cargo test --workspace --release` green (53 core,
   47 game).
+
+## 2026-11-05 (gameplay agent): slopes, keyframes, camera 370, dual deaths, glows, editor guides, ship fires
+
+Worktree branch on top of main (bc818c1); own harness build, game copy and home in this
+session's scratch (corner, muted); decompiles from the scratch Ghidra copy.
+
+- **Platformer slopes**: forced slides past 40°, the platformer slope launch, the slide bonus
+  ending, platformer slope direction by velocity, preSlopeCollision's platformer walls, no
+  rotation easing the step after a slope. re/traces/pfslope matches (2/2, rotation bit-exact);
+  the rotation fix also fixed s12–s16-22.
+- **Keyframes**: curves (tk::spline), reference-only runs and time modes, close loop. New real
+  trace re/traces/kfcurve (watchgroups 5/6/10/12): positions to print precision; a turning object
+  drifts ≤ 1.5e-4 in the real game (also in the old kf2 trace); the spawned move's every-4-steps
+  batching as known. tools/cmp_watch.py compares watchgroup files.
+- **Camera mode 370**: updateDualGround on a free-mode change, the ceiling store after the
+  trigger walk; re/traces/cam370t bit-exact incl. camera.
+- **Dual deaths**: player 2's death explodes player 2; the other leaves with the exit-dual copy;
+  0.05 s death fade. Checked against real deathshot frames (re/traces/dualdeath, harness:
+  deathshot on player 2's death too). The physics capture of that level diverges at the dual
+  portal at 60 Hz (yvel −0 vs 0 for player 2, then player 1 falls) — not looked into; the capture
+  isn't a suite.
+- **Glows** take the object color and blend additively (area HSV blocks no longer pale).
+- **Editor**: guides drawn under the objects; music playback line (green, per the decompile).
+- **Explode toggle** (0153: no shatter), **ship fires 2–6** (motion streak), **edit song / SFX**
+  tweens and proximity volume.
+- Harness additions: `gamevar <key> <0|1>`, `shipfire N`, deathshot on player 2's death.
+- Not done: group parents / linked objects (findings in NOTES); SFX speed and per-sound
+  proximity (audio backend); the editor's preview-lock line.
+- verify_all **122/133** (was 114/131): +pfslope, s12..s16-22, +kfcurve, +cam370t;
+  `cargo test --workspace --release` green (57 core, 55 game).

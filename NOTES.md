@@ -1565,3 +1565,89 @@ are in the scratch `DecompileTyped.java`; with them Ghidra keeps the float expre
   Area triggers (3006–3015) are object type 45 and fire by position like type 20 triggers.
 - **Platformer slopes**: `m_slopeAngle` (+0x5f0) keeps its value off slopes in the real traces
   (0.785 after leaving a 45° slope); `updateMove` only reads it while on the slope.
+
+## Gameplay leftovers for v0.0.2 (2026-11-05, gameplay agent)
+
+- **Platformer slope slides** (`performSlideCheck` 0x3702e8, inlined in FUN_10036e834's platformer
+  part): with `m_currentSlope2` (+0x5e0, the slope landed on through collidedWithSlopeInternal's
+  hitGround path) and the player on or just off a slope, not resnapped, the slope not a grip
+  slope (key 193, +0x512) and |m_slopeAngle (+0x5f0, atan(h/w), kept after leaving) · 57.29578|
+  > 40: m_forcedSlideLeft/Right (+0xaf9/+0xafa) = left on an uphill slope right side up (right
+  on a downhill one, mirrored upside down; uphill is +0x5f4 = the slope's uphill flag xor
+  sideways), m_changedDirectionsTime when it changes, m_slideSlopeAngle (+0xb00, degrees),
+  m_forcedSlopeSlide = 1; else both flags clear. updateMove (already ported) then pushes the
+  velocity down the slope (the 45° slope in re/traces/pfslope: −0.1617 a step against the
+  +0.1125 acceleration, so a held direction loses 0.049 a step and slides back at the top).
+  Also: collidedWithSlopeInternal's "left" in platformer is the x velocity's sign (not the
+  facing), so are the slope rotation's sign and the downhill test; a landing faster than 5 down
+  on a slope over 40° halves a rightward speed; an uphill slope of ≥ 1 rad sets the slope jump
+  count to 3; hitGround's platformer fields (ice, sliding, m_lastLandTime) on slopes too;
+  preSlopeCollision in platformer: the right-hand wall strip counts too, no 1-unit inset, strips
+  5 shorter at both ends on/just off a slope; the exit launch (FUN_10037013c) in platformer is
+  ±|vx·tan(m_slopeAngle)|·1.1, only with a direction held and |vx| ≥ 5·cos(angle) − 1;
+  leaving a slope holding the way it slid ends the slide bonus and sets m_isMoving (k 0.15 in
+  the slow-down); updateRotation's dispatcher (0x3753e8) doesn't ease a grounded cube / robot /
+  spider the step after a slope (m_wasOnSlope). pfslope matches (positions and rotation); the
+  last also fixed s12–s16-22's rotation.
+- **Keyframes** (`createKeyframeCommand` 0x26a6fc, `setupSpline` 0xcb680, mode 5 of
+  prepareMoveActions): see keyframes.rs and spline.rs. The spline is tk::spline's cspline with
+  zero second derivatives at both ends (set_points 0x10043abc0: band-matrix LU with fma in
+  l_solve / r_solve / elimination, b = fma(fma(c_i, 2, c_{i+1})·(−1/3), h, Δy/h); operator()
+  0x10043c490 Horner with fma), knots t = cumulative max(duration, 1e-5), values cumulative
+  position deltas from the run's first keyframe. Two keyframes at the same place: the first
+  can't curve; a run needs two curve keyframes. Reference-only time modes split the run start's
+  own duration (mode 1 evenly over the segments including its own, 2 by f32 ccpDistance), mode 0
+  keeps them; the run is eased as one over refRunDuration (own + refs' in mode 0, own in 1/2)
+  when the start keyframe eases. Close loop (the last keyframe's 376) appends the first keyframe
+  again (base reset, scale 1). The previous keyframe's rotation and scale are kept as f32.
+  Real re/traces/kfcurve matches to print precision except while an object turns: the real
+  object drifts up to 1.5e-4 units from its place while rotating in place (also in the older kf2
+  trace) — not explained.
+- **Camera mode trigger 370** (`updateCameraMode` 0xe0c78): a change of free mode calls
+  updateDualGround → the corridor around the last mode portal with the trigger's 370; and
+  GJBaseGameLayer::update stores the step's ceiling (+0x6bc) after the trigger walk (the
+  "moving ceiling" test compares with it). re/traces/cam370t matches bit for bit (camera too).
+- **Dual deaths** (`PlayLayer::destroyPlayer` 0x7d960, `playerDestroyed` 0x37b6d8,
+  `playExitDualEffect` 0xe5200): the dying player's death effect; the other player is hidden at
+  once (opacity 0 in the real scene) and a SimplePlayer copy of it fades over 0.4 s, moves
+  124.632 screen units back (±, mirrored), scales to ±0.1, turns 180°, with an outlined
+  CCCircleWave 10 → 30 (0.4 s) in its main color following it. playDeathEffect fades the dying
+  player out with CCFadeTo(0.05) a frame late (real opacities 255/255/170/84/0).
+- **Glows**: `GameObject::setObjectColor` (0x5b8708) calls setGlowColor with the object's color
+  unless m_customGlowColor (+0x431); m_cantColorGlow (+0x433, set only in setupCustomSprites for
+  some types — not modelled) blocks it. Black objects keep a black main sprite but the glow gets
+  the channel color. The glow batch blends 770,1 (SRC_ALPHA, ONE). Mean frame diff over 20 real
+  frames of levels 1/9/16/20: 7.43 → 6.89.
+- **Editor**: DrawGridLayer::draw (0xbda9c) draws the music playback line in green (50,255,50)
+  at posForTime(song time), glLineWidth 5 while playing; after stopping it stays at +0x1e4 with
+  alpha 100, width 3, until a playtest. The orange (255,150,0) width-2 line is
+  LevelEditorLayer +0x38f8 = m_previewPosition, set by EditorUI's "Preview Locked." action and
+  saved with the level (GJGameLevel +0x238) — not the music. Cadence has no preview lock, so it
+  isn't drawn.
+- **Explode toggle**: GJGarageLayer shows it as !0153; in playDeathEffect 0153 only skips the
+  ExplodeItemNode (shatter) — real capture re/traces/noexplode.
+- **Ship fires** (GameManager m_playerShipFire +0x35c; PlayerObject m_shipStreakType +0x8e4,
+  m_shipStreak +0x778): see `ShipFire` in app.rs (textures, frame times, offsets, the fade /
+  stroke table FUN_100364938). Only shown in ship mode, not in platformer (toggleFlyMode).
+- **Edit song / SFX** (`applySFXEditTrigger` 0x112928): +0x7a4 stop (417), +0x7a5 volume (418,
+  value +0x75c = 406), +0x7a6 speed (419, value +0x750 if > 0 else pitchForIdx(+0x754 = 404)),
+  both FMOD updateChannel tweens over +0x5ac (10). (The bindings name 418/419 the other way
+  round.) Proximity: see groups::Proximity; the SFX trigger (3602) itself also has it
+  (activateSFXTrigger: initial volume × volumeForProximityEffect, then the same effect) — not
+  wired for 3602, nor SFX speed (the audio backend has no per-sound rate).
+- **Group parents / linked objects (not ported)**: special group keys `getSpecialKey(g, ignore
+  parent 280, ignore linked 281)` = (280 ? 110000000 : 100000000) + g + (281 ? 1000000 : 0).
+  FUN_1000d64d0 (after sortStickyGroups, which renumbers linked groups key 108 → +0x368 and
+  fills m_linkedGroupDict +0xf28) builds, for each target group of an advanced follow (3016,
+  0xbc8) or area trigger (object type 45) with its 280/281 combination, four entries in
+  m_targetGroupsArray (+0xef8) and m_targetGroups[key] = (index + 1, count): A = objects moved
+  alone, B = cluster leaders, D = leader uid → its cluster's objects (a linked group's array, or
+  for a parent cluster −g the group g's objects), E = leader uid → the cluster's group-parent
+  object (prefers +0x47e, key 34 "group parent"; leaders prefer +0x47f, key 279 "area parent").
+  Clusters: an object's linked group; unless 280, objects that are group parents (+0x492, child
+  groups in m_parentGroups +0xe70) pull their child groups' objects into cluster −child. No
+  clusters at all → (0, count) and the plain group is used. processAdvancedFollowAction then
+  runs pass 0 over A (each object alone) and pass 1 over B, moving D[leader] by the leader's
+  step and rotating D[leader] about the leader's unmodified position; addAreaEffect stores the
+  same (index, count) in the effect instance. tryGetGroupParent(g) = m_parentGroupsDict[g][0],
+  else the first object of g with +0x47e.
