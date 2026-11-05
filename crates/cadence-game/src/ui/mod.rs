@@ -2089,6 +2089,12 @@ impl Ui {
             }
             Btn::WriteSend => {
                 if let (Some(w), Some(s)) = (self.writer.take(), self.social.as_mut()) {
+                    if let Some(thread) = w.rename {
+                        if !w.body.trim().is_empty() {
+                            s.update_thread(thread, 2, Some(w.body.trim().to_string()));
+                        }
+                        return;
+                    }
                     if let Some(thread) = w.thread {
                         if !w.body.trim().is_empty() {
                             s.send_thread(thread, w.body);
@@ -3728,6 +3734,13 @@ impl Ui {
             // your account's pages (CADENCE_SERVER at a stand-in with made-up answers)
             #[cfg(not(target_arch = "wasm32"))]
             "threadview" => self.social = Some(social::Social::open_first_thread()),
+            // ThreadOptionsPopup on the first thread listed
+            #[cfg(not(target_arch = "wasm32"))]
+            "threadopts" => {
+                let mut s = social::Social::open_at(social::Page::Threads(0));
+                s.options = s.threads.as_ref().and_then(|r| r.as_ref().ok()).and_then(|(l, _, _)| l.first()).cloned();
+                self.social = Some(s);
+            }
             // NewThreadPopup over the threads (CADENCE_PAGE=1: a group)
             #[cfg(not(target_arch = "wasm32"))]
             "newthread" => {
@@ -4249,6 +4262,12 @@ impl Ui {
             }
             social::Effect::Write { to, title } => self.writer = Some(social::Writer::new(title, to)),
             social::Effect::NewThread => self.writer = Some(social::Writer::new_thread()),
+            social::Effect::RenameThread(thread, name) => {
+                let mut w = social::Writer::new("Rename Group Chat", None);
+                w.rename = Some(thread);
+                w.body = name;
+                self.writer = Some(w);
+            }
             social::Effect::WriteThread(thread) => {
                 let mut w = social::Writer::new("Message", None);
                 w.thread = Some(thread);

@@ -61,6 +61,8 @@ pub enum Effect {
     WriteThread(i64),
     /// Open `NewThreadPopup` (a direct message or a group).
     NewThread,
+    /// Open `RenameThreadPopup` for this thread (its current name).
+    RenameThread(i64, String),
     /// A received request opened (`FriendRequestPopup`): its row, sender and message.
     Request { row: usize, name: String, text: String },
 }
@@ -77,6 +79,9 @@ pub struct Social {
     pub ticked: Vec<i64>,
     /// The thread open (`ThreadView`) and its messages.
     pub viewing: Option<social::Thread>,
+    /// `ThreadOptionsPopup` open on this thread, and its Clear / Leave question.
+    pub options: Option<social::Thread>,
+    pub options_confirm: Option<i32>,
     /// Your friends, for the new-thread popup's "To".
     pub friends: Option<Vec<User>>,
     pub thread_page: Option<Result<social::ThreadPage, ()>>,
@@ -99,7 +104,7 @@ pub fn row_btn(what: u16, row: usize) -> Btn {
 
 impl Social {
     pub fn open() -> Social {
-        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), viewing: None, thread_page: None, friends: None, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
+        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), viewing: None, thread_page: None, friends: None, options: None, options_confirm: None, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
         s.load();
         s
     }
@@ -238,6 +243,72 @@ impl Social {
         }
     }
 
+    /// An option of `ThreadOptionsPopup` (updateGJThread), then the page reloads.
+    pub fn update_thread(&mut self, thread: i64, mode: i32, value: Option<String>) {
+        self.job = Some(crate::net::spawn(async move { Msg::Done(social::update_thread(thread, mode, value).await, "thread option") }));
+    }
+
+    /// The options popup's buttons for `t`: (label, button sheet, what).
+    fn option_buttons(t: &social::Thread) -> Vec<(&'static str, &'static str, u8)> {
+        let mute = if t.muted { "Unmute" } else { "Mute" };
+        let pin = if t.starred { "Unpin" } else { "Pin" };
+        if t.direct {
+            vec![("View Profile", "GJ_button_01.png", 0), (mute, "GJ_button_04.png", 2), (pin, "GJ_button_04.png", 3), ("Report", "GJ_button_05.png", 4), ("Clear", "GJ_button_06.png", 5)]
+        } else {
+            vec![("Members", "GJ_button_01.png", 6), ("Rename", "GJ_button_04.png", 1), (mute, "GJ_button_04.png", 2), (pin, "GJ_button_04.png", 3), ("Report", "GJ_button_05.png", 4), ("Leave", "GJ_button_06.png", 7)]
+        }
+    }
+
+    /// A click while the options popup is open.
+    fn options_click(&mut self, id: Btn) -> Effect {
+        let Some(t) = self.options.clone() else { return Effect::None };
+        if let Some(mode) = self.options_confirm {
+            match id {
+                Btn::Social(7791) => {
+                    self.options = None;
+                    self.options_confirm = None;
+                    if mode == 5 && self.page() == Page::ThreadView {
+                        self.stack.pop();
+                    }
+                    self.update_thread(t.id, mode, None);
+                }
+                Btn::Social(7790) => self.options_confirm = None,
+                _ => {}
+            }
+            return Effect::None;
+        }
+        let Btn::Social(code @ 7700..=7799) = id else { return Effect::None };
+        if code == 7799 {
+            self.options = None;
+            return Effect::None;
+        }
+        let buttons = Social::option_buttons(&t);
+        let Some(&(_, _, what)) = buttons.get((code - 7700) as usize) else { return Effect::None };
+        match what {
+            0 => {
+                self.options = None;
+                return Effect::Profile(t.account);
+            }
+            1 => {
+                self.options = None;
+                return Effect::RenameThread(t.id, t.title.clone());
+            }
+            2 => {
+                self.options = None;
+                self.update_thread(t.id, 10, Some(if t.muted { "0" } else { "1" }.into()));
+            }
+            3 => {
+                self.options = None;
+                self.update_thread(t.id, 15, Some(if t.starred { "0" } else { "1" }.into()));
+            }
+            5 => self.options_confirm = Some(1),
+            7 => self.options_confirm = Some(5),
+            // Report and Members: their requests aren't mapped yet (PLAN)
+            _ => {}
+        }
+        Effect::None
+    }
+
     pub fn send_new_thread(&mut self, n: &NewThread, name: String, text: String) {
         let ids: Vec<i64> = n.to.iter().map(|u| u.0).collect();
         let (dm, targets, desc, body) = if n.group { (None, ids, text, String::new()) } else { (ids.first().copied(), Vec::new(), String::new(), text) };
@@ -341,6 +412,9 @@ impl Social {
 
     /// A click on the page's layout button `i` (`Btn::Replay`) or a row's (`Btn::Social`).
     pub fn click(&mut self, id: Btn) -> Effect {
+        if self.options.is_some() {
+            return self.options_click(id);
+        }
         let page = self.page();
         match (page, id) {
             // back / close
@@ -385,6 +459,10 @@ impl Social {
                     self.go(Page::ThreadView);
                 }
             }
+            (Page::Threads(_), Btn::Social(code)) if (7600..7700).contains(&code) => {
+                self.options = self.threads.as_ref().and_then(|r| r.as_ref().ok()).and_then(|(l, _, _)| l.get((code - 7600) as usize)).cloned();
+            }
+            (Page::ThreadView, Btn::Replay(7)) => self.options = self.viewing.clone(),
             (Page::Threads(_), Btn::Social(code)) if (7000..7100).contains(&code) => {
                 if let Some(t) = self.threads.as_ref().and_then(|r| r.as_ref().ok()).and_then(|(l, _, _)| l.get((code - 7000) as usize)) {
                     return Effect::Profile(t.account);
@@ -616,6 +694,10 @@ pub fn draw(s: &Social, c: &mut Canvas, ctx: &mut Ctx) {
             c.rect(0.0, 0.0, w, h, [0.0; 3], 100.0 / 255.0);
             draw_settings(s, c, ctx, dx);
         }
+    }
+    if let Some(t) = &s.options {
+        ctx.buttons.clear();
+        draw_thread_options(s, t, c, ctx, dx);
     }
 }
 
@@ -1059,7 +1141,9 @@ fn draw_threads(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32, tab: u8) {
         if t.muted {
             c.sprite("GJ_musicOffBtn_001.png", 408.5 + dx, y + 10.0, Look::scaled(0.32).alpha(140));
         }
-        c.text("bigFont", "...", 408.5 + dx, y + 2.0, Look::scaled(0.45).alpha(120));
+        let more = Btn::Social(7600 + i as u16);
+        c.text("bigFont", "...", 408.5 + dx, y + 2.0, Look::scaled(0.45 * ctx.factor(more)).alpha(120));
+        ctx.area(more, 408.5 + dx, y + 2.0, 36.0, 34.0);
         let tick = Btn::Social(7100 + i as u16);
         let on = s.ticked.contains(&t.id);
         c.sprite(if on { "GJ_checkOn_001.png" } else { "GJ_checkOff_001.png" }, 432.5 + dx, y, Look::scaled(0.63 * ctx.factor(tick)));
@@ -1151,6 +1235,50 @@ fn draw_thread_view(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
     c.clip = None;
 }
 
+/// `ThreadOptionsPopup` (captured for a direct message and a group): the thread's name, when it
+/// was made, and a column of buttons 29 apart; Clear and Leave ask first.
+fn draw_thread_options(s: &Social, t: &social::Thread, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
+    c.rect(0.0, 0.0, c.width, c.height, [0.0; 3], 150.0 / 255.0);
+    let cx = 284.5 + dx;
+    let buttons = Social::option_buttons(t);
+    let h = 59.0 + 29.0 * buttons.len() as f32;
+    let top = 160.0 + h * 0.5 - 14.0;
+    c.nine_slice("GJ_square01.png", cx, 160.0, 240.0, h, Look::default());
+    c.text("bigFont", if t.direct { &t.name } else { &t.title }, cx, top, Look::scaled(0.5));
+    if t.time > 0 {
+        let stamp = crate::clock::stamp_label(t.time, crate::clock::local_offset(t.time));
+        c.text("chatFont", &format!("Created: {stamp}"), cx, top - 19.0, Look::scaled(0.6).rgb([0, 0, 0]).alpha(150));
+    }
+    let close = Btn::Social(7799);
+    c.sprite("GJ_closeBtn_001.png", 172.5 + dx, top + 2.0, Look::scaled(0.8 * ctx.factor(close)));
+    ctx.area(close, 172.5 + dx, top + 2.0, 36.8, 38.0);
+    for (k, (label, sheet, what)) in buttons.iter().enumerate() {
+        let y = top - 47.0 - 29.0 * k as f32;
+        let id = Btn::Social(7700 + k as u16);
+        let f = ctx.factor(id);
+        // Report and Members aren't wired to their requests yet: shown dimmed
+        let alpha = if matches!(what, 4 | 6) { 120 } else { 255 };
+        c.nine_slice(sheet, cx, y, 146.0 * f, 22.0 * f, Look::default().alpha(alpha));
+        c.text("bigFont", label, cx - 1.0, y + 2.0, Look::scaled(0.5 * f).alpha(alpha));
+        ctx.area(id, cx, y, 146.0, 22.0);
+    }
+    if let Some(mode) = s.options_confirm {
+        // the game's FLAlertLayer question
+        ctx.buttons.clear();
+        c.rect(0.0, 0.0, c.width, c.height, [0.0; 3], 100.0 / 255.0);
+        let (title, text, yes) = if mode == 5 { ("Leave", "Leave this group chat?", "Leave") } else { ("Clear", "Clear this conversation? This can't be undone.", "Clear") };
+        c.nine_slice("GJ_square01.png", cx, 160.0, 360.0, 140.0, Look::default());
+        c.text("goldFont", title, cx, 205.0, Look::scaled(0.9));
+        c.text("chatFont", text, cx, 165.0, Look::scaled(0.8));
+        for (id, label, x) in [(Btn::Social(7790), "Cancel", cx - 60.0), (Btn::Social(7791), yes, cx + 60.0)] {
+            let f = ctx.factor(id);
+            c.nine_slice("GJ_button_01.png", x, 118.0, 100.0 * f, 30.0 * f, Look::default());
+            c.text("goldFont", label, x, 120.0, Look::scaled(0.7 * f));
+            ctx.area(id, x, 118.0, 100.0, 30.0);
+        }
+    }
+}
+
 /// `GJAccountSettingsLayer`: the layout with this account's choices checked.
 fn draw_settings(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
     // the check boxes' rows and their options' x (from the layout: the boxes at y 225, 185,
@@ -1185,6 +1313,8 @@ pub struct Writer {
     /// `NewThreadPopup`: the subject is the group's name, the body the message (or the
     /// group's description).
     pub new_thread: Option<NewThread>,
+    /// `RenameThreadPopup` for this thread (the body is the name).
+    pub rename: Option<i64>,
     pub subject: String,
     pub body: String,
     /// The field typed into: 0 subject, 1 body (posts have the body only).
@@ -1194,12 +1324,13 @@ pub struct Writer {
 
 impl Writer {
     pub fn new(title: &'static str, to: Option<i64>) -> Writer {
-        Writer { title, to, level: None, song_slot: None, thread: None, new_thread: None, subject: String::new(), body: String::new(), field: if to.is_some() { 0 } else { 1 }, t: 0.0 }
+        Writer { title, to, level: None, song_slot: None, thread: None, new_thread: None, rename: None, subject: String::new(), body: String::new(), field: if to.is_some() { 0 } else { 1 }, t: 0.0 }
     }
 
     fn limit(&self) -> usize {
         match (self.to, self.field) {
             _ if self.thread.is_some() => 300,
+            _ if self.rename.is_some() => 20,
             _ if self.new_thread.is_some() => match (self.new_thread.as_ref().is_some_and(|n| n.group), self.field) {
                 (true, 0) => 20,
                 (true, _) => 300,
@@ -1369,8 +1500,32 @@ fn draw_new_thread(wr: &Writer, n: &NewThread, friends: Option<&Vec<User>>, c: &
 pub fn draw_writer_for(wr: &Writer, friends: Option<&Vec<User>>, c: &mut Canvas, ctx: &mut Ctx) {
     match &wr.new_thread {
         Some(n) => draw_new_thread(wr, n, friends, c, ctx),
+        None if wr.rename.is_some() => draw_rename(wr, c, ctx),
         None => draw_writer(wr, c, ctx),
     }
+}
+
+/// `RenameThreadPopup` (captured): "Rename Group Chat", "Everyone sees this name", the name, Save.
+fn draw_rename(wr: &Writer, c: &mut Canvas, ctx: &mut Ctx) {
+    let (w, h) = (c.width, c.height);
+    let cx = w * 0.5;
+    c.rect(0.0, 0.0, w, h, [0.0; 3], 150.0 / 255.0);
+    c.nine_slice("GJ_square01.png", cx, 160.0, 300.0, 140.0, Look::default());
+    c.text("bigFont", "Rename Group Chat", cx, 216.0, Look::scaled(0.5));
+    c.text("chatFont", "Everyone sees this name", cx, 192.0, Look::scaled(0.5).alpha(160));
+    c.nine_slice("square02b_small.png", cx, 162.0, 250.0, 26.0, Look::default().rgb([93, 52, 31]));
+    ctx.area(Btn::WriteField(1), cx, 162.0, 250.0, 26.0);
+    c.text("chatFont", &wr.body, cx, 162.0, Look::scaled(0.7));
+    if (wr.t * 2.0).fract() < 0.5 {
+        c.rect(cx + c.text_size("chatFont", &wr.body).0 * 0.35 + 2.0, 155.0, 1.5, 14.0, [1.0; 3], 1.0);
+    }
+    let close = ctx.factor(Btn::WriteCancel);
+    c.sprite("GJ_closeBtn_001.png", cx - 142.0, 218.0, Look::scaled(0.8 * close));
+    ctx.area(Btn::WriteCancel, cx - 142.0, 218.0, 36.8, 38.0);
+    let f = ctx.factor(Btn::WriteSend);
+    c.nine_slice("GJ_button_01.png", cx, 112.0, 86.0 * f, 28.0 * f, Look::default());
+    c.text("bigFont", "Save", cx - 1.0, 114.0, Look::scaled(0.6 * f));
+    ctx.area(Btn::WriteSend, cx, 112.0, 86.0, 28.0);
 }
 
 pub fn draw_writer(wr: &Writer, c: &mut Canvas, ctx: &mut Ctx) {

@@ -70,6 +70,12 @@ pub fn time_label(ts: i64, offset: i64) -> String {
     format!("{h12}:{min:02} {half}")
 }
 
+/// "2023-11-15 01:13:20" (the thread options' "Created:")
+pub fn stamp_label(ts: i64, offset: i64) -> String {
+    let (y, m, d, h, min) = civil(ts, offset);
+    format!("{y}-{m:02}-{d:02} {h:02}:{min:02}:{:02}", (ts + offset).rem_euclid(60))
+}
+
 /// The local day of `ts` (for date separators).
 pub fn day(ts: i64, offset: i64) -> i64 {
     (ts + offset).div_euclid(86400)
@@ -86,6 +92,7 @@ mod tests {
         assert_eq!(time_label(1700000000, 3 * 3600), "1:13 AM");
         assert_eq!(time_label(1700000000, 0), "10:13 PM");
         assert_eq!(civil(0, 0), (1970, 1, 1, 0, 0));
+        assert_eq!(stamp_label(1700000000, 3 * 3600), "2023-11-15 01:13:20");
         assert_eq!(civil(951782400, 0), (2000, 2, 29, 0, 0));
     }
 }

@@ -570,6 +570,22 @@ pub async fn send_new_thread(dm_to: Option<i64>, targets: Vec<i64>, name: String
     ok(crate::net::post("sendGJThreadMessage.php", &new_thread_form(&id, dm_to, &targets, &name, &description, &body, token)).await?).map(|_| ())
 }
 
+/// `updateGJThread.php` (recorded from the real ThreadOptionsPopup and RenameThreadPopup):
+/// mode 1 clear, 2 rename (value: the name), 5 leave, 10 mute ("1"/"0"), 15 pin ("1"/"0");
+/// the value base64'd.
+pub fn update_thread_form(id: &Identity, thread: i64, mode: i32, value: Option<&str>) -> String {
+    let mut f = format!("{}&threadID={thread}&mode={mode}&secret={}", id.base(), gjapi::SECRET);
+    if let Some(v) = value {
+        f.push_str(&format!("&value={}", gjapi::b64(v.as_bytes())));
+    }
+    f
+}
+
+pub async fn update_thread(thread: i64, mode: i32, value: Option<String>) -> Result<(), String> {
+    let id = me()?;
+    ok(crate::net::post("updateGJThread.php", &update_thread_form(&id, thread, mode, value.as_deref())).await?).map(|_| ())
+}
+
 pub async fn send_thread_message(thread: i64, text: String) -> Result<(), String> {
     let id = me()?;
     let token = 1_000_000_000_000_000 + (gjapi::random() % 9_000_000_000_000_000);
@@ -585,6 +601,14 @@ mod thread_page_tests {
         assert_eq!((p.messages[0].text.as_str(), p.messages[2].deleted, p.messages[1].account), ("Hello there, first message", true, 1));
         assert_eq!((p.users[0].name.as_str(), p.users[0].icon, p.users[1].account), ("Alpha", 15, 1));
         assert_eq!((p.earlier, p.locked, p.status), (true, true, 7));
+    }
+
+    #[test]
+    fn update_forms_as_recorded() {
+        let id = crate::gjapi::Identity { udid: "U".into(), uuid: 0, account: None };
+        assert!(super::update_thread_form(&id, 9001, 10, Some("1")).ends_with("&threadID=9001&mode=10&secret=Wmfd2893gb7&value=MQ=="));
+        assert!(super::update_thread_form(&id, 9002, 2, Some("New Name")).ends_with("&threadID=9002&mode=2&secret=Wmfd2893gb7&value=TmV3IE5hbWU="));
+        assert!(super::update_thread_form(&id, 9001, 1, None).ends_with("&threadID=9001&mode=1&secret=Wmfd2893gb7"));
     }
 
     #[test]

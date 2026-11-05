@@ -175,6 +175,9 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
 - [x] "Load earlier" (beforeID = the oldest message shown) and new threads (NewThreadPopup,
       both modes as captured; the request in GameLevelManager::sendThreadMessage's order:
       `&isDM=1`, `&toAccountID`, `&subject`, `&targets`, `&description`, `&token`, `&body`).
-- [ ] Still open: thread options in Cadence (modes recorded: 1 clear, 2 rename, 5 leave,
-      10 mute, 15 pin), members (answer format/handler not found yet), invites, search,
-      report (thread's type not read yet), and the "+" (share) and emote buttons.
+- [x] Thread options (ThreadOptionsPopup from a row's "..." or the thread's): View Profile,
+      Rename (RenameThreadPopup), Mute/Unmute, Pin/Unpin, Clear and Leave (asking first) —
+      updateGJThread modes 2, 10, 15, 1, 5 as recorded.
+- [ ] Still open: members (answer format/handler not found yet; the button is dimmed),
+      report (the thread's report type not read yet; dimmed), invites, search, and the "+"
+      (share) and emote buttons.

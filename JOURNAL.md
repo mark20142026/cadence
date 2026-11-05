@@ -1264,3 +1264,7 @@ prebuilt trace mod), corner and muted.
   members, to-Report.
 - Next: the options popup in Cadence from these layouts and modes; then members, invites,
   search, report's type.
+- Thread options in Cadence: the popup drawn from the two captures (59 + 29 per button; the
+  "Created:" stamp in local time, `clock::stamp_label`), Clear / Leave ask first, Rename opens
+  RenameThreadPopup (as captured; Save sends mode 2). Members and Report are shown dimmed until
+  their requests are mapped. Test `update_forms_as_recorded`.
