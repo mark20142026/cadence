@@ -1,0 +1,24 @@
+[package]
+name = "cadence-launcher"
+version = "0.0.2"
+description = "Finds (or downloads, with your Steam login) your copy of the game and starts Cadence"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "cadence"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.37"
+# the folder picker
+rfd = "0.15"
+# SteamCMD and the release check
+ureq = "2"
+flate2.workspace = true
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+dirs = "7"
+# CADENCE_LAUNCHER_SHOT
+png.workspace = true

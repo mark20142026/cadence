@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/cadence-core", "crates/cadence-tools", "crates/cadence-game"]
+members = ["crates/cadence-core", "crates/cadence-tools", "crates/cadence-game", "crates/cadence-launcher"]
 
 [workspace.package]
 edition = "2024"

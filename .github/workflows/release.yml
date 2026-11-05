@@ -1,0 +1,77 @@
+# Builds Cadence's player packages (the launcher + the game) on macOS, Windows and Linux.
+# A pushed tag v* publishes them as a GitHub release; a manual run keeps them as artifacts.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            name: macos-arm64
+          - os: macos-13
+            name: macos-intel
+          - os: windows-latest
+            name: windows
+          - os: ubuntu-22.04
+            name: linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux libraries (windowing, audio, the folder picker, TLS)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libgtk-3-dev libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libssl-dev pkg-config libcurl4-openssl-dev
+      - name: Build and package
+        shell: bash
+        run: tools/package.sh
+      - name: Name the packages for this platform
+        shell: bash
+        run: |
+          cd dist
+          for f in Cadence-*.zip Cadence-*.dmg Cadence-*.tar.gz; do
+            [ -e "$f" ] || continue
+            case "$f" in
+              Cadence-macos.*) mv "$f" "${f/Cadence-macos/Cadence-${{ matrix.name }}}" ;;
+            esac
+          done
+          ls -la
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cadence-${{ matrix.name }}
+          path: |
+            dist/*.zip
+            dist/*.dmg
+            dist/*.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: packages/*
+          body: |
+            Download the package for your computer, open it and run **Cadence**: the launcher finds your copy of Geometry Dash 2.2091 in Steam (or gets it with your Steam login) and starts the game.
+
+            - macOS: `Cadence-macos-arm64.dmg` (Apple Silicon) or `Cadence-macos-intel.dmg`. The app isn't notarized: the first time, right-click it and choose **Open**.
+            - Windows: `Cadence-windows.zip`, unzip it and run `cadence.exe`.
+            - Linux: `Cadence-linux.tar.gz`, unpack it and run `cadence`.
+
+            Cadence ships none of the game's files and isn't affiliated with RobTop Games.

@@ -33,3 +33,4 @@ __pycache__/
 # agents' git worktrees
 /.claude/worktrees/
 /.wrangler/
+/dist/

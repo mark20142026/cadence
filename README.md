@@ -37,13 +37,28 @@ Early development (v0.0.2). What works:
   pictures, where the original drops frames on 7 of them, and uses about a quarter less CPU
   and less memory on most (see [BENCHMARKS.md](BENCHMARKS.md)).
 
-## Running it
+## Download and play
+
+Get the package for your computer from [Releases](https://github.com/mark20142026/cadence/releases)
+and run **Cadence**. The launcher finds your copy of Geometry Dash 2.2091 in any Steam library
+(or a folder you pick), or downloads it with your Steam login through Valve's SteamCMD (you need
+to own the game; your password goes to SteamCMD only), then starts Cadence on it.
+
+- macOS: the `.dmg` (Apple Silicon or Intel). It isn't notarized: the first time, right-click
+  Cadence and choose **Open**.
+- Windows: unzip and run `cadence.exe`.
+- Linux: unpack and run `cadence`.
+
+## Building it yourself
 
 You need a legal copy of Geometry Dash 2.2091 and Rust 1.90+.
 
 ```bash
-cargo run --release -p cadence-game
+cargo run --release -p cadence-launcher   # the launcher
+cargo run --release -p cadence-game       # the game directly
 ```
+
+`tools/package.sh` builds the player package for your platform into `dist/`.
 
 Cadence finds the game's resources in the usual Steam location; see
 [DOCUMENTATION.md](DOCUMENTATION.md) for other locations, the web build and all options.
