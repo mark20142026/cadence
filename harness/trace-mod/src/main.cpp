@@ -1121,7 +1121,7 @@ void stepGui() {
     int lead = 0;
     // .../dropnotice: every frame once the gui is open, until the shot
     // (only before a /press:, so the notices that press opens stay)
-    bool pressing = name.find("/press:") != std::string::npos;
+    bool pressing = name.find("/press") != std::string::npos;
     if (name.find("/dropnotice") != std::string::npos && g_guiFrame > lead + 40 && g_guiFrame < lead + g_guiShotFrame - (pressing ? g_guiLate + 10 : 2)) dropNotices();
     if (g_guiFrame == lead + 1) {
         CCDirector::get()->replaceScene(MenuLayer::scene(false));

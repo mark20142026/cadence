@@ -398,6 +398,8 @@ pub struct Thread {
     pub glow: bool,
     pub time: i64,
     pub status: i32,
+    /// The group's owner (field 9)
+    pub owner: i64,
 }
 
 /// The thread list's answer: the threads, the total, and the invites waiting (the `#` part is
@@ -438,6 +440,7 @@ pub fn parse_threads(body: &str) -> (Vec<Thread>, usize, i32) {
                 glow: n(20) == 2,
                 time: n(23),
                 status: n(25) as i32,
+                owner: n(9),
             })
         })
         .collect();
@@ -488,7 +491,9 @@ pub struct ThreadUser {
 }
 
 /// A thread's messages (`getGJThreadMessages.php`, GameLevelManager at 0x100490d04): `#` parts
-/// 0 the messages, 1 the players, 4 the thread's state (`owner : … : members : title (base64) :
+/// 0 the messages, 1–3 the players (FUN_1004c676c: 1 members as the usual `key:value` player
+/// rows, 2 `account:user:name b64:icon:…` rows, 3 invited `account:user:name b64:status`),
+/// 4 the thread's state (`owner : … : members : title (base64) :
 /// last read : earlier : later : time : description (base64) : locked : can send (0/1 yes,
 /// 2–7 blocked, 8 removed)`). Mapped from captures of the real ThreadViewPopup.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -514,7 +519,11 @@ pub fn parse_thread_page(body: &str) -> ThreadPage {
             Some(ThreadMessage { id: f[0].parse().ok()?, account: f[1].parse().unwrap_or(0), text: b64_text(f[2]), time: f[3].parse().unwrap_or(0), deleted: f.get(4).is_some_and(|v| *v != "0") })
         })
         .collect();
-    let users = part(1)
+    let mut users: Vec<ThreadUser> = parse_users(part(1))
+        .into_iter()
+        .map(|u| ThreadUser { account: u.account_id, name: u.name, icon: u.icon as i32, color1: u.color1 as i32, color2: u.color2 as i32, icon_type: u.icon_type as i32 })
+        .collect();
+    let positional: Vec<ThreadUser> = part(2)
         .split('|')
         .filter_map(|r| {
             let f: Vec<&str> = r.split(':').collect();
@@ -525,6 +534,11 @@ pub fn parse_thread_page(body: &str) -> ThreadPage {
             Some(ThreadUser { account: f[0].parse().ok()?, name: b64_text(f[2]), icon: n(3), color1: n(4), color2: n(5), icon_type: n(7) })
         })
         .collect();
+    for u in positional {
+        if !users.iter().any(|v| v.account == u.account) {
+            users.push(u);
+        }
+    }
     let meta: Vec<&str> = part(4).split(':').collect();
     let m = |i: usize| meta.get(i).and_then(|v| v.parse::<i64>().ok());
     ThreadPage { messages, users, earlier: m(5).unwrap_or(0) > 0, locked: m(9).unwrap_or(0) != 0, status: m(10).map_or(-1, |v| v as i32) }
@@ -535,6 +549,36 @@ pub async fn thread_messages(thread: i64, before: i64) -> Result<ThreadPage, Str
     let id = me()?;
     let body = crate::net::post("getGJThreadMessages.php", &format!("{}&threadID={thread}&beforeID={before}&afterID=0&secret={}", id.base(), gjapi::SECRET)).await?;
     Ok(ok(body).map(|b| parse_thread_page(b.trim())).unwrap_or_default())
+}
+
+/// A group's members (`getGJThreadMembers.php`, `&threadID=&secret=`; the handler
+/// FUN_100492840 passes the answer to FUN_1004c676c): part 0 the members (`key:value` player
+/// rows), part 2 the invited (`account:user:name b64:status`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Members {
+    pub members: Vec<User>,
+    pub invited: Vec<(i64, String)>,
+}
+
+pub fn parse_members(body: &str) -> Members {
+    let parts: Vec<&str> = body.split('#').collect();
+    let invited = parts
+        .get(2)
+        .copied()
+        .unwrap_or("")
+        .split('|')
+        .filter_map(|r| {
+            let f: Vec<&str> = r.split(':').collect();
+            (f.len() >= 4).then(|| (f[0].parse().unwrap_or(0), b64_text(f[2])))
+        })
+        .collect();
+    Members { members: parse_users(parts.first().copied().unwrap_or("")), invited }
+}
+
+pub async fn members(thread: i64) -> Result<Members, String> {
+    let id = me()?;
+    let body = crate::net::post("getGJThreadMembers.php", &format!("{}&threadID={thread}&secret={}", id.base(), gjapi::SECRET)).await?;
+    Ok(ok(body).map(|b| parse_members(b.trim())).unwrap_or_default())
 }
 
 /// `searchGJThreadMessages.php` (GameLevelManager's request, decompiled): the query base64'd
@@ -644,8 +688,9 @@ pub async fn invites() -> Result<Vec<Invite>, String> {
 }
 
 /// `updateGJThread.php` (recorded from the real ThreadOptionsPopup and RenameThreadPopup):
-/// mode 1 clear, 2 rename (value: the name), 5 leave, 8 accept an invite, 9 ignore it,
-/// 10 mute ("1"/"0"), 15 pin ("1"/"0");
+/// mode 1 clear, 2 rename (value: the name), 4 add members ("id,id"), 5 leave, 6 kick and
+/// 7 make owner (value: their account), 8 accept an invite, 9 ignore it, 10 mute ("1"/"0"),
+/// 13 who adds members ("1" owner only), 15 pin ("1"/"0");
 /// the value base64'd.
 pub fn update_thread_form(id: &Identity, thread: i64, mode: i32, value: Option<&str>) -> String {
     let mut f = format!("{}&threadID={thread}&mode={mode}&secret={}", id.base(), gjapi::SECRET);
@@ -670,11 +715,19 @@ pub async fn send_thread_message(thread: i64, text: String) -> Result<(), String
 mod thread_page_tests {
     #[test]
     fn messages_users_and_state() {
-        let p = super::parse_thread_page("7001:21:SGVsbG8gdGhlcmUsIGZpcnN0IG1lc3NhZ2U=:1700000000:0|7002:1:SGkgQWxwaGEhIFRoaXMgb25lIGlzIG1pbmU=:1700000100:0|7003:21:VGhpcmQgbWVzc2FnZSwgZmxhZ2dlZA==:1700000200:1#21:121:QWxwaGE=:15:3:12:5:0:2|1:101:Q2FkZW5jZVRlc3Q=:4:6:7:8:0:0###9001:21:2:TWV0YSBUaXRsZQ==:5:1:0:1700000300:TWV0YSBEZXNj:1:7#P5#P6#11,12,13,14");
+        let p = super::parse_thread_page("7001:21:SGVsbG8gdGhlcmUsIGZpcnN0IG1lc3NhZ2U=:1700000000:0|7002:1:SGkgQWxwaGEhIFRoaXMgb25lIGlzIG1pbmU=:1700000100:0|7003:21:VGhpcmQgbWVzc2FnZSwgZmxhZ2dlZA==:1700000200:1#1:Alpha:2:121:16:21:9:15:10:3:11:12:14:0#1:101:Q2FkZW5jZVRlc3Q=:4:6:7:8:0:0##9001:21:2:TWV0YSBUaXRsZQ==:5:1:0:1700000300:TWV0YSBEZXNj:1:7#P5#P6#11,12,13,14");
         assert_eq!(p.messages.len(), 3);
         assert_eq!((p.messages[0].text.as_str(), p.messages[2].deleted, p.messages[1].account), ("Hello there, first message", true, 1));
         assert_eq!((p.users[0].name.as_str(), p.users[0].icon, p.users[1].account), ("Alpha", 15, 1));
         assert_eq!((p.earlier, p.locked, p.status), (true, true, 7));
+    }
+
+    #[test]
+    fn members_parts() {
+        let m = super::parse_members("1:Alpha:2:121:16:21:9:15:10:3:11:12:14:0:15:2:3:100:4:5|1:Gamma:2:123:16:23:9:40##22:122:QmV0YQ==:1");
+        assert_eq!(m.members.len(), 2);
+        assert_eq!((m.members[0].name.as_str(), m.members[0].account_id, m.members[0].stars), ("Alpha", 21, 100));
+        assert_eq!(m.invited, vec![(22, "Beta".to_string())]);
     }
 
     #[test]

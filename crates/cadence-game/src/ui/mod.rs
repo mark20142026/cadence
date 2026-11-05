@@ -2042,6 +2042,15 @@ impl Ui {
                 if let Some(n) = self.writer.as_mut().and_then(|w| w.new_thread.as_mut()) {
                     n.picking = !n.picking;
                 }
+                // Add Member: the list's OK adds the friends picked
+                if self.writer.as_ref().is_some_and(|w| w.add_to.is_some() && w.new_thread.as_ref().is_some_and(|n| !n.picking)) {
+                    if let (Some(w), Some(s)) = (self.writer.take(), self.social.as_mut()) {
+                        let ids: Vec<i64> = w.new_thread.map(|n| n.to.iter().map(|u| u.0).collect()).unwrap_or_default();
+                        if let (Some(thread), false) = (w.add_to, ids.is_empty()) {
+                            s.add_members(thread, ids);
+                        }
+                    }
+                }
             }
             Btn::WriteMode(m) => {
                 if let Some(w) = self.writer.as_mut() {
@@ -3740,6 +3749,18 @@ impl Ui {
             // your account's pages (CADENCE_SERVER at a stand-in with made-up answers)
             #[cfg(not(target_arch = "wasm32"))]
             "threadview" => self.social = Some(social::Social::open_first_thread()),
+            // MemberListPopup on the first thread listed
+            #[cfg(not(target_arch = "wasm32"))]
+            "members" => {
+                let mut s = social::Social::open_at(social::Page::Threads(0));
+                s.members_of = s.threads.as_ref().and_then(|r| r.as_ref().ok()).and_then(|(l, _, _)| l.first()).cloned();
+                s.load_members();
+                while s.busy() {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    s.update(0.0);
+                }
+                self.social = Some(s);
+            }
             // InvitesPopup over the threads
             #[cfg(not(target_arch = "wasm32"))]
             "invites" => self.social = Some(social::Social::open_at(social::Page::Invites(false))),
@@ -4271,6 +4292,18 @@ impl Ui {
             }
             social::Effect::Write { to, title } => self.writer = Some(social::Writer::new(title, to)),
             social::Effect::NewThread => self.writer = Some(social::Writer::new_thread()),
+            social::Effect::AddMembers(thread) => {
+                let mut w = social::Writer::new_thread();
+                w.set_group(true);
+                w.add_to = Some(thread);
+                if let Some(n) = w.new_thread.as_mut() {
+                    n.picking = true;
+                }
+                if let Some(s) = self.social.as_mut() {
+                    s.load_friends();
+                }
+                self.writer = Some(w);
+            }
             social::Effect::SearchThread(thread) => {
                 let mut w = social::Writer::new("Search Messages", None);
                 w.search = Some(thread);

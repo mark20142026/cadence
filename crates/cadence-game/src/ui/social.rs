@@ -44,6 +44,7 @@ pub enum Msg {
     ThreadOlder(Result<social::ThreadPage, ()>),
     Invites(Result<Vec<social::Invite>, ()>),
     ThreadSearch(String, Result<Vec<social::ThreadMessage>, ()>),
+    Members(Result<social::Members, ()>),
     Opened(Box<social::Message>),
     Profile(Box<(crate::online::Profile, Counts, Vec<Post>)>),
     Users(Vec<User>),
@@ -69,6 +70,8 @@ pub enum Effect {
     RenameThread(i64, String),
     /// Open the box for searching this thread's messages.
     SearchThread(i64),
+    /// Pick friends to add to this group.
+    AddMembers(i64),
     /// A received request opened (`FriendRequestPopup`): its row, sender and message.
     Request { row: usize, name: String, text: String },
 }
@@ -94,6 +97,12 @@ pub struct Social {
     pub ignoring: Option<i64>,
     /// A search in the open thread: the query and the messages found.
     pub thread_search: Option<(String, Option<Vec<social::ThreadMessage>>)>,
+    /// `MemberListPopup` open on this group, its list, a kick / new owner asked about
+    /// (mode, account, name), and whether only the owner adds members.
+    pub members_of: Option<social::Thread>,
+    pub members: Option<Result<social::Members, ()>>,
+    pub members_confirm: Option<(i32, i64, String)>,
+    pub owner_adds: bool,
     pub accepted: Option<social::Thread>,
     /// Your friends, for the new-thread popup's "To".
     pub friends: Option<Vec<User>>,
@@ -117,7 +126,7 @@ pub fn row_btn(what: u16, row: usize) -> Btn {
 
 impl Social {
     pub fn open() -> Social {
-        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), viewing: None, thread_page: None, friends: None, options: None, options_confirm: None, invites: None, ignoring: None, accepted: None, thread_search: None, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
+        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), viewing: None, thread_page: None, friends: None, options: None, options_confirm: None, invites: None, ignoring: None, accepted: None, thread_search: None, members_of: None, members: None, members_confirm: None, owner_adds: false, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
         s.load();
         s
     }
@@ -276,6 +285,72 @@ impl Social {
         }
     }
 
+    pub fn load_members(&mut self) {
+        let Some(id) = self.members_of.as_ref().map(|t| t.id) else { return };
+        self.members = None;
+        self.job = Some(crate::net::spawn(async move { Msg::Members(social::members(id).await.map_err(|_| ())) }));
+    }
+
+    /// A click while the members popup is open: close, Add Member, who adds, a member's X
+    /// (kick) or crown (make owner) — both asked about first — or their name.
+    fn members_click(&mut self, id: Btn) -> Effect {
+        let Some(t) = self.members_of.clone() else { return Effect::None };
+        if let Some((mode, account, _)) = self.members_confirm.clone() {
+            if id == Btn::Social(8091) {
+                self.job = Some(crate::net::spawn(async move { Msg::Done(social::update_thread(t.id, mode, Some(account.to_string())).await, "member") }));
+            }
+            if matches!(id, Btn::Social(8090 | 8091)) {
+                self.members_confirm = None;
+            }
+            return Effect::None;
+        }
+        let list = self.members.as_ref().and_then(|r| r.as_ref().ok()).cloned().unwrap_or_default();
+        let Btn::Social(code) = id else { return Effect::None };
+        match code {
+            8099 => {
+                self.members_of = None;
+                self.members = None;
+            }
+            8098 => return Effect::AddMembers(t.id),
+            8097 => {
+                self.owner_adds = !self.owner_adds;
+                let v = if self.owner_adds { "1" } else { "0" };
+                self.job = Some(crate::net::spawn(async move { Msg::Done(social::update_thread(t.id, 13, Some(v.into())).await, "member") }));
+            }
+            8000..=8019 => {
+                if let Some(u) = list.members.get((code - 8000) as usize) {
+                    self.members_confirm = Some((6, u.account_id, u.name.clone()));
+                } else if let Some((acc, name)) = list.invited.get((code - 8000) as usize - list.members.len()) {
+                    self.members_confirm = Some((6, *acc, name.clone()));
+                }
+            }
+            8050..=8069 => {
+                if let Some(u) = list.members.get((code - 8050) as usize) {
+                    self.members_confirm = Some((7, u.account_id, u.name.clone()));
+                }
+            }
+            8070..=8089 => {
+                if let Some(u) = list.members.get((code - 8070) as usize) {
+                    return Effect::Profile(u.account_id);
+                }
+            }
+            _ => {}
+        }
+        Effect::None
+    }
+
+    /// Your friends, for the "To" / Add Member lists (once).
+    pub fn load_friends(&mut self) {
+        if self.friends.is_none() && !self.busy() {
+            self.job = Some(crate::net::spawn(async { social::user_list(0).await.map_or_else(|_| Msg::Friends(Vec::new()), Msg::Friends) }));
+        }
+    }
+
+    pub fn add_members(&mut self, thread: i64, ids: Vec<i64>) {
+        let list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+        self.job = Some(crate::net::spawn(async move { Msg::Done(social::update_thread(thread, 4, Some(list)).await, "member") }));
+    }
+
     /// A click while the options popup is open.
     fn options_click(&mut self, id: Btn) -> Effect {
         let Some(t) = self.options.clone() else { return Effect::None };
@@ -318,9 +393,14 @@ impl Social {
                 self.options = None;
                 self.update_thread(t.id, 15, Some(if t.starred { "0" } else { "1" }.into()));
             }
+            6 => {
+                self.options = None;
+                self.members_of = Some(t);
+                self.load_members();
+            }
             5 => self.options_confirm = Some(1),
             7 => self.options_confirm = Some(5),
-            // Report and Members: their requests aren't mapped yet (PLAN)
+            // Report: the thread's report type isn't read yet (PLAN)
             _ => {}
         }
         Effect::None
@@ -367,6 +447,7 @@ impl Social {
             Msg::Messages(m) => self.messages = Some(m),
             Msg::ThreadPage(p) => self.thread_page = Some(p),
             Msg::Invites(l) => self.invites = Some(l),
+            Msg::Members(m) => self.members = Some(m),
             Msg::ThreadSearch(q, r) => self.thread_search = Some((q, Some(r.unwrap_or_default()))),
             Msg::ThreadOlder(Ok(older)) => {
                 if let Some(Ok(p)) = self.thread_page.as_mut() {
@@ -400,6 +481,7 @@ impl Social {
             Msg::Done(Ok(()), what) => {
                 // the page reloads what changed
                 match what {
+                    "member" => self.load_members(),
                     "accept invite" => {
                         if let Some(t) = self.accepted.take() {
                             self.viewing = Some(t);
@@ -447,6 +529,9 @@ impl Social {
 
     /// A click on the page's layout button `i` (`Btn::Replay`) or a row's (`Btn::Social`).
     pub fn click(&mut self, id: Btn) -> Effect {
+        if self.members_of.is_some() {
+            return self.members_click(id);
+        }
         if self.options.is_some() {
             return self.options_click(id);
         }
@@ -504,9 +589,7 @@ impl Social {
                 }
             }
             (Page::Threads(_), Btn::Replay(7)) => {
-                if self.friends.is_none() && !self.busy() {
-                    self.job = Some(crate::net::spawn(async { social::user_list(0).await.map_or_else(|_| Msg::Friends(Vec::new()), Msg::Friends) }));
-                }
+                self.load_friends();
                 return Effect::NewThread;
             }
             (Page::Threads(tab), Btn::Replay(i @ 11..=13)) if i as u8 - 11 != tab => {
@@ -779,6 +862,10 @@ pub fn draw(s: &Social, c: &mut Canvas, ctx: &mut Ctx) {
     if let Some(t) = &s.options {
         ctx.buttons.clear();
         draw_thread_options(s, t, c, ctx, dx);
+    }
+    if let Some(t) = &s.members_of {
+        ctx.buttons.clear();
+        draw_members(s, t, c, ctx, dx);
     }
 }
 
@@ -1358,8 +1445,8 @@ fn draw_thread_options(s: &Social, t: &social::Thread, c: &mut Canvas, ctx: &mut
         let y = top - 47.0 - 29.0 * k as f32;
         let id = Btn::Social(7700 + k as u16);
         let f = ctx.factor(id);
-        // Report and Members aren't wired to their requests yet: shown dimmed
-        let alpha = if matches!(what, 4 | 6) { 120 } else { 255 };
+        // Report isn't wired to its request yet: shown dimmed
+        let alpha = if *what == 4 { 120 } else { 255 };
         c.nine_slice(sheet, cx, y, 146.0 * f, 22.0 * f, Look::default().alpha(alpha));
         c.text("bigFont", label, cx - 1.0, y + 2.0, Look::scaled(0.5 * f).alpha(alpha));
         ctx.area(id, cx, y, 146.0, 22.0);
@@ -1478,6 +1565,105 @@ fn draw_invites(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32, ignored: boo
     }
 }
 
+/// `MemberListPopup` (captured with made-up members): rows 40 apart — the player's icon, name
+/// and stars / moons / demons — with, for the group's owner, a crown (make them owner) and an X
+/// (kick; for the invited, "Invited" and an X); then the count of 10, Add Member and who adds.
+fn draw_members(s: &Social, t: &social::Thread, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
+    c.rect(0.0, 0.0, c.width, c.height, [0.0; 3], 150.0 / 255.0);
+    let at = |x: f32| x + 38.0 + dx;
+    let cx = at(246.5);
+    c.nine_slice("GJ_square01.png", cx, 160.0, 340.0, 260.0, Look::default());
+    c.nine_slice("square02_small.png", cx, 158.0, 310.0, 168.0, Look::default().rgb([0, 0, 0]).alpha(80));
+    c.text("goldFont", "Members", cx, 272.0, Look::scaled(0.7));
+    let close = Btn::Social(8099);
+    c.sprite("GJ_closeBtn_001.png", at(80.5), 282.0, Look::scaled(0.72 * ctx.factor(close)));
+    ctx.area(close, at(80.5), 282.0, 33.12, 34.2);
+    for (id, x, sheet, label, scale) in [(Btn::Social(8098), 189.5, "GJ_button_01.png", "Add Member", 0.4472), (Btn::Social(8097), 329.5, "GJ_button_04.png", if s.owner_adds { "Adds: Owner" } else { "Adds: Anyone" }, 0.4)] {
+        let f = ctx.factor(id);
+        c.nine_slice(sheet, at(x), 54.0, 106.0 * f, 26.0 * f, Look::default());
+        c.text("bigFont", label, at(x - 1.0), 56.0, Look::scaled(scale * f));
+        ctx.area(id, at(x), 54.0, 106.0, 26.0);
+    }
+    let list = match &s.members {
+        None => return super::online::loading_circle(c, cx, 158.0, s.t),
+        Some(Err(())) => {
+            c.text("chatFont", "Failed to load members", cx, 158.0, Look::scaled(0.6).alpha(150));
+            return;
+        }
+        Some(Ok(l)) => l,
+    };
+    c.text("goldFont", &format!("{}/10", list.members.len()), at(90.5), 54.0, Look::scaled(0.5).anchor(0.0, 0.5));
+    let me = crate::gjapi::identity().account.map_or(0, |a| a.account_id);
+    let owner = me == t.owner;
+    c.clip = Some([at(91.5), 74.0, at(401.5), 242.0]);
+    let stats = |c: &mut Canvas, y: f32, values: [i64; 3]| {
+        let mut x = at(137.5);
+        for (v, icon) in values.iter().zip(["GJ_starsIcon_001.png", "GJ_moonsIcon_001.png", "GJ_demonIcon_001.png"]) {
+            let text = v.to_string();
+            let w = c.text_size("bigFont", &text).0 * 0.4;
+            c.text("bigFont", &text, x, y, Look::scaled(0.4).anchor(0.0, 0.5));
+            c.sprite(icon, x + w + 7.3, y - 1.0, Look::scaled(0.5));
+            x += w + 21.2;
+        }
+    };
+    let mut row = 0;
+    for (i, u) in list.members.iter().enumerate() {
+        let y = 222.0 - 40.0 * row as f32;
+        row += 1;
+        super::garage::draw_icon(c, &super::garage::icon_sheet((u.icon_type as usize).min(8), u.icon), at(113.5), y, 0.8, super::menu::color_for_idx(u.color1), super::menu::color_for_idx(u.color2));
+        let w = c.text_size("goldFont", &u.name).0 * 0.6;
+        let name = Btn::Social(8070 + i as u16);
+        c.text("goldFont", &u.name, at(137.5) + w * 0.5, y + 9.5, Look::scaled(0.6 * ctx.factor(name)));
+        ctx.area(name, at(137.5) + w * 0.5, y + 9.5, w, 15.6);
+        stats(c, y - 8.0, [u.stars, u.moons, u.demons]);
+        if u.account_id == t.owner {
+            c.text("chatFont", "Owner", at(361.5), y, Look::scaled(1.0).anchor(1.0, 0.5).alpha(150));
+        } else if owner {
+            let (kick, crown) = (Btn::Social(8000 + i as u16), Btn::Social(8050 + i as u16));
+            c.sprite("GJ_deleteIcon_001.png", at(383.5), y, Look::scaled(0.7 * ctx.factor(kick)));
+            ctx.area(kick, at(383.5), y, 16.8, 16.8);
+            c.sprite("particle_313_001.png", at(354.5), y, Look::scaled(1.2 * ctx.factor(crown)));
+            ctx.area(crown, at(354.5), y, 19.2, 15.0);
+        }
+    }
+    for (k, (_, name)) in list.invited.iter().enumerate() {
+        let y = 222.0 - 40.0 * row as f32;
+        row += 1;
+        // no icon in an invite's row: the default cube, as the game shows it
+        super::garage::draw_icon(c, "player_01", at(113.5), y, 0.8, super::menu::color_for_idx(0), super::menu::color_for_idx(3));
+        let w = c.text_size("goldFont", name).0 * 0.6;
+        c.text("goldFont", name, at(137.5) + w * 0.5, y + 9.5, Look::scaled(0.6).rgb([175, 175, 175]));
+        stats(c, y - 8.0, [0, 0, 0]);
+        c.text("chatFont", "Invited", at(361.5), y, Look::scaled(1.0).anchor(1.0, 0.5).alpha(150));
+        if owner {
+            let kick = Btn::Social(8000 + (list.members.len() + k) as u16);
+            c.sprite("GJ_deleteIcon_001.png", at(383.5), y, Look::scaled(0.7 * ctx.factor(kick)));
+            ctx.area(kick, at(383.5), y, 16.8, 16.8);
+        }
+    }
+    c.clip = None;
+    if let Some((mode, _, name)) = &s.members_confirm {
+        // the game's questions (captured)
+        ctx.buttons.clear();
+        c.rect(0.0, 0.0, c.width, c.height, [0.0; 3], 100.0 / 255.0);
+        c.nine_slice("square01_001.png", cx, 160.0, 380.0, 150.0, Look::default());
+        let (title, yes) = if *mode == 7 { ("Transfer Ownership", "Transfer") } else { ("Kick Member", "Kick") };
+        c.text("goldFont", title, cx, 212.0, Look::scaled(0.8));
+        let line = if *mode == 7 { format!("Make <cl>{name}</c> the owner of this group chat?") } else { format!("Kick <cl>{name}</c> from this group chat?") };
+        let lines = super::canvas::rich_lines(c, "chatFont", &line, 340.0);
+        super::canvas::draw_rich(c, "chatFont", &lines, cx, 180.0, 0.8, 18.0, 255);
+        if *mode == 7 {
+            c.text("chatFont", "Only the owner can kick members.", cx, 160.0, Look::scaled(0.8).rgb([255, 255, 0]));
+        }
+        for (id, label, x, sheet) in [(Btn::Social(8090), "Back", cx - 70.0, "GJ_button_01.png"), (Btn::Social(8091), yes, cx + 70.0, if *mode == 7 { "GJ_button_01.png" } else { "GJ_button_06.png" })] {
+            let f = ctx.factor(id);
+            c.nine_slice(sheet, x, 112.0, 116.0 * f, 34.0 * f, Look::default());
+            c.text("goldFont", label, x, 114.0, Look::scaled(0.7 * f));
+            ctx.area(id, x, 112.0, 116.0, 34.0);
+        }
+    }
+}
+
 /// `GJAccountSettingsLayer`: the layout with this account's choices checked.
 fn draw_settings(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
     // the check boxes' rows and their options' x (from the layout: the boxes at y 225, 185,
@@ -1516,6 +1702,8 @@ pub struct Writer {
     pub rename: Option<i64>,
     /// A search in this thread (the body is the query).
     pub search: Option<i64>,
+    /// Friends picked to add to this group (`MemberListPopup`'s Add Member).
+    pub add_to: Option<i64>,
     pub subject: String,
     pub body: String,
     /// The field typed into: 0 subject, 1 body (posts have the body only).
@@ -1525,7 +1713,7 @@ pub struct Writer {
 
 impl Writer {
     pub fn new(title: &'static str, to: Option<i64>) -> Writer {
-        Writer { title, to, level: None, song_slot: None, thread: None, new_thread: None, rename: None, search: None, subject: String::new(), body: String::new(), field: if to.is_some() { 0 } else { 1 }, t: 0.0 }
+        Writer { title, to, level: None, song_slot: None, thread: None, new_thread: None, rename: None, search: None, add_to: None, subject: String::new(), body: String::new(), field: if to.is_some() { 0 } else { 1 }, t: 0.0 }
     }
 
     fn limit(&self) -> usize {
@@ -1610,6 +1798,8 @@ fn draw_new_thread(wr: &Writer, n: &NewThread, friends: Option<&Vec<User>>, c: &
     c.rect(0.0, 0.0, w, h, [0.0; 3], 150.0 / 255.0);
     let at = |x: f32| x + 38.0 + dx;
     let brown = Look::default().rgb([93, 52, 31]);
+    // adding members to a group: the friends list only
+    if wr.add_to.is_none() {
     c.nine_slice("GJ_square01.png", at(246.5), 160.0, 420.0, 230.0, Look::default());
     c.text("goldFont", if n.group { "New Group Chat" } else { "New Direct Message" }, at(246.5), 259.0, Look::scaled(0.7));
     c.sprite("GJ_infoIcon_001.png", at(111.5), 259.0, Look::scaled(0.5));
@@ -1669,6 +1859,7 @@ fn draw_new_thread(wr: &Writer, n: &NewThread, friends: Option<&Vec<User>>, c: &
     c.nine_slice("GJ_button_01.png", at(246.5), 67.0, 96.0 * f, 28.0 * f, Look::default());
     c.text("bigFont", "Send", at(245.5), 69.0, Look::scaled(0.6 * f));
     ctx.area(Btn::WriteSend, at(246.5), 67.0, 96.0, 28.0);
+    }
     if n.picking {
         // the friends to send to (FriendPickerPopup's choice, as a plain list)
         ctx.buttons.clear();
@@ -1780,6 +1971,9 @@ pub fn wanted_sheets(s: &Social) -> Vec<String> {
         Page::Threads(_) => s.threads.iter().flatten().flat_map(|(l, _, _)| l.iter()).filter(|t| t.direct).map(|t| super::garage::icon_sheet((t.icon_type as usize).min(8), t.icon.max(1) as u32)).collect(),
         Page::Settings | Page::Messages(_) | Page::Notifications | Page::History => Vec::new(),
     };
+    if s.members_of.is_some() {
+        v.extend(s.members.iter().flatten().flat_map(|m| m.members.iter()).map(|u| super::garage::icon_sheet((u.icon_type as usize).min(8), u.icon)));
+    }
     v.sort();
     v.dedup();
     v

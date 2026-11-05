@@ -181,8 +181,10 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
 - [x] Invites and message requests (getGJThreadInvites → InvitesPopup, as captured): Accept
       (updateGJThread mode 8, then the thread opens), Ignore (asks first; mode 9), Pending ↔
       Ignored.
-- [ ] Still open: members (answer format/handler not found yet; the button is dimmed),
-      report (the thread's report type not read yet; dimmed), search in the invites, and the
-      "+" (share) and emote buttons.
+- [x] Group members (getGJThreadMembers → MemberListPopup, as captured): the members with
+      stats, the invited, kick (mode 6) and make owner (mode 7) asking first, Add Member from
+      your friends (mode 4, "id,id"), who adds (mode 13) — all recorded except Add (decompiled).
+- [ ] Still open: report (the thread's report type not read yet; dimmed), search in the
+      invites, and the "+" (share) and emote buttons.
 - [x] Search in a thread (searchGJThreadMessages, `&query=<b64>` after the secret, from the
       decompile; results replace the messages until search is pressed again).

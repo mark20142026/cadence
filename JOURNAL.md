@@ -1280,3 +1280,13 @@ prebuilt trace mod), corner and muted.
   part 0 with the message-row parser (0x1004c6374) and part 1 as "more". Not recorded from the
   game. Cadence: the thread view's search button opens a one-line box; results replace the
   messages with `Search: "…"` above; pressing search again (or refresh) goes back.
+- Members: the dispatcher's jump table (GameLevelManager at 0x100477128, table 0x1008eb690,
+  index = request type − 1) sends type 0x61 to FUN_100492840, which passes the answer to
+  FUN_1004c676c — so its `#` parts are: 0 members as the usual `key:value` player rows
+  (responseToDict → GJUserScore), 1 `account:user:name b64:icon:…` rows, 2 invited
+  `account:user:name b64:status`. (This also corrects the thread view: its part 1 is player
+  rows; the real view got "Alpha" from the thread itself.) The real MemberListPopup captured
+  with that answer; kick = updateGJThread mode 6, make owner = 7 (value: their account),
+  "Adds:" = 13 — recorded through their questions; Add Member = mode 4 with the picked accounts
+  joined (MemberListPopup::friendPickerAdd → FUN_1004caa9c, decompiled). Cadence draws the
+  popup from the capture; Add Member reuses the friends list of the New popup.
