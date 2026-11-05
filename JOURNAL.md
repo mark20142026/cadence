@@ -1315,3 +1315,24 @@ prebuilt trace mod), corner and muted.
   the message box with the token; a shared level in a message opens the online search for it.
 - The invites' search box: a filter on the sender's name and the group's title (the popup
   sends nothing for it as far as the strings show), X clears it.
+
+## 2026-11-05 — camera: the level end, level starts, platformer band
+
+- The end portal's limit (updateCamera, decompile line 140): with an end portal (+0x3140) the
+  right limit is (+0x3138 − view width / zoom) − m_cameraOffset.x, and it eases in like an edge
+  (the 60-unit ramp to 24). +0x3138 is set at level setup to max(screen width + 300, furthest
+  object + 340) — Cadence's `level_length`. Every end-of-level camera difference is gone (bot1,
+  lv5, pg2, r2-3001, r8-19, route-sm4, v2-4/5/6, w5-17, rand: camera bit for bit). The
+  after-end camera (`step_end`) now eases into that limit by a 24th per step instead of a fitted
+  1%.
+- Level start: `Player::reset_camera` fires the triggers already passed (`order_pass`) and runs
+  the camera once with no time passing (every easing instant), as the game's first update does.
+  cam370 and dbg now match the camera from step 0; the platformer start zoom (0.8) applies
+  before the first step.
+- Platformer follow: band 55 above / 27.5 below (40 / 70 otherwise) and x easing 8 (1
+  otherwise), from the decompile's constants. pf1 matches the camera to step 612, the Tower
+  routes to ~2,000, pfslope to 1,097; after the player turns around the game's speed-based
+  easing (min(30, 30 − 0.2·|distance|), eased by 10/dt; decompile lines 444–452) isn't ported.
+- Dash: the camera differs once by ~4 ulps at step 3378 (back in step the next) and drifts
+  from step ~13,650 in a smooth static camera (2 s, both axes); not found yet.
+- verify_all 124/135, unchanged (the same 11, rotation only).

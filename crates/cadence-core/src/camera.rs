@@ -368,6 +368,10 @@ pub struct Camera {
     pub gameplay_no_zoom: [bool; 2],
     /// Camera edges (+0x420.. left, right, up, down): the edge object by level order (see
     /// `CameraAction::Edge`).
+    /// The level's end (`+0x3138`: max(screen width + 300, furthest object + 340), set when
+    /// the end portal is made — not in platformer levels): the view's right limit is this
+    /// minus the view width and the camera offset, eased into like an edge.
+    pub level_end_x: Option<f32>,
     pub edges: [Option<Option<u32>>; 4],
 }
 
@@ -479,6 +483,7 @@ impl Camera {
             gameplay_offset: [75, 75],
             gameplay_no_zoom: [false; 2],
             edges: [None; 4],
+            level_end_x: None,
         }
     }
 
@@ -561,6 +566,7 @@ impl Camera {
         let sideways = player.sideways;
         let left = player.going_left;
         let up = player.upside_down;
+        let platformer = player.platformer.on;
         let basic = matches!(player.mode, crate::physics::Mode::Cube | crate::physics::Mode::Robot);
         // local_100[0..1]: this step's static exit applies at once (instant easing).
         let instant = if dt == 0.0 { [true, true] } else { self.exit_pending };
@@ -596,9 +602,18 @@ impl Camera {
             edge_pos(3).map(|p| p.1).filter(|&y| 0.0 < y).unwrap_or(0.0),
         ];
         // the edges' own flags: an edge set by a trigger also eases the camera into it
-        let max_flag = [self.edges[1].is_some(), self.edges[2].is_some()];
+        let mut max_flag = [self.edges[1].is_some(), self.edges[2].is_some()];
+        // the end portal's limit (updateCamera: (m_levelLength − view width) − m_cameraOffset.x,
+        // when it's left of the right edge), eased into as well
+        let mut max = max;
+        if let Some(end) = self.level_end_x {
+            let lim = (end - wz) - self.offset[0];
+            if max[0] == -99999.0 || lim < max[0] {
+                max[0] = lim;
+                max_flag[0] = true;
+            }
+        }
         let min_flag = [self.edges[0].is_some(), self.edges[3].is_some()];
-        let platformer = player.platformer.on;
         let mut cam = [self.x - self.applied_exit[0], self.y - self.applied_exit[1]];
         for a in 0..2 {
             cam[a] += self.offset[a] - self.last_offset[a];
@@ -607,13 +622,17 @@ impl Camera {
         let pdelta = [player.x - player.last_x, player.y - player.last_y];
         // The follow band: 70 above and 40 below the center (swapped upside down); other
         // modes use the camera padding (`m_cameraPadding`, +0x2cc; 0 here) and easing.
-        let (hi, lo) = if !up { (70.0f32, 40.0f32) } else { (40.0, 70.0) };
+        // (platformer levels: 55 above and 27.5 below)
+        let (band_hi, band_lo) = if platformer { (55.0f32, 27.5f32) } else { (70.0, 40.0) };
+        let (hi, lo) = if !up { (band_hi, band_lo) } else { (band_lo, band_hi) };
         let (padding, camera_easing) = player.camera_padding;
         let pad = [
             ((w * 0.5) - padding.mul_add((w * 0.5 + -2.0) + -30.0, 30.0)) * (1.0 / z),
             ((h * 0.5) - padding.mul_add((h * 0.5 + -2.0) + -30.0, 30.0)) * (1.0 / z),
         ];
-        let mut ease = if sideways { [10.0f32, 1.0] } else { [1.0f32, 10.0] };
+        // the follow's easing (local_140): x 1 (platformer 8), y 10; swapped sideways
+        let along = if platformer { 8.0f32 } else { 1.0 };
+        let mut ease = if sideways { [10.0f32, along] } else { [along, 10.0] };
         // Zooming keeps the view's center (bVar13, the "last grounded on the floor" case, isn't
         // modelled).
         if z != lz {
@@ -1130,13 +1149,16 @@ fn bezier(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
 }
 
 impl Camera {
-    /// After the level end: the camera eases toward showing the level's end at the right edge
-    /// (`level_length − view width`). Approximate: about 1% of the remaining distance per step,
-    /// fitted to real traces (the exact end-camera code isn't ported yet).
+    /// After the level end (the player flies into the end portal, physics stopped): the camera
+    /// eases into the end portal's limit (`m_levelLength − view width − m_cameraOffset.x`) the
+    /// way `updateCamera` eases into an edge once the target is past it — a 24th of the
+    /// remaining distance per step. (Until the end, `update_camera` itself applies the limit,
+    /// bit for bit against the traces.)
     pub fn step_end(&mut self, level_length: f32, view_w: f32) {
-        let target = level_length - view_w;
+        let z = if self.zoom > 0.0 { self.zoom } else { 1.0 };
+        let target = (level_length - view_w / z) - self.offset[0];
         if target > self.x {
-            self.x += (target - self.x) * 0.0095;
+            self.x += (target - self.x) / 24.0;
         }
     }
 

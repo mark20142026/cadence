@@ -1268,7 +1268,8 @@ impl Game {
         self.wave_trail.clear();
         // A direction held into the new attempt is pressed again on its first step.
         self.direction_sent = [false; 2];
-        self.camera = Camera::new();
+        self.player.reset_camera(&self.world, self.view_w);
+        self.camera = self.player.camera;
         self.bg_pos = [0.0; 2];
         self.end_time = None;
         self.colors = self.colors_start.clone();

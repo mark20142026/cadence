@@ -970,6 +970,18 @@ impl Player {
     /// The camera's step, after the world's triggers (`updateTweenActions`, `updateCamera`):
     /// fires the camera triggers the player reached and moves the camera. Drivers call it after
     /// `World::post_step`; without it the corridors keep their unzoomed static edges.
+    /// The level start (`resetLevel` → `updateCamera(0)`): the triggers already passed fire,
+    /// then, with no time passing, every easing is instant, so the camera starts on its target
+    /// (a ship start's corridor, a platformer level's zoomed view) instead of at 0.
+    pub fn reset_camera(&mut self, world: &World, view_w: f32) {
+        // the triggers at or left of the start fire first (a platformer level's start zoom)
+        self.order_pass(world);
+        let step = self.step_secs;
+        self.step_secs = 0.0;
+        self.step_camera(world, view_w);
+        self.step_secs = step;
+    }
+
     pub fn step_camera(&mut self, world: &World, view_w: f32) {
         // a reverse trigger (1917) fired this step: `reversePlayer` at once, before the camera
         // (not in platformer mode; real traces flag going-left on the trigger's step)
@@ -986,6 +998,7 @@ impl Player {
             eprintln!("camera at x {} y {}: {:?}", self.x, self.y, fired);
         }
         let mut cam = self.camera;
+        cam.level_end_x = (world.level_length > 0.0 && !self.platformer.on).then_some(world.level_length);
         let position = |o: u32| {
             let (x, y) = world.level_position(o as usize);
             (x as f32, y as f32)

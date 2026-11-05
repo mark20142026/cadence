@@ -132,6 +132,7 @@ fn simulate_both(
     let world = &mut world;
     world.reset();
     let mut player = spawn_player(world);
+    player.reset_camera(world, view_w);
     let mut out = format!("# cadence replay\n{header}");
     let mut out2 = format!("# cadence replay player 2\n{header}");
     let debug_ticks = std::env::var_os("CADENCE_DEBUG_TICKS").is_some();
@@ -258,6 +259,7 @@ fn watch(spec_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let inputs = spec.buttons.first().cloned().unwrap_or_default();
     world.reset();
     let mut player = spawn_player(&world);
+    player.reset_camera(&world, view_w);
     // each watched group's first objects by level order (the game's group array order)
     let groups: Vec<(Vec<usize>, String)> = spec
         .watch
