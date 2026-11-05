@@ -3,6 +3,7 @@
 
 pub mod advfollow;
 pub mod area;
+pub mod audiofx;
 pub mod fastrand;
 pub mod fxhash;
 pub mod camera;
