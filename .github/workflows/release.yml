@@ -18,8 +18,10 @@ jobs:
         include:
           - os: macos-14
             name: macos-arm64
-          - os: macos-13
+          # Intel Macs: cross-built on the Apple Silicon runner (the Intel runners are gone)
+          - os: macos-14
             name: macos-intel
+            target: x86_64-apple-darwin
           - os: windows-latest
             name: windows
           - os: ubuntu-22.04
@@ -28,6 +30,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - name: Linux libraries (windowing, audio, the folder picker, TLS)
         if: runner.os == 'Linux'
         run: |
@@ -35,6 +39,8 @@ jobs:
           sudo apt-get install -y libasound2-dev libgtk-3-dev libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libssl-dev pkg-config libcurl4-openssl-dev
       - name: Build and package
         shell: bash
+        env:
+          CARGO_TARGET: ${{ matrix.target }}
         run: tools/package.sh
       - name: Name the packages for this platform
         shell: bash
