@@ -166,7 +166,7 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
 - [x] SFX leftovers (Edit SFX 414 stop-looping, pitch 405 as FMOD's pitch shift, random
       ranges 596–599, start/end, fades, loops, unique id / interval rules, reverb presets
       approximated) and spawn remaps in advanced follow + main objects for rotate / follow /
-      move (agent, merged; new trace gremap). verify_all 124/135.
+      move (agent, merged; new trace gremap). verify_all 124/135 (confirmed again on main after the merges).
 - [x] Message threads list (getGJThreads → MessageThreadsPage): rows by position as the
       game's parser reads them, drawn like the real page with made-up threads.
 - [x] A thread's view (getGJThreadMessages → ThreadViewPopup): messages, players, the
@@ -186,6 +186,10 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       your friends (mode 4, "id,id"), who adds (mode 13) — all recorded except Add (decompiled).
 - [x] Report a thread (ReportPopup as captured, "Confirm Report"; reportGJContent type 8,
       reasons 0,1,2,3,7 joined with commas — read from the decompile; needs an account).
-- [ ] Still open: search in the invites, and the "+" (share a level / list) and emote buttons.
+- [ ] Still open: search in the invites; the message box's "+" (ThreadViewPopup::levelPicked /
+      listPicked / shareIDPicked add " l_<id>" / " li_<id>" to the text, insertShareToken at
+      0x1008149c0, "Message too long") and emotes (`:name:` tokens from the game's named table —
+      categories Rating, Faces, … — drawn as their sprites in messages); both need how a
+      message shows these tokens (a capture with them in a message's text).
 - [x] Search in a thread (searchGJThreadMessages, `&query=<b64>` after the secret, from the
       decompile; results replace the messages until search is pressed again).
