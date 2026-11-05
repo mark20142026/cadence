@@ -76,6 +76,8 @@ pub enum Effect {
     ShareInThread(i64),
     /// Find this level online (a shared level in a message).
     OpenLevel(i64),
+    /// Open the box for filtering the invites.
+    SearchInvites,
     /// Pick friends to add to this group.
     AddMembers(i64),
     /// A received request opened (`FriendRequestPopup`): its row, sender and message.
@@ -101,6 +103,8 @@ pub struct Social {
     /// thread opens once the server says yes).
     pub invites: Option<Result<Vec<social::Invite>, ()>>,
     pub ignoring: Option<i64>,
+    /// The invites' search box: only names or titles with this in them.
+    pub invite_filter: String,
     /// A search in the open thread: the query and the messages found.
     pub thread_search: Option<(String, Option<Vec<social::ThreadMessage>>)>,
     /// `MemberListPopup` open on this group, its list, a kick / new owner asked about
@@ -137,7 +141,7 @@ pub fn row_btn(what: u16, row: usize) -> Btn {
 
 impl Social {
     pub fn open() -> Social {
-        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), viewing: None, thread_page: None, friends: None, options: None, options_confirm: None, invites: None, ignoring: None, accepted: None, thread_search: None, members_of: None, members: None, members_confirm: None, owner_adds: false, reporting: None, emote_picker: false, picker_scroll: 0.0, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
+        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), viewing: None, thread_page: None, friends: None, options: None, options_confirm: None, invites: None, ignoring: None, invite_filter: String::new(), accepted: None, thread_search: None, members_of: None, members: None, members_confirm: None, owner_adds: false, reporting: None, emote_picker: false, picker_scroll: 0.0, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
         s.load();
         s
     }
@@ -633,6 +637,8 @@ impl Social {
                     self.job = Some(crate::net::spawn(async move { Msg::Done(social::update_thread(thread, 9, None).await, "ignore invite") }));
                 }
             }
+            (Page::Invites(_), Btn::Social(7897)) => return Effect::SearchInvites,
+            (Page::Invites(_), Btn::Social(7896)) => self.invite_filter.clear(),
             (Page::Invites(_), Btn::Social(7899)) => {
                 self.stack.pop();
                 self.load();
@@ -642,7 +648,7 @@ impl Social {
                 self.stack.push(Page::Invites(!ignored));
             }
             (Page::Invites(ignored), Btn::Social(code)) if (7800..7990).contains(&code) => {
-                let shown: Vec<social::Invite> = self.invites.as_ref().and_then(|r| r.as_ref().ok()).map(|l| l.iter().filter(|i| i.ignored == ignored).cloned().collect()).unwrap_or_default();
+                let shown: Vec<social::Invite> = self.invites.as_ref().and_then(|r| r.as_ref().ok()).map(|l| l.iter().filter(|i| i.ignored == ignored && invite_matches(i, &self.invite_filter)).cloned().collect()).unwrap_or_default();
                 let Some(inv) = shown.get((code % 50) as usize).cloned() else { return Effect::None };
                 match code / 50 {
                     // 7800–7849 Accept, 7850–7899 Ignore, 7950–7989 the sender's name
@@ -1724,6 +1730,12 @@ fn draw_thread_options(s: &Social, t: &social::Thread, c: &mut Canvas, ctx: &mut
     }
 }
 
+/// Whether an invite's sender or group has the search box's text in it (any case).
+fn invite_matches(i: &social::Invite, filter: &str) -> bool {
+    let f = filter.trim().to_lowercase();
+    f.is_empty() || i.name.to_lowercase().contains(&f) || i.title.to_lowercase().contains(&f)
+}
+
 /// `InvitesPopup` (captured with a made-up group invite and message request): "Pending" (or
 /// "Ignored"), the search box, and rows 54 apart — a group's picture, title and member count,
 /// who invited you and when; or a request's sender, "Message Request - … ago" and its message —
@@ -1736,8 +1748,15 @@ fn draw_invites(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32, ignored: boo
     c.text("goldFont", if ignored { "Ignored" } else { "Pending" }, cx, 274.0, Look::scaled(0.7));
     c.sprite("GJ_infoIcon_001.png", at(197.5), 274.0, Look::scaled(0.5));
     c.nine_slice("square02b_small.png", at(231.03), 245.0, 200.0, 24.0, Look::default().rgb([93, 52, 31]));
-    c.text("chatFont", "Search", at(231.03), 245.0, Look::scaled(0.6).rgb([195, 108, 65]));
-    c.sprite("GJ_longBtn07_001.png", at(348.5), 244.0, Look::scaled(0.682));
+    ctx.area(Btn::Social(7897), at(231.03), 245.0, 200.0, 24.0);
+    if s.invite_filter.is_empty() {
+        c.text("chatFont", "Search", at(231.03), 245.0, Look::scaled(0.6).rgb([195, 108, 65]));
+    } else {
+        c.text("chatFont", &s.invite_filter, at(231.03), 245.0, Look::scaled(0.6));
+    }
+    let clear = Btn::Social(7896);
+    c.sprite("GJ_longBtn07_001.png", at(348.5), 244.0, Look::scaled(0.682 * ctx.factor(clear)));
+    ctx.area(clear, at(348.5), 244.0, 26.94, 20.8);
     let close = Btn::Social(7899);
     c.sprite("GJ_closeBtn_001.png", at(80.5), 282.0, Look::scaled(0.72 * ctx.factor(close)));
     ctx.area(close, at(80.5), 282.0, 33.12, 34.2);
@@ -1752,7 +1771,7 @@ fn draw_invites(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32, ignored: boo
             c.text("goldFont", "Something went wrong...", cx, 136.0, Look::scaled(0.6));
             return;
         }
-        Some(Ok(l)) => l.iter().filter(|i| i.ignored == ignored).collect(),
+        Some(Ok(l)) => l.iter().filter(|i| i.ignored == ignored && invite_matches(i, &s.invite_filter)).collect(),
     };
     if list.is_empty() {
         c.text("chatFont", if ignored { "Nothing ignored" } else { "No invites" }, cx, 136.0, Look::scaled(0.7).alpha(150));
@@ -2012,6 +2031,8 @@ pub struct Writer {
     pub add_to: Option<i64>,
     /// A level or list to share in this thread (the body is its ID).
     pub share: Option<i64>,
+    /// The invites' search box.
+    pub invite_search: bool,
     pub subject: String,
     pub body: String,
     /// The field typed into: 0 subject, 1 body (posts have the body only).
@@ -2021,7 +2042,7 @@ pub struct Writer {
 
 impl Writer {
     pub fn new(title: &'static str, to: Option<i64>) -> Writer {
-        Writer { title, to, level: None, song_slot: None, thread: None, new_thread: None, rename: None, search: None, add_to: None, share: None, subject: String::new(), body: String::new(), field: if to.is_some() { 0 } else { 1 }, t: 0.0 }
+        Writer { title, to, level: None, song_slot: None, thread: None, new_thread: None, rename: None, search: None, add_to: None, share: None, invite_search: false, subject: String::new(), body: String::new(), field: if to.is_some() { 0 } else { 1 }, t: 0.0 }
     }
 
     fn limit(&self) -> usize {
@@ -2030,6 +2051,7 @@ impl Writer {
             _ if self.rename.is_some() => 20,
             _ if self.search.is_some() => 40,
             _ if self.share.is_some() => 10,
+            _ if self.invite_search => 30,
             _ if self.new_thread.is_some() => match (self.new_thread.as_ref().is_some_and(|n| n.group), self.field) {
                 (true, 0) => 20,
                 (true, _) => 300,
@@ -2202,7 +2224,7 @@ fn draw_new_thread(wr: &Writer, n: &NewThread, friends: Option<&Vec<User>>, c: &
 pub fn draw_writer_for(wr: &Writer, friends: Option<&Vec<User>>, c: &mut Canvas, ctx: &mut Ctx) {
     match &wr.new_thread {
         Some(n) => draw_new_thread(wr, n, friends, c, ctx),
-        None if wr.rename.is_some() || wr.search.is_some() || wr.share.is_some() => draw_rename(wr, c, ctx),
+        None if wr.rename.is_some() || wr.search.is_some() || wr.share.is_some() || wr.invite_search => draw_rename(wr, c, ctx),
         None => draw_writer(wr, c, ctx),
     }
 }
@@ -2217,6 +2239,8 @@ fn draw_rename(wr: &Writer, c: &mut Canvas, ctx: &mut Ctx) {
         ("Search Messages", "Words in a message", "Search")
     } else if wr.share.is_some() {
         ("Share", "A level or list ID", "Level")
+    } else if wr.invite_search {
+        ("Search", "A name or group title", "Search")
     } else {
         ("Rename Group Chat", "Everyone sees this name", "Save")
     };

@@ -190,6 +190,9 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       particle sprites, `emotes.rs`) drawn in the text as the real view does, the emote picker
       (EmotePickerPopup as captured), "+" to share a level or list (` l_<id>` / ` li_<id>`,
       shown as "Level <id>" / "List <id>"; a shared level opens online).
-- [ ] Still open: search in the invites.
+- [x] Search in the invites (the popup's box filters by name or group title; X clears).
+- Messaging is complete for v0.0.2. Not recorded from the game (decompiled or guessed from
+  captures): new-thread send order, thread search, add members, report, the invites' search
+  (taken as a local filter).
 - [x] Search in a thread (searchGJThreadMessages, `&query=<b64>` after the secret, from the
       decompile; results replace the messages until search is pressed again).

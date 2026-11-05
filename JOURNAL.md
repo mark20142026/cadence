@@ -1313,3 +1313,5 @@ prebuilt trace mod), corner and muted.
 - Shares: ThreadViewPopup::levelPicked / listPicked add " l_<id>" / " li_<id>"
   (insertShareToken 0x1008149c0). Cadence's "+" asks for an ID and Level or List, then opens
   the message box with the token; a shared level in a message opens the online search for it.
+- The invites' search box: a filter on the sender's name and the group's title (the popup
+  sends nothing for it as far as the strings show), X clears it.

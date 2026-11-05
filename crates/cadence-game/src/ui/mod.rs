@@ -2110,6 +2110,10 @@ impl Ui {
             }
             Btn::WriteSend => {
                 if let (Some(w), Some(s)) = (self.writer.take(), self.social.as_mut()) {
+                    if w.invite_search {
+                        s.invite_filter = w.body.trim().to_string();
+                        return;
+                    }
                     if let Some(thread) = w.search {
                         if !w.body.trim().is_empty() {
                             s.search_thread(thread, w.body.trim().to_string());
@@ -4313,6 +4317,12 @@ impl Ui {
                 let mut w = social::Writer::new("Message", None);
                 w.thread = Some(thread);
                 w.body = text;
+                self.writer = Some(w);
+            }
+            social::Effect::SearchInvites => {
+                let mut w = social::Writer::new("Search", None);
+                w.invite_search = true;
+                w.body = self.social.as_ref().map(|s| s.invite_filter.clone()).unwrap_or_default();
                 self.writer = Some(w);
             }
             social::Effect::OpenLevel(id) => {
