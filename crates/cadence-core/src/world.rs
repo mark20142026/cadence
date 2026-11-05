@@ -319,6 +319,14 @@ pub struct ParticleSpec {
 }
 
 impl World {
+    /// What the game changes for its own (official) levels at setup: level 22 (Dash) plays with
+    /// kA40 on (move targets by `tryGetObject`).
+    pub fn official(&mut self, id: i32) {
+        if id == 22 {
+            self.random_move_targets = true;
+        }
+    }
+
     pub fn from_level(level: &LevelString) -> World {
         let mut objects = Vec::new();
         // UI triggers (3613) take their target groups off the level (`addUIObject` removes them

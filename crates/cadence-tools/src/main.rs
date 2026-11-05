@@ -230,10 +230,13 @@ fn load_spec_world(spec: &cadence_core::trace::Spec) -> Result<cadence_core::wor
     Ok(world)
 }
 
-fn load_world(level: i32) -> Result<cadence_core::world::World, Box<dyn std::error::Error>> {
-    let level_path = format!("{}/levels/{}.txt", gd_resources(), level);
+fn load_world(level_id: i32) -> Result<cadence_core::world::World, Box<dyn std::error::Error>> {
+    let level_path = format!("{}/levels/{}.txt", gd_resources(), level_id);
     let level = LevelString::parse(&decode_level_bytes(&std::fs::read(&level_path)?)?);
-    Ok(world_of(level))
+    // the game's own levels (levels/<id>.txt)
+    let mut world = world_of(level);
+    world.official(level_id);
+    Ok(world)
 }
 
 /// A world for a level, with its camera triggers and settings kept for `spawn_player`.

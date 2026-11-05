@@ -2025,6 +2025,10 @@ impl App {
             }
         }
         let mut world = World::from_level(&level);
+        // the game's own levels (read from its levels folder)
+        if !in_editor && std::env::var_os("CADENCE_LEVEL_FILE").is_none() && self.online.as_ref().is_none_or(|o| o.info.id != self.level_id) {
+            world.official(self.level_id as i32);
+        }
         world.track_moves = true;
         // The level's camera triggers and settings (kA32 fixes the gravity bug) ride with the
         // player; restarts clone this starting player.
