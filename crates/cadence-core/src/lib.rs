@@ -16,6 +16,7 @@ pub mod keyframes;
 pub mod level;
 pub mod objects;
 pub mod order;
+pub mod parents;
 pub mod physics;
 pub mod platformer;
 pub mod save;

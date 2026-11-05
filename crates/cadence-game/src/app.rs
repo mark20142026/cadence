@@ -226,52 +226,23 @@ impl ShipFire {
     }
 }
 
-/// A value tweened linearly over a duration (`FMODAudioEngine::updateChannel`'s fades).
-#[derive(Clone, Copy, Debug)]
-struct Fade {
-    value: f32,
-    from: f32,
-    to: f32,
-    elapsed: f32,
-    duration: f32,
-}
+use crate::audio::{pitch_for_index, Tween as Fade, TriggerSounds};
 
-impl Fade {
-    fn new(value: f32) -> Fade {
-        Fade { value, from: value, to: value, elapsed: 0.0, duration: 0.0 }
-    }
-
-    fn start(&mut self, to: f32, duration: f32) {
-        (self.from, self.to, self.elapsed, self.duration) = (self.value, to, 0.0, duration);
-        if duration <= 0.0 {
-            self.value = to;
-        }
-    }
-
-    fn step(&mut self, dt: f32) {
-        if self.value == self.to {
-            return;
-        }
-        self.elapsed += dt;
-        let k = if self.duration <= 0.0 { 1.0 } else { (self.elapsed / self.duration).min(1.0) };
-        self.value = self.from + (self.to - self.from) * k;
-    }
-}
-
-/// Edit song / edit SFX state: the music's and the trigger sounds' volume and the music's speed
-/// (tweened), the proximity effects by (song, channel), and what the backend was last sent.
+/// Edit song / edit SFX state: the music's volume and speed (tweened), its proximity effects by
+/// song channel, what the backend was last sent, and the SFX triggers' sounds (each with its
+/// own volume, speed and proximity).
 #[derive(Clone, Debug)]
 struct AudioEdits {
     music_volume: Fade,
     music_speed: Fade,
-    sfx_volume: Fade,
-    proximity: Vec<(bool, i32, cadence_core::groups::Proximity)>,
-    sent: (f32, f32, f32),
+    proximity: Vec<(i32, cadence_core::groups::Proximity)>,
+    sent: (f32, f32),
+    sounds: TriggerSounds,
 }
 
 impl Default for AudioEdits {
     fn default() -> AudioEdits {
-        AudioEdits { music_volume: Fade::new(1.0), music_speed: Fade::new(1.0), sfx_volume: Fade::new(1.0), proximity: Vec::new(), sent: (1.0, 1.0, 1.0) }
+        AudioEdits { music_volume: Fade::new(1.0), music_speed: Fade::new(1.0), proximity: Vec::new(), sent: (1.0, 1.0), sounds: TriggerSounds::default() }
     }
 }
 
@@ -746,11 +717,6 @@ fn culling_columns(order: &[(i32, i32, usize)], statics: &[ObjStatic], can_move:
     (columns, lo, movable)
 }
 
-
-/// `FMODAudioEngine::pitchForIdx`: a speed index in semitones (−12..12) as a playback rate.
-fn pitch_for_index(index: i32) -> f32 {
-    2f32.powf(index.clamp(-12, 12) as f32 / 12.0)
-}
 
 /// An object's spin (`EnhancedGameObject::customSetup` 0x5bb8dc, turned each frame by
 /// `updateRotateAction` 0x5be2c8): none with key 98; key 97 sets the rate; else the id's rate
@@ -1265,12 +1231,13 @@ impl Game {
     }
 
     /// SFX triggers (3602) fired this step: the library sound from the SFX cache (downloaded
-    /// with the level).
+    /// with the level), at its volume and speed, unless its proximity volume is 0.
     fn play_trigger_sfx(&mut self) {
-        for (id, volume) in std::mem::take(&mut self.world.sfx) {
-            let name = crate::online::sfx_name(id);
+        for play in std::mem::take(&mut self.world.sfx) {
+            let name = crate::online::sfx_name(play.id);
             if crate::online::have(&name) {
-                self.audio.play_trigger_effect(&name, volume);
+                let factor = play.proximity.as_ref().map_or(1.0, |p| self.proximity_factor(p));
+                self.audio_edits.sounds.play(self.audio.as_mut(), &name, &play, factor);
             }
         }
     }
@@ -1393,92 +1360,96 @@ impl Game {
     ///
     /// Volume and speed changes are `updateChannel` tweens over the trigger's duration, kept here
     /// so a proximity effect (target group 51: `addProximityVolumeEffect`) can scale the volume
-    /// every step (`updateProximityVolumeEffects`). The same channel and kind replaces an older
-    /// proximity effect. (SFX speed isn't applied: the audio backend has no per-sound rate.)
+    /// every step (`updateProximityVolumeEffects`). A song channel's proximity effect replaces
+    /// the older one; SFX sounds keep theirs per sound (`TriggerSounds`).
     fn apply_audio_edits(&mut self) {
-        for edit in std::mem::take(&mut self.world.audio_edits) {
+        for (edit, triggers) in std::mem::take(&mut self.world.audio_edits) {
+            if !edit.song {
+                self.audio_edits.sounds.edit(self.audio.as_mut(), &edit, &triggers);
+                continue;
+            }
             if let Some(p) = edit.proximity {
                 let e = &mut self.audio_edits.proximity;
-                e.retain(|(song, channel, _)| (*song, *channel) != (edit.song, edit.channel));
-                e.push((edit.song, edit.channel, p));
+                e.retain(|(channel, _)| *channel != edit.channel);
+                e.push((edit.channel, p));
             }
-            if edit.song {
-                if edit.channel != self.music_channel {
-                    continue;
-                }
-                if edit.stop {
-                    self.audio.stop_music();
-                    continue;
-                }
-                if let Some(v) = edit.volume {
-                    self.audio_edits.music_volume.start(v, edit.duration);
-                }
-                if let Some(speed) = edit.speed {
-                    self.audio_edits.music_speed.start(pitch_for_index(speed), edit.duration);
-                }
-            } else if edit.stop {
-                self.audio.stop_effects();
-            } else if let Some(v) = edit.volume {
-                self.audio_edits.sfx_volume.start(v, edit.duration);
+            if edit.channel != self.music_channel {
+                continue;
+            }
+            if edit.stop {
+                self.audio.stop_music();
+                continue;
+            }
+            if let Some(v) = edit.volume {
+                self.audio_edits.music_volume.start(v, edit.duration);
+            }
+            if let Some(speed) = edit.speed {
+                self.audio_edits.music_speed.start(pitch_for_index(speed), edit.duration);
             }
         }
         self.update_audio_edits(self.world.step_secs as f32);
     }
 
-    /// One step of the edit tweens and proximity volumes, sent to the backend when they change.
-    fn update_audio_edits(&mut self, dt: f32) {
-        let ed = &mut self.audio_edits;
-        ed.music_volume.step(dt);
-        ed.music_speed.step(dt);
-        ed.sfx_volume.step(dt);
+    /// `volumeForProximityEffect`: the volume factor of a proximity effect for the listener
+    /// now (the camera's center, a player or group 71's first object) and group 51's objects.
+    fn proximity_factor(&self, pr: &cadence_core::groups::Proximity) -> f32 {
         let p = &self.player;
         let second = p.dual.as_ref().map(|q| (q.x, q.y));
         let view = (self.camera.x, self.camera.y, self.view_w / self.camera.zoom.max(0.01), VIEW_HEIGHT / self.camera.zoom.max(0.01));
-        let factor = |song: bool, channel: i32| -> f32 {
-            let Some((_, _, pr)) = ed.proximity.iter().find(|(s, c, _)| *s == song && (!song || *c == channel)) else { return 1.0 };
-            let at = if pr.camera {
-                (view.0 + view.2 * 0.5, view.1 + view.3 * 0.5)
-            } else if pr.p1 {
-                (p.x, p.y)
-            } else if pr.p2 {
-                second.unwrap_or((p.x, p.y))
-            } else {
-                match self.world.members_of(pr.center).first() {
-                    Some(&o) => {
-                        let (x, y) = self.world.level_position(o as usize);
-                        (x as f32, y as f32)
-                    }
-                    None => return 1.0,
-                }
-            };
-            let objects: Vec<(f32, f32)> = self
-                .world
-                .members_of(pr.group)
-                .iter()
-                .filter(|&&o| self.world.enabled.get(o as usize).copied().unwrap_or(true))
-                .map(|&o| {
+        let at = if pr.camera {
+            (view.0 + view.2 * 0.5, view.1 + view.3 * 0.5)
+        } else if pr.p1 {
+            (p.x, p.y)
+        } else if pr.p2 {
+            second.unwrap_or((p.x, p.y))
+        } else {
+            match self.world.members_of(pr.center).first() {
+                Some(&o) => {
                     let (x, y) = self.world.level_position(o as usize);
                     (x as f32, y as f32)
-                })
-                .collect();
-            let both = (pr.p1 && pr.p2 && !pr.camera).then_some(second).flatten();
-            pr.volume(at, both, &objects)
+                }
+                None => return 1.0,
+            }
         };
-        let music = ed.music_volume.value * factor(true, self.music_channel);
-        let sfx = ed.sfx_volume.value * factor(false, 0);
-        let speed = ed.music_speed.value;
-        if ed.sent.0 != music {
-            ed.sent.0 = music;
+        let objects: Vec<(f32, f32)> = self
+            .world
+            .members_of(pr.group)
+            .iter()
+            .filter(|&&o| self.world.enabled.get(o as usize).copied().unwrap_or(true))
+            .map(|&o| {
+                let (x, y) = self.world.level_position(o as usize);
+                (x as f32, y as f32)
+            })
+            .collect();
+        let both = (pr.p1 && pr.p2 && !pr.camera).then_some(second).flatten();
+        pr.volume(at, both, &objects)
+    }
+
+    /// One step of the edit tweens and proximity volumes, sent to the backend when they change.
+    fn update_audio_edits(&mut self, dt: f32) {
+        self.audio_edits.music_volume.step(dt);
+        self.audio_edits.music_speed.step(dt);
+        let channel = self.music_channel;
+        let music_factor = match self.audio_edits.proximity.iter().find(|(c, _)| *c == channel) {
+            Some((_, pr)) => self.proximity_factor(pr),
+            None => 1.0,
+        };
+        let music = self.audio_edits.music_volume.value * music_factor;
+        let speed = self.audio_edits.music_speed.value;
+        if self.audio_edits.sent.0 != music {
+            self.audio_edits.sent.0 = music;
             self.audio.fade_music(music, 0.0);
         }
-        if ed.sent.1 != speed {
-            ed.sent.1 = speed;
+        if self.audio_edits.sent.1 != speed {
+            self.audio_edits.sent.1 = speed;
             self.audio.set_music_speed(speed);
         }
-        if ed.sent.2 != sfx {
-            ed.sent.2 = sfx;
-            self.audio.set_effects_volume(sfx);
-        }
+        // every SFX trigger sound with its own proximity factor
+        let mut sounds = std::mem::take(&mut self.audio_edits.sounds);
+        let mut audio = std::mem::replace(&mut self.audio, Box::new(crate::audio::NoAudio));
+        sounds.step(audio.as_mut(), dt, &|pr| self.proximity_factor(pr));
+        std::mem::swap(&mut self.audio, &mut audio);
+        self.audio_edits.sounds = sounds;
     }
 
     fn snapshot(&self) -> Checkpoint {

@@ -191,9 +191,8 @@ pub enum Action {
     TimeEvent { id: i32, time: f32, target: i32, multi: bool },
     /// Time Control (3617): starts (472 = 0) or stops timer 80.
     TimeControl { id: i32, stop: bool },
-    /// SFX trigger (3602): play library sound 392 at volume 406 (404 speed, 405 pitch, 413 loop
-    /// and the fades aren't used).
-    Sfx { id: i32, volume: f32 },
+    /// SFX trigger (3602): see `SfxPlay`.
+    Sfx(SfxPlay),
     /// Animate (1585): group 51's animated objects play animation 76 from now (objects set to
     /// animate only on a trigger start playing).
     Animate { group: i32, anim: i32 },
@@ -279,13 +278,56 @@ pub enum Action {
     KeyframeAnim { order: u32 },
 }
 
-/// Edit song (3605) / edit SFX (3603) (`activateSongEditTrigger`, `applySFXEditTrigger`): on
-/// song channel 432 (song) or the SFX group 457 / unique id (SFX): 417 stop, 418 change volume
-/// to 406 over the duration 10, 419 change speed to 404 (`pitchForIdx`).
+/// An SFX trigger (3602, `activateSFXTrigger` 0x10ef60 → `GameManager::playSFXTrigger`
+/// 0x2ef690 → `FMODAudioEngine::playEffectAdvanced`): library sound 392 at volume 406 and speed
+/// `pitchForIdx(404)` (the channel's pitch: its playback rate), in SFX group 455, with a unique
+/// id when 415 (416, else the trigger's own). With a target group (51) and unless 489, the
+/// proximity volume decides whether it plays (≤ 0: not) and then follows it
+/// (`addProximityVolumeEffect`). Not used: 405 pitch (a pitch-shift DSP), the random speed /
+/// pitch / volume ranges, loops, fades, start / end times, reverb.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SfxPlay {
+    pub id: i32,
+    pub volume: f32,
+    pub speed: i32,
+    /// The trigger's level order (edit SFX triggers find its sounds by the triggers in a group).
+    pub order: u32,
+    pub group: i32,
+    pub unique: i32,
+    pub proximity: Option<Proximity>,
+    pub test_proximity: bool,
+}
+
+impl SfxPlay {
+    pub fn from_raw(raw: &crate::level::RawObject, order: u32) -> SfxPlay {
+        let i = |k: u32| raw.get_i32(k).unwrap_or(0);
+        SfxPlay {
+            id: i(392),
+            volume: raw.get_f32(406).unwrap_or(1.0),
+            speed: i(404),
+            order,
+            group: i(455),
+            // `getUniqueSFXID`: 416 when set, else the trigger's (negative) unique id
+            unique: if raw.get(415) == Some("1") { if i(416) > 0 { i(416) } else { -(order as i32) - 1 } } else { 0 },
+            proximity: Proximity::from_raw(raw),
+            test_proximity: raw.get(489) != Some("1"),
+        }
+    }
+}
+
+/// Edit song (3605) / edit SFX (3603) (`activateSongEditTrigger`, `activateSFXEditTrigger`
+/// 0x10f2a0 → `applySFXEditTrigger` 0x112928): song channel 432 (song); for SFX the sounds of
+/// the SFX triggers in group 457, the sounds in SFX group 455 and the sound with unique id 416.
+/// 417 stop, 418 change the volume to 406 over the duration 10, 419 change the speed to 404
+/// (`pitchForIdx`) over it too (`FMODAudioEngine::updateChannel` tweens).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AudioEdit {
     pub song: bool,
     pub channel: i32,
+    /// SFX: the group of SFX triggers (457), the SFX group (455), the unique id (416).
+    pub triggers: i32,
+    pub sfx_group: i32,
+    pub unique: i32,
     pub stop: bool,
     pub volume: Option<f32>,
     pub speed: Option<i32>,
@@ -486,7 +528,10 @@ impl Trigger {
             3606 | 3612 => Action::ArtSpeed { mg: raw.id() == 3612, x: raw.get_f32(143).unwrap_or(0.0), y: raw.get_f32(144).unwrap_or(0.0) },
             3603 | 3605 => Action::AudioEdit(AudioEdit {
                 song: raw.id() == 3605,
-                channel: if raw.id() == 3605 { raw.get_i32(432).unwrap_or(0) } else { raw.get_i32(457).unwrap_or(0) },
+                channel: if raw.id() == 3605 { raw.get_i32(432).unwrap_or(0) } else { 0 },
+                triggers: if raw.id() == 3603 { raw.get_i32(457).unwrap_or(0) } else { 0 },
+                sfx_group: if raw.id() == 3603 { raw.get_i32(455).unwrap_or(0) } else { 0 },
+                unique: if raw.id() == 3603 { raw.get_i32(416).unwrap_or(0) } else { 0 },
                 stop: raw.get(417) == Some("1"),
                 volume: (raw.get(418) == Some("1")).then(|| raw.get_f32(406).unwrap_or(1.0)),
                 speed: (raw.get(419) == Some("1")).then(|| raw.get_i32(404).unwrap_or(0)),
@@ -568,7 +613,7 @@ impl Trigger {
             },
             3615 => Action::TimeEvent { id: raw.get_i32(80).unwrap_or(0), time: raw.get_f32(473).unwrap_or(0.0), target: group, multi: raw.get(475) == Some("1") },
             3617 => Action::TimeControl { id: raw.get_i32(80).unwrap_or(0), stop: raw.get(472) == Some("1") },
-            3602 => Action::Sfx { id: raw.get_i32(392).unwrap_or(0), volume: raw.get_f32(406).unwrap_or(1.0) },
+            3602 => Action::Sfx(SfxPlay::from_raw(raw, order)),
             1585 => Action::Animate { group, anim: raw.get_i32(76).unwrap_or(0) },
             1812 => Action::OnDeath { group, on: raw.get(56) == Some("1") },
             3022 => Action::Teleport { group, keep_x: raw.get(352) == Some("1"), keep_y: raw.get(353) == Some("1"), gravity: raw.get_i32(354).unwrap_or(0) as i8 },

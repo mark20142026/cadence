@@ -1100,3 +1100,43 @@ session's scratch (corner, muted); decompiles from the scratch Ghidra copy.
 - `tools/package.sh`: dist/Cadence.app (ad-hoc signed, Cadence's own icon from
   `tools/make_icon.py`), .zip and .dmg on macOS; a zip on Windows; a tarball with a .desktop file
   on Linux. `.github/workflows/release.yml` runs it on all four and publishes on a v* tag.
+
+## 2026-11-05 (parents agent): group parents and linked objects in advanced follow and area triggers
+
+Worktree branch on main (f0f3f77); own harness build, game copy and home in the session scratch
+(corner, muted); decompiles from a scratch Ghidra copy (`FUN_1000d64d0`, rotateObjects,
+rotateAreaObjects, transformAreaObjects, resetAreaObjectValues, `FUN_1000fb3a4`, tryGetMainObject,
+tryGetObject, loadGroupParentsFromString).
+
+- `parents.rs`: keys 274 / 34 / 279 / 108 and the clusters per (target group, 280, 281);
+  `World::main_object` (tryGetMainObject), `rotate_objects` (rotateObjects), `unmodified_pos`.
+- Advanced follow: alone objects, then leaders moving their clusters; a turning cluster moves
+  twice its step (game code, confirmed by the trace). Targets are the group's main object;
+  560 / 565 use tryGetObject.
+- Area triggers: clusters for move / rotate / scale / fade / tint; scale, rotate, move order;
+  stale offsets reset at the end of the pass; the center is the main object or (0, 0).
+- New real trace `re/traces/gparent` (watchgroups 10, 11, 20, 21, 30, 31, 41–44: linked
+  cluster with a 34 leader, linked without a flag, a 279 leader, an explicit 274 parent, 280,
+  a child-group parent pulling an object outside the target group, area move with linked / 274
+  clusters, area rotate with a 274 cluster and alone): every position to print precision
+  (≤ 6.6e-6), rotations ≤ 1.5e-5 at frame steps. verify_all compares watch files now for
+  suites with a `watch.args` (cmp_watch.py options; cmp_watch.py got --fields, --rot-frames and
+  an exit status).
+
+## 2026-11-05 (parents agent): SFX speed and per-sound proximity
+
+- SFX triggers play at `pitchForIdx(404)` (the FMOD channel pitch = playback rate); edit SFX
+  speed (419) and volume (418) tween per sound over the trigger's duration; edit SFX targets
+  the sounds of the SFX triggers in group 457, SFX group 455 and unique id 416 (was: every
+  trigger sound, volume only). Proximity is per sound (the SFX trigger's own, replaced by an
+  edit's), and a 3602 with a proximity group doesn't play at a proximity volume of 0 (unless
+  489). Proximity groups are now registered in the world (they had no members before, so the
+  edit triggers' proximity was always 1).
+- Backends: native rodio player per trigger sound (`set_speed`, `set_volume`), web
+  `playTriggerEffect` / `setTriggerEffect` / `stopTriggerEffect` / `triggerEffectPlaying` in
+  index.html (AudioBufferSourceNode.playbackRate + a gain node per sound).
+- Checked by unit tests (audio.rs `trigger_tests`: speed, tweens, targeting by 457 / 455 / 416,
+  stop, proximity gate and per-sound factors; world.rs: the edit gets group 457's triggers),
+  `cargo check` for wasm32, and the JS glue under node with a fake AudioContext. Not traced
+  (FMOD state isn't in the harness).
+- verify_all 123/134 (the 11 failing suites are the same as before this session).

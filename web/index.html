@@ -341,6 +341,46 @@ const sound = {
       node.start();
     });
   },
+  // SFX triggers' sounds, kept by handle so edit SFX triggers and proximity can change their
+  // volume and playback rate (FMOD's channel pitch) while they play.
+  triggerEffects: new Map(),
+  nextTrigger: 1,
+  playTriggerEffect(path, volume, speed) {
+    if (!this.ctx) return 0;
+    const handle = this.nextTrigger++;
+    const entry = { node: null, gain: this.ctx.createGain(), volume, speed, stopped: false };
+    entry.gain.gain.value = volume;
+    this.triggerEffects.set(handle, entry);
+    this.buffer(path).then((buf) => {
+      if (!buf || entry.stopped) { this.triggerEffects.delete(handle); return; }
+      const node = this.ctx.createBufferSource();
+      node.buffer = buf;
+      node.playbackRate.value = entry.speed;
+      this.gains();
+      node.connect(entry.gain);
+      entry.gain.connect(this.sfxGain);
+      node.onended = () => this.triggerEffects.delete(handle);
+      node.start();
+      entry.node = node;
+    });
+    return handle;
+  },
+  setTriggerEffect(handle, volume, speed) {
+    const e = this.triggerEffects.get(handle);
+    if (!e) return;
+    e.volume = volume;
+    e.speed = speed;
+    e.gain.gain.value = volume;
+    if (e.node) e.node.playbackRate.value = speed;
+  },
+  stopTriggerEffect(handle) {
+    const e = this.triggerEffects.get(handle);
+    if (!e) return;
+    e.stopped = true;
+    if (e.node) { try { e.node.stop(); } catch (_) {} }
+    this.triggerEffects.delete(handle);
+  },
+  triggerEffectPlaying(handle) { return this.triggerEffects.has(handle); },
 };
 window.cadenceAudio = sound;
 

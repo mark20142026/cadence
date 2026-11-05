@@ -4,8 +4,19 @@
 //! center group's main object is offset by `moveDistance` along `moveAngle`, scaled by one minus
 //! the eased distance value (`getAreaObjectValue` 0xfb7fc, `getEasedAreaValue` 0xfba2c). The
 //! offset is taken off again at the next step's reset (`resetAreaObjectValues` 0xf992c), so it
-//! follows the center. Ported for what the Tower levels use: no variances, no "relative" or
-//! XY mode, no ease-out, no edit-area transitions (3011–3015), centers that are groups.
+//! follows the center. Objects an effect reached the step before but none this step lose their
+//! offset at the end of the pass (`FUN_1000fb3a4`), which runs the scale effects, then the
+//! rotations, then the moves. The center is the center group's main object (its parent, or its
+//! only object; none leaves it at (0, 0)).
+//!
+//! Group parents and linked objects (parents.rs, keys 280 / 281): the objects alone first, then
+//! each cluster leader's value moves its whole cluster (rotations and scales turn it about the
+//! cluster's parent object: `rotateAreaObjects` 0xfc084, `transformAreaObjects` 0xfbb34); fades
+//! and tints give the leader's value to every object of its cluster.
+//!
+//! Ported for what the Tower levels use: no variances, no "relative" or XY mode, no ease-out,
+//! no edit-area transitions (3011–3015), centers that are groups; a cluster's scale only scales
+//! positions and sizes (a rotated object's skew from an uneven scale isn't modelled).
 
 use crate::level::RawObject;
 use crate::world::World;
@@ -38,6 +49,9 @@ pub struct AreaSpec {
     /// 276 inbound (the value inverted), 283 both directions.
     pub inbound: bool,
     pub two_dir: bool,
+    /// 280 / 281: ignore group parents / linked objects (parents.rs).
+    pub ignore_parent: bool,
+    pub ignore_linked: bool,
     /// Features not ported (variances 223/221/253/219/232, 241 XY mode, 287 relative, 261 ease
     /// out): set when the trigger uses any of them.
     pub unsupported: bool,
@@ -80,6 +94,8 @@ impl AreaSpec {
             ease_in: (raw.get_i32(242).unwrap_or(0), rate),
             inbound: on(276),
             two_dir: on(283),
+            ignore_parent: on(280),
+            ignore_linked: on(281),
             unsupported,
             kind: raw.id(),
             tint_channel: raw.get_i32(260).unwrap_or(0),
@@ -121,6 +137,10 @@ pub struct AreaState {
     pub tint_hsv: Vec<Option<(crate::triggers::Hsv, bool, bool)>>,
     /// Objects with a visual effect last step (cleared before the next).
     touched: Vec<usize>,
+    /// Objects reset this step and the step before (`+0xd48` / `+0xd60`): the ones of the
+    /// step before that no effect reached this step lose their offsets at the end of the pass.
+    reset_now: Vec<usize>,
+    reset_before: Vec<usize>,
 }
 
 impl AreaState {
@@ -136,6 +156,11 @@ impl AreaState {
             tint_hsv: vec![None; n],
             ..Default::default()
         }
+    }
+
+    /// The area offset applied to level object `i` this step (`+0x29c` / `+0x2a0`).
+    pub fn offset_of(&self, i: usize) -> (f32, f32) {
+        self.off.get(i).copied().unwrap_or((0.0, 0.0))
     }
 
     /// `addAreaEffect` (0xf84a0): the same trigger again only reloads its values; an effect id
@@ -225,6 +250,7 @@ impl World {
         }
         self.stamp_pub(i);
         self.area.reset_step[i] = step;
+        self.area.reset_now.push(i);
         let (ox, oy) = self.area.off[i];
         if ox != 0.0 || oy != 0.0 {
             let (mut x, mut y) = self.level_pos_of(i);
@@ -249,16 +275,35 @@ impl World {
             self.area.tint[i].0 = 0;
             self.area.tint_hsv[i] = None;
         }
-        if self.area.effects.is_empty() {
+        if self.area.effects.is_empty() && self.area.reset_before.is_empty() {
             return;
         }
-        for e in 0..self.area.effects.len() {
+        // `FUN_1000fb3a4`: the scale effects, then the rotations, then the moves (each list in
+        // the order the effects were added); fades and tints (`processAreaVisualActions`) last
+        let rank = |k: i32| match k {
+            3008 => 0,
+            3007 => 1,
+            3006 => 2,
+            _ => 3,
+        };
+        let mut order: Vec<usize> = (0..self.area.effects.len()).collect();
+        order.sort_by_key(|&e| rank(self.area.effects[e].kind));
+        for e in order {
             let mut a = self.area.effects[e];
-            let Some(&center) = self.group_members(a.center).and_then(|m| m.first()) else { continue };
-            let center = center as usize;
-            self.area_reset(center);
-            let (cx, cy) = self.level_pos_of(center);
-            let (cx, cy) = (cx as f32 + a.offset, cy as f32 + a.offset_y);
+            // the center group's main object (`tryGetMainObject`: its parent or its only
+            // object; none leaves the center at (0, 0)), reset first except for fades / tints
+            let (cx, cy) = match self.main_object(a.center) {
+                Some(center) => {
+                    let center = center as usize;
+                    if !matches!(a.kind, 3009 | 3010) {
+                        self.area_reset(center);
+                    }
+                    let (x, y) = self.level_pos_of(center);
+                    (x as f32, y as f32)
+                }
+                None => (0.0, 0.0),
+            };
+            let (cx, cy) = (cx + a.offset, cy + a.offset_y);
             if a.two_dir {
                 a.mod_front = -a.mod_front.abs();
                 self.area.effects[e].mod_front = a.mod_front;
@@ -275,88 +320,196 @@ impl World {
             };
             let angle = (a.move_angle + -90.0) * 0.017453292;
             let dir = (angle.cos(), angle.sin());
-            let Some(targets) = self.group_members(a.target).cloned() else { continue };
-            for i in targets {
-                let i = i as usize;
-                let (px, py) = self.level_pos_of(i);
-                let (px, py) = (px as f32, py as f32);
-                let (sx, sy) = (section(px), section(py));
-                if !(xr.0 <= sx && sx <= xr.1 && yr.0 <= sy && sy <= yr.1) {
-                    continue;
-                }
-                self.area_reset(i);
-                let (px, py) = self.level_pos_of(i);
-                let (px, py) = (px as f32, py as f32);
-                let d = match a.dir_type {
-                    1 | 2 => {
-                        let d = if a.dir_type == 1 { px - cx } else { py - cy };
-                        d * if d < 0.0 { a.mod_front } else { a.mod_back }
+            let win = AreaWindow { center: (cx, cy), xr, yr, dir };
+            // group parents / linked objects: the objects alone, then each cluster by its
+            // leader's value (`processAreaEffects` calls the action twice)
+            match self.links.clusters(a.target, a.ignore_parent, a.ignore_linked).cloned() {
+                None => {
+                    let Some(targets) = self.group_members(a.target).cloned() else { continue };
+                    for i in targets {
+                        self.area_object(&a, &win, i as usize, None);
                     }
-                    _ => ((px - cx) * (px - cx) + (py - cy) * (py - cy)).sqrt(),
-                };
-                let ratio = d / ((a.length as i32) as f32);
-                let mut v = if a.deadzone == 0.0 {
-                    if ratio >= 1.0 { 1.0 } else if ratio <= 0.0 { 0.0 } else { ratio }
-                } else {
-                    let t = (ratio - a.deadzone) / (1.0 - a.deadzone);
-                    if t >= 1.0 { 1.0 } else if t <= 0.0 { 0.0 } else { t }
-                };
-                if a.inbound {
-                    v = 1.0 - v;
                 }
-                if a.kind != 3006 {
-                    // fade / rotate / scale: from the effect's value at the center (v = 0) to
-                    // none far away (v = 1)
-                    if v >= 1.0 {
-                        continue;
+                Some(c) => {
+                    for &i in &c.alone {
+                        self.area_object(&a, &win, i as usize, None);
                     }
-                    let eased = self.area.eased(v, a.ease_in);
-                    let k = 1.0 - eased;
-                    match a.kind {
-                        3009 => self.area.opacity[i] *= a.opacity + eased * (1.0 - a.opacity),
-                        3007 => self.area.turn[i] += a.rotation * k,
-                        3008 => {
-                            let s = &mut self.area.scale[i];
-                            s.0 *= 1.0 + (a.scale.0 - 1.0) * k;
-                            s.1 *= 1.0 + (a.scale.1 - 1.0) * k;
-                        }
-                        // multipliedColorValue((1 − tint) + tint·v, channel, own): the channel's
-                        // share is tint·(1 − v)
-                        3010 if a.tint_hsv_mode => {
-                            self.area.tint[i].0 = 0;
-                            self.area.tint_hsv[i] = Some((a.tint_hsv.multiplied(k), !a.tint_detail_only, !a.tint_main_only));
-                        }
-                        3010 => {
-                            self.area.tint[i] = (a.tint_channel, (a.tint * k).clamp(0.0, 1.0), !a.tint_detail_only, !a.tint_main_only);
-                            self.area.tint_hsv[i] = None;
-                        }
-                        _ => continue,
+                    for &l in &c.leaders {
+                        let members = c.members.get(&l).map(|m| m.as_slice()).unwrap_or(&[]);
+                        self.area_object(&a, &win, l as usize, Some((members, c.parent.get(&l).copied())));
                     }
-                    self.area.touched.push(i);
-                    continue;
                 }
-                if 1.0 <= v || a.move_distance == 0.0 {
-                    continue;
-                }
-                let eased = self.area.eased(v, a.ease_in);
-                let f = (1.0 - eased) * a.move_distance;
-                let (ox, oy) = (dir.0 * f, f * dir.1);
-                if ox == 0.0 && oy == 0.0 {
-                    continue;
-                }
-                let (mut x, mut y) = self.level_pos_of(i);
-                self.area.ever[i] = true;
-                let off = &mut self.area.off[i];
-                if oy != 0.0 {
-                    y += oy as f64;
-                    off.1 += oy;
-                }
-                if ox != 0.0 {
-                    off.0 += ox;
-                    x += ox as f64;
-                }
-                self.set_level_pos_pub(i, (x, y));
             }
         }
+        // objects an effect reached last step but none this step: back to their place
+        let step = self.step_count_pub();
+        for i in std::mem::take(&mut self.area.reset_before) {
+            if self.area.reset_step[i] < step {
+                self.area_reset(i);
+                self.area.reset_now.pop();
+            }
+        }
+        self.area.reset_before = std::mem::take(&mut self.area.reset_now);
     }
+
+    /// One target object of an area effect, or a cluster leader with its cluster (the
+    /// objects that move with it, and its parent object for rotations and scales).
+    fn area_object(&mut self, a: &AreaSpec, w: &AreaWindow, i: usize, cluster: Option<(&[u32], Option<u32>)>) {
+        let (cx, cy) = w.center;
+        let (px, py) = self.level_pos_of(i);
+        let (px, py) = (px as f32, py as f32);
+        let (sx, sy) = (section(px), section(py));
+        if !(w.xr.0 <= sx && sx <= w.xr.1 && w.yr.0 <= sy && sy <= w.yr.1) {
+            return;
+        }
+        self.area_reset(i);
+        let (px, py) = self.level_pos_of(i);
+        let (px, py) = (px as f32, py as f32);
+        let d = match a.dir_type {
+            1 | 2 => {
+                let d = if a.dir_type == 1 { px - cx } else { py - cy };
+                d * if d < 0.0 { a.mod_front } else { a.mod_back }
+            }
+            _ => ((px - cx) * (px - cx) + (py - cy) * (py - cy)).sqrt(),
+        };
+        let ratio = d / ((a.length as i32) as f32);
+        let mut v = if a.deadzone == 0.0 {
+            if ratio >= 1.0 { 1.0 } else if ratio <= 0.0 { 0.0 } else { ratio }
+        } else {
+            let t = (ratio - a.deadzone) / (1.0 - a.deadzone);
+            if t >= 1.0 { 1.0 } else if t <= 0.0 { 0.0 } else { t }
+        };
+        if a.inbound {
+            v = 1.0 - v;
+        }
+        let single = [i as u32];
+        let (members, parent) = match cluster {
+            Some((m, p)) => (m, p),
+            None => (&single[..], None),
+        };
+        if a.kind != 3006 {
+            // fade / rotate / scale / tint: from the effect's value at the center (v = 0) to
+            // none far away (v = 1)
+            if v >= 1.0 {
+                return;
+            }
+            let eased = self.area.eased(v, a.ease_in);
+            let k = 1.0 - eased;
+            match a.kind {
+                3009 => {
+                    for &m in members {
+                        self.area.opacity[m as usize] *= a.opacity + eased * (1.0 - a.opacity);
+                    }
+                }
+                3007 if cluster.is_some() => {
+                    // `rotateAreaObjects`: the cluster orbits its parent object
+                    let angle = a.rotation * k;
+                    if angle == 0.0 {
+                        return;
+                    }
+                    let Some(p) = parent else { return };
+                    self.area_reset(p as usize);
+                    let (ex, ey) = self.level_pos_of(p as usize);
+                    let center = (ex as f32, ey as f32);
+                    let rad = -(angle * 0.017_453_292_f32);
+                    let (sin, cos) = (rad.sin(), rad.cos());
+                    for &m in members {
+                        let m = m as usize;
+                        self.area_reset(m);
+                        let (x, y) = self.level_pos_of(m);
+                        let (dx, dy) = (x as f32 - center.0, y as f32 - center.1);
+                        let tx = dx.mul_add(cos, dy * -sin) + center.0;
+                        let ty = dx.mul_add(sin, dy * cos) + center.1;
+                        self.area_offset(m, tx - x as f32, ty - y as f32);
+                        if self.can_rotate_free(m) {
+                            self.area.turn[m] += angle;
+                            self.area.touched.push(m);
+                        }
+                    }
+                    return;
+                }
+                3007 => self.area.turn[i] += a.rotation * k,
+                3008 if cluster.is_some() => {
+                    // `transformAreaObjects`: the cluster scales about its parent object
+                    let (fx, fy) = (1.0 + (a.scale.0 - 1.0) * k, 1.0 + (a.scale.1 - 1.0) * k);
+                    let Some(p) = parent else { return };
+                    self.area_reset(p as usize);
+                    let (ex, ey) = self.level_pos_of(p as usize);
+                    let center = (ex as f32, ey as f32);
+                    for &m in members {
+                        let m = m as usize;
+                        self.area_reset(m);
+                        let (x, y) = self.level_pos_of(m);
+                        let (dx, dy) = (x as f32 - center.0, y as f32 - center.1);
+                        self.area_offset(m, dx * fx + center.0 - x as f32, dy * fy + center.1 - y as f32);
+                        let s = &mut self.area.scale[m];
+                        s.0 *= fx;
+                        s.1 *= fy;
+                        self.area.touched.push(m);
+                    }
+                    return;
+                }
+                3008 => {
+                    let s = &mut self.area.scale[i];
+                    s.0 *= 1.0 + (a.scale.0 - 1.0) * k;
+                    s.1 *= 1.0 + (a.scale.1 - 1.0) * k;
+                }
+                // multipliedColorValue((1 − tint) + tint·v, channel, own): the channel's
+                // share is tint·(1 − v)
+                3010 if a.tint_hsv_mode => {
+                    for &m in members {
+                        self.area.tint[m as usize].0 = 0;
+                        self.area.tint_hsv[m as usize] = Some((a.tint_hsv.multiplied(k), !a.tint_detail_only, !a.tint_main_only));
+                    }
+                }
+                3010 => {
+                    for &m in members {
+                        self.area.tint[m as usize] = (a.tint_channel, (a.tint * k).clamp(0.0, 1.0), !a.tint_detail_only, !a.tint_main_only);
+                        self.area.tint_hsv[m as usize] = None;
+                    }
+                }
+                _ => return,
+            }
+            self.area.touched.extend(members.iter().map(|&m| m as usize));
+            return;
+        }
+        if 1.0 <= v || a.move_distance == 0.0 {
+            return;
+        }
+        let eased = self.area.eased(v, a.ease_in);
+        let f = (1.0 - eased) * a.move_distance;
+        let (ox, oy) = (w.dir.0 * f, f * w.dir.1);
+        for &m in members {
+            let m = m as usize;
+            self.area_reset(m);
+            self.area_offset(m, ox, oy);
+        }
+    }
+
+    /// Add an area offset to a level object's position (taken off at its next reset).
+    fn area_offset(&mut self, i: usize, ox: f32, oy: f32) {
+        if ox == 0.0 && oy == 0.0 {
+            return;
+        }
+        let (mut x, mut y) = self.level_pos_of(i);
+        self.area.ever[i] = true;
+        let off = &mut self.area.off[i];
+        if oy != 0.0 {
+            y += oy as f64;
+            off.1 += oy;
+        }
+        if ox != 0.0 {
+            off.0 += ox;
+            x += ox as f64;
+        }
+        self.set_level_pos_pub(i, (x, y));
+    }
+}
+
+/// An area effect's center and section window this step, and its move direction.
+struct AreaWindow {
+    center: (f32, f32),
+    xr: (i32, i32),
+    yr: (i32, i32),
+    dir: (f32, f32),
 }

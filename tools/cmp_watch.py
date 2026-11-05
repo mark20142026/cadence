@@ -4,7 +4,11 @@
 Per step and object: the f64 position (`real=`), rotation, scale and opacity. Prints, per field,
 the samples compared, the largest difference and the first step past the tolerance.
 
-Usage: cmp_watch.py <real.csv> [<ours.csv>] [--tol 1e-3]
+Usage: cmp_watch.py <real.csv> [<ours.csv>] [--tol 1e-3] [--fields real,rot] [--rot-frames N:K]
+
+--fields limits the comparison to those fields; --rot-frames N:K compares the rotation only at
+steps where step % N == K (the game refreshes a node's area rotation once per drawn frame).
+Exits with 1 when a compared field is past the tolerance somewhere.
 """
 import sys
 
@@ -38,14 +42,27 @@ def main():
         i = args.index("--tol")
         tol = float(args[i + 1])
         del args[i:i + 2]
+    fields = ("real", "rot", "sc", "op")
+    if "--fields" in args:
+        i = args.index("--fields")
+        fields = tuple(args[i + 1].split(","))
+        del args[i:i + 2]
+    rot_frames = None
+    if "--rot-frames" in args:
+        i = args.index("--rot-frames")
+        rot_frames = tuple(int(v) for v in args[i + 1].split(":"))
+        del args[i:i + 2]
+    failed = False
     real_path = args[0]
     ours_path = args[1] if len(args) > 1 else real_path + ".ours"
     r, o = load(real_path), load(ours_path)
     name = real_path.split("/")[-1]
-    for field in ("real", "rot", "sc", "op"):
+    for field in fields:
         n, worst, first = 0, 0.0, None
         for step in sorted(r):
             if step not in o:
+                continue
+            if field == "rot" and rot_frames and step % rot_frames[0] != rot_frames[1]:
                 continue
             for k, (a, b) in enumerate(zip(r[step], o[step])):
                 if field not in a or field not in b:
@@ -59,7 +76,9 @@ def main():
                     first = (step, k, va, vb)
         if n:
             print(f"{name} {field}: {n} samples, max diff {worst:.6g}, first past {tol:g}: {first}")
+        failed = failed or first is not None
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

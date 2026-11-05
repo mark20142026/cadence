@@ -1651,3 +1651,83 @@ are in the scratch `DecompileTyped.java`; with them Ghidra keeps the float expre
   step and rotating D[leader] about the leader's unmodified position; addAreaEffect stores the
   same (index, count) in the effect instance. tryGetGroupParent(g) = m_parentGroupsDict[g][0],
   else the first object of g with +0x47e.
+
+## Group parents, linked objects, main objects (2026-11-05, parents agent; ported, traced)
+
+- **Keys**: 274 = the groups this object is the parent of ("." separated; `loadGroupParentsFromString`
+  0xf6578 → `FUN_1000f5770` appends it to m_parentGroupsDict(+0xe68)[g] and the group to
+  m_parentGroups(+0xe70)[uid], +0x492 set; a "+" item (`FUN_1000f58d8`) moves an object already
+  listed to the front). 34 = m_hasGroupParent (+0x47e), 279 = m_hasAreaParent (+0x47f), 108 =
+  linked group (+0x368, renumbered by sortStickyGroups). Triggers: 280 ignore group parent
+  (+0x728), 281 ignore linked (+0x729).
+- **tryGetMainObject(g)** (0xe6328): m_parentGroupsDict[g][0], else the group's object when it
+  has exactly one, else null. Used by advanced follow's target (`FUN_1000e7310`), area centers,
+  rotate centers, move targets, follow. `tryGetObject` (0xdf090, getFollowSpeedVal's 560 / 565):
+  the main object else a random object of the group (fast_rand). An area center without a main
+  object stays at (0, 0) (the CCPoint is zero-constructed), it doesn't skip.
+- **Clusters** (`FUN_1000d64d0`, decompiled again, details): the per-object cluster map starts with
+  every object's linked group; the parent pass (unless 280) walks the group's objects with
+  +0x492: for each child group c of one (only the group's explicit parent and c == g when g has
+  one) every object of c leaves the map and, if it is the parent object or has 34 / 279, is
+  offered as leader (replaces the current one when it has 279 and the current hasn't, or it's
+  the parent object) and as parent object (same with 34); the leader then enters the map as
+  −c (even if it's not in g). The linked pass (unless 281) offers objects with 34 / 279 for
+  their linked cluster — a linked cluster with neither flag has no leader and its objects move
+  alone. Final walk over g: cluster 0 or no leader → A (alone); the leader → B, D[uid] = the
+  linked group's every object (m_linkedGroupDict, not only those in g) or group c's objects,
+  E[uid] = the parent object; other members are skipped (their leader moves them).
+- **Advanced follow** (`processAdvancedFollowAction`, checked in the disassembly at 0x1000ffeb8..
+  0x1000fff50): pass 1 moves D[leader] by the leader's step (`moveObjects`), then, when the
+  leader turns, `rotateObjects(D, turn, leader's unmodified position after the move, offset =
+  the step)` — the offset moves the cluster a second time, so a turning cluster moves 2× the
+  step (the real trace shows it: a rotating linked cluster trails the player by half the solo
+  object's distance). `rotateObjects` (0xfe820): per object, p = f32(pos − area offset), child
+  node at p − center under a pivot node at center turned by the angle; pos += (concat.t + offset
+  − p) in doubles; objects with m_canRotateFree turn. The concat's translation is
+  fma(dx, cos, dy·−sin) + cx and fma(dx, sin, dy·cos) + cy (only this contraction matches the
+  trace to print precision; plain f32 or the other order drift 1e-3 over 1000 steps).
+- **Area effects** (`FUN_1000fb3a4` 0xfb3a4): processAreaEffects for the scale list, then rotate,
+  then move (fades / tints in processAreaVisualActions). Each call: A with the plain action,
+  then B with the cluster flag: the leader's value applies to D[leader] (move: each member reset
+  and offset by the leader's offset; rotate: `rotateAreaObjects` about E[leader] after resetting
+  it, the offset into the area offset, +angle on free-rotating ones; scale: `transformAreaObjects`
+  about E with the pivot scaled; fade / tint: setAreaOpacity / tint on every member). After the
+  three passes the objects reset the step before (`resetAreaObjectValues` appends to +0xd48,
+  moved to +0xd60) whose reset step is older than this one are reset (offsets and rotations
+  off): an object whose leader or itself left the section window doesn't keep a stale offset.
+  The center is reset first only for move / rotate / scale (`param_4 − 5 < −2`).
+- **Visual timing**: a node's area rotation (and the node position) only changes once per drawn
+  frame in the real watch files (steps 423, 427, … at speed 4) while the f64 positions change
+  every step; the suite compares rotations at step % 4 == 3.
+- **Not ported**: spawn remaps of the target groups (`FUN_1000d64d0` also gathers 1268's remap
+  pairs), +0x518 objects (skipped by cluster moves), rotated objects' skew under an uneven
+  cluster scale, and the parent-first main object for the other triggers (rotate / move / follow
+  still use the group's first object).
+
+## SFX trigger speed, edit SFX targets, per-sound proximity (2026-11-05, parents agent)
+
+- **SFX trigger 3602** (`SFXTriggerGameObject::customObjectSetup` 0x16c0f0, keys = string index
+  ÷ 0x18): 392 sound (+0x748), 404 speed index (+0x754), 405 pitch index (+0x758), 406 volume
+  (+0x75c), 415 unique (+0x775) with 416 its id (+0x778; `getUniqueSFXID`: 416 if ≥ 1 else
+  −uid), 455 SFX group (+0x7a0), 457 group of SFX triggers for edits (+0x7a8), 51 / 71
+  proximity group / center, 138 / 200 / 428 listeners, 421–426 volumes / distances, 458 mode,
+  489 (+0x79a) no proximity test, 10 duration (+0x5ac), 417 / 418 / 419 stop / volume / speed
+  (+0x7a4–6). `activateSFXTrigger` (0x10ef60): with 51 and without 489,
+  `volumeForProximityEffect` ≤ 0 → not played; `GameManager::playSFXTrigger` (0x2ef690) →
+  `playEffectAdvanced(speed = pitchForIdx(404) (± the 0x7c0 range), volume ≤ 2, pitch =
+  pitchForIdx(405))`: speed goes to `ChannelControl::setPitch` (the playback rate), the pitch to
+  a pitch-shift DSP (FMOD_DSP_TYPE_PITCHSHIFT 0xd). The channel id is kept per trigger uid
+  (+0xd8 map) and gets the trigger's proximity effect (`addProximityVolumeEffect(channel, 0)`).
+- **Edit SFX 3603** (`activateSFXEditTrigger` 0x10f2a0): the channels started by the 3602
+  objects of group 457, then SFX group 455 (`applySFXEditTrigger(455, type 1)`, the channel
+  group), then the unique id 416 (`channelIDForUniqueID`). Per target: stop (417, or 414),
+  speed 419 → `updateChannel(duration, +0x750 > 0 ? +0x750 : pitchForIdx(404), kind 1)`,
+  volume 418 → `updateChannel(duration, 406, kind 0)`; with 51 a proximity effect for the
+  457 / 455 targets (not the unique one). Proximity effects are kept by (channel, type) and
+  scale the channel's volume every step (`updateProximityVolumeEffects`).
+- **Cadence**: `SfxPlay` / `AudioEdit` (groups.rs); the app's `TriggerSounds` (audio.rs) keeps
+  each sound's handle, trigger, SFX group, unique id, volume and speed tweens and proximity;
+  the backends got per-sound volume and rate (native: a rodio `Player` per sound with
+  `set_speed`; web: `AudioBufferSourceNode.playbackRate` and a gain per sound). Not ported:
+  405 pitch (needs a pitch shifter), the random ranges, loops, fades in / out, start / end,
+  reverb, 414.
