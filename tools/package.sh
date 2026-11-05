@@ -19,7 +19,10 @@ Darwin)
     app="dist/Cadence.app"
     rm -rf "${app:?}"
     mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-    cp "$bin/cadence" "$bin/cadence-game" "$app/Contents/MacOS/"
+    # the launcher builds as cadence-launcher (cadence-tools has the `cadence` command); the
+    # packages call it cadence
+    cp "$bin/cadence-launcher" "$app/Contents/MacOS/cadence"
+    cp "$bin/cadence-game" "$app/Contents/MacOS/"
     iconset="$(mktemp -d)/Cadence.iconset"
     mkdir -p "$iconset"
     for s in 16 32 128 256 512; do
@@ -39,7 +42,8 @@ MINGW*|MSYS*|CYGWIN*|Windows_NT)
     out="dist/Cadence"
     rm -rf "${out:?}"
     mkdir -p "$out"
-    cp "$bin/cadence.exe" "$bin/cadence-game.exe" "$out/"
+    cp "$bin/cadence-launcher.exe" "$out/cadence.exe"
+    cp "$bin/cadence-game.exe" "$out/"
     cp README.md LICENSE "$out/"
     (cd dist && rm -f Cadence-windows.zip && powershell -NoProfile -Command "Compress-Archive -Path Cadence -DestinationPath Cadence-windows.zip")
     echo "dist/Cadence-windows.zip"
@@ -48,7 +52,8 @@ MINGW*|MSYS*|CYGWIN*|Windows_NT)
     out="dist/Cadence"
     rm -rf "${out:?}"
     mkdir -p "$out"
-    cp "$bin/cadence" "$bin/cadence-game" "$out/"
+    cp "$bin/cadence-launcher" "$out/cadence"
+    cp "$bin/cadence-game" "$out/"
     cp packaging/icon-1024.png "$out/cadence.png"
     cp packaging/cadence.desktop README.md LICENSE "$out/"
     tar -C dist -czf dist/Cadence-linux.tar.gz Cadence

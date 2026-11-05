@@ -1296,3 +1296,7 @@ prebuilt trace mod), corner and muted.
   Trolling, Scam / Phishing, … Threats / Danger). reportGJContent's body (0x1004d3500) has no
   base fields: `type=&targetID=&special=&reasons=<ids joined by ",">&accountID=&gjp2=&secret=`
   [+ `&messageID=`]. Not recorded (the fake-account copy isn't logged in).
+- Fixed: the launcher's binary was also named `cadence`, the same as cadence-tools' CLI, so a
+  release build of the launcher replaced `target/release/cadence` and verify_all sat in a
+  launcher window. The launcher now builds as `cadence-launcher`; tools/package.sh still ships
+  it as `cadence` / `cadence.exe`.
