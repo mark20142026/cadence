@@ -11,7 +11,9 @@ or endorsed by RobTop Games.
 Early development (v0.0.2). What works:
 
 - The main levels and The Tower play with the original physics: player positions match the real
-  game step for step on the recorded routes (`tools/verify_all.sh`).
+  game step for step on the recorded routes (`tools/verify_all.sh`), and so do the camera (all
+  135 suites) and the drawn rotation (134). [PHYSICS.md](PHYSICS.md) sets out what is exact,
+  what is close and what is ported but not yet checked.
 - The menus: level select, settings (all pages), keybindings (every action of the game,
   rebindable, export / import), icon kit (with the trails, ship fires and death effects pages),
   shops (buy with Mana Orbs and Diamond Shards), Paths of Power, Shards of Power, the Treasure
