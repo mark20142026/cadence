@@ -182,5 +182,7 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       (updateGJThread mode 8, then the thread opens), Ignore (asks first; mode 9), Pending ↔
       Ignored.
 - [ ] Still open: members (answer format/handler not found yet; the button is dimmed),
-      report (the thread's report type not read yet; dimmed), search in a thread and in the
-      invites, and the "+" (share) and emote buttons.
+      report (the thread's report type not read yet; dimmed), search in the invites, and the
+      "+" (share) and emote buttons.
+- [x] Search in a thread (searchGJThreadMessages, `&query=<b64>` after the secret, from the
+      decompile; results replace the messages until search is pressed again).

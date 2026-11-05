@@ -2089,6 +2089,12 @@ impl Ui {
             }
             Btn::WriteSend => {
                 if let (Some(w), Some(s)) = (self.writer.take(), self.social.as_mut()) {
+                    if let Some(thread) = w.search {
+                        if !w.body.trim().is_empty() {
+                            s.search_thread(thread, w.body.trim().to_string());
+                        }
+                        return;
+                    }
                     if let Some(thread) = w.rename {
                         if !w.body.trim().is_empty() {
                             s.update_thread(thread, 2, Some(w.body.trim().to_string()));
@@ -4265,6 +4271,11 @@ impl Ui {
             }
             social::Effect::Write { to, title } => self.writer = Some(social::Writer::new(title, to)),
             social::Effect::NewThread => self.writer = Some(social::Writer::new_thread()),
+            social::Effect::SearchThread(thread) => {
+                let mut w = social::Writer::new("Search Messages", None);
+                w.search = Some(thread);
+                self.writer = Some(w);
+            }
             social::Effect::RenameThread(thread, name) => {
                 let mut w = social::Writer::new("Rename Group Chat", None);
                 w.rename = Some(thread);

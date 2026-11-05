@@ -1275,3 +1275,8 @@ prebuilt trace mod), corner and muted.
   thread), Ignore = mode 9 after "Ignore this? They won't be notified." (recorded with the new
   `/press:` steps, which leave the notices that a press opens). Cadence: Page::Invites, drawn
   from the capture; the threads page's invites button opens it.
+- Search in a thread: the request built at the function referencing "threadSearch_%i_%lli"
+  (`&threadID=&beforeID=&secret=` then `&query=` + base64); its handler FUN_100491b00 parses
+  part 0 with the message-row parser (0x1004c6374) and part 1 as "more". Not recorded from the
+  game. Cadence: the thread view's search button opens a one-line box; results replace the
+  messages with `Search: "…"` above; pressing search again (or refresh) goes back.

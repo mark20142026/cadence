@@ -537,6 +537,19 @@ pub async fn thread_messages(thread: i64, before: i64) -> Result<ThreadPage, Str
     Ok(ok(body).map(|b| parse_thread_page(b.trim())).unwrap_or_default())
 }
 
+/// `searchGJThreadMessages.php` (GameLevelManager's request, decompiled): the query base64'd
+/// after the secret; the answer is message rows (the same parser) and `#` whether there are
+/// more.
+pub fn thread_search_form(id: &Identity, thread: i64, before: i64, query: &str) -> String {
+    format!("{}&threadID={thread}&beforeID={before}&secret={}&query={}", id.base(), gjapi::SECRET, gjapi::b64(query.as_bytes()))
+}
+
+pub async fn search_thread(thread: i64, query: String) -> Result<Vec<ThreadMessage>, String> {
+    let id = me()?;
+    let body = crate::net::post("searchGJThreadMessages.php", &thread_search_form(&id, thread, 0, &query)).await?;
+    Ok(ok(body).map(|b| parse_thread_page(b.trim()).messages).unwrap_or_default())
+}
+
 /// `sendGJThreadMessage.php` as the game sends it (recorded): the text base64'd, and a random
 /// 16-digit token (the same send retried isn't posted twice).
 pub fn thread_send_form(id: &Identity, thread: i64, text: &str, token: u64) -> String {
@@ -662,6 +675,12 @@ mod thread_page_tests {
         assert_eq!((p.messages[0].text.as_str(), p.messages[2].deleted, p.messages[1].account), ("Hello there, first message", true, 1));
         assert_eq!((p.users[0].name.as_str(), p.users[0].icon, p.users[1].account), ("Alpha", 15, 1));
         assert_eq!((p.earlier, p.locked, p.status), (true, true, 7));
+    }
+
+    #[test]
+    fn search_form() {
+        let id = crate::gjapi::Identity { udid: "U".into(), uuid: 0, account: None };
+        assert!(super::thread_search_form(&id, 9001, 0, "level").ends_with("&threadID=9001&beforeID=0&secret=Wmfd2893gb7&query=bGV2ZWw="));
     }
 
     #[test]

@@ -43,6 +43,7 @@ pub enum Msg {
     /// Older messages ("Load earlier"), to go before those shown.
     ThreadOlder(Result<social::ThreadPage, ()>),
     Invites(Result<Vec<social::Invite>, ()>),
+    ThreadSearch(String, Result<Vec<social::ThreadMessage>, ()>),
     Opened(Box<social::Message>),
     Profile(Box<(crate::online::Profile, Counts, Vec<Post>)>),
     Users(Vec<User>),
@@ -66,6 +67,8 @@ pub enum Effect {
     NewThread,
     /// Open `RenameThreadPopup` for this thread (its current name).
     RenameThread(i64, String),
+    /// Open the box for searching this thread's messages.
+    SearchThread(i64),
     /// A received request opened (`FriendRequestPopup`): its row, sender and message.
     Request { row: usize, name: String, text: String },
 }
@@ -89,6 +92,8 @@ pub struct Social {
     /// thread opens once the server says yes).
     pub invites: Option<Result<Vec<social::Invite>, ()>>,
     pub ignoring: Option<i64>,
+    /// A search in the open thread: the query and the messages found.
+    pub thread_search: Option<(String, Option<Vec<social::ThreadMessage>>)>,
     pub accepted: Option<social::Thread>,
     /// Your friends, for the new-thread popup's "To".
     pub friends: Option<Vec<User>>,
@@ -112,7 +117,7 @@ pub fn row_btn(what: u16, row: usize) -> Btn {
 
 impl Social {
     pub fn open() -> Social {
-        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), viewing: None, thread_page: None, friends: None, options: None, options_confirm: None, invites: None, ignoring: None, accepted: None, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
+        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), viewing: None, thread_page: None, friends: None, options: None, options_confirm: None, invites: None, ignoring: None, accepted: None, thread_search: None, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
         s.load();
         s
     }
@@ -327,6 +332,14 @@ impl Social {
         self.job = Some(crate::net::spawn(async move { Msg::Done(social::send_new_thread(dm, targets, name, desc, body).await, "new thread") }));
     }
 
+    pub fn search_thread(&mut self, thread: i64, query: String) {
+        self.thread_search = Some((query.clone(), None));
+        self.job = Some(crate::net::spawn(async move {
+            let r = social::search_thread(thread, query.clone()).await.map_err(|_| ());
+            Msg::ThreadSearch(query, r)
+        }));
+    }
+
     pub fn send_thread(&mut self, thread: i64, text: String) {
         self.job = Some(crate::net::spawn(async move { Msg::Done(social::send_thread_message(thread, text).await, "thread message") }));
     }
@@ -354,6 +367,7 @@ impl Social {
             Msg::Messages(m) => self.messages = Some(m),
             Msg::ThreadPage(p) => self.thread_page = Some(p),
             Msg::Invites(l) => self.invites = Some(l),
+            Msg::ThreadSearch(q, r) => self.thread_search = Some((q, Some(r.unwrap_or_default()))),
             Msg::ThreadOlder(Ok(older)) => {
                 if let Some(Ok(p)) = self.thread_page.as_mut() {
                     let mut messages = older.messages;
@@ -525,7 +539,16 @@ impl Social {
                 self.stack.pop();
                 self.load();
             }
-            (Page::ThreadView, Btn::Replay(8)) if !self.busy() => self.load(),
+            (Page::ThreadView, Btn::Replay(8)) if !self.busy() => {
+                self.thread_search = None;
+                self.load();
+            }
+            // search: the box, or back to the messages when a search is shown
+            (Page::ThreadView, Btn::Replay(9)) => {
+                if self.thread_search.take().is_none() {
+                    return Effect::SearchThread(self.viewing.as_ref().map_or(0, |t| t.id));
+                }
+            }
             (Page::ThreadView, Btn::Social(7401)) if !self.busy() => {
                 let (id, before) = (self.viewing.as_ref().map_or(0, |t| t.id), self.thread_page.as_ref().and_then(|r| r.as_ref().ok()).and_then(|p| p.messages.first()).map_or(0, |m| m.id));
                 self.job = Some(crate::net::spawn(async move { Msg::ThreadOlder(social::thread_messages(id, before).await.map_err(|_| ())) }));
@@ -1231,6 +1254,27 @@ fn draw_thread_view(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
         c.text("goldFont", text, cx, 37.0, Look::scaled(0.5));
         c.sprite("GJ_infoIcon_001.png", cx + w * 0.5 + 10.5, 37.0, Look::scaled(0.5));
     }
+    let found;
+    let page = match &s.thread_search {
+        Some((q, results)) => {
+            c.text("chatFont", &format!("Search: \"{q}\""), cx, 268.0, Look::scaled(0.5).alpha(170));
+            match results {
+                None => {
+                    super::online::loading_circle(c, cx, 163.0, s.t);
+                    return;
+                }
+                Some(r) if r.is_empty() => {
+                    c.text("chatFont", "No messages found", cx, 163.0, Look::scaled(0.7).alpha(150));
+                    return;
+                }
+                Some(r) => {
+                    found = social::ThreadPage { messages: r.clone(), users: page.map(|p| p.users.clone()).unwrap_or_default(), ..Default::default() };
+                    Some(&found)
+                }
+            }
+        }
+        None => page,
+    };
     let Some(p) = page else {
         if matches!(s.thread_page, Some(Err(()))) {
             c.text("goldFont", "Something went wrong...", cx, 163.0, Look::scaled(0.6));
@@ -1470,6 +1514,8 @@ pub struct Writer {
     pub new_thread: Option<NewThread>,
     /// `RenameThreadPopup` for this thread (the body is the name).
     pub rename: Option<i64>,
+    /// A search in this thread (the body is the query).
+    pub search: Option<i64>,
     pub subject: String,
     pub body: String,
     /// The field typed into: 0 subject, 1 body (posts have the body only).
@@ -1479,13 +1525,14 @@ pub struct Writer {
 
 impl Writer {
     pub fn new(title: &'static str, to: Option<i64>) -> Writer {
-        Writer { title, to, level: None, song_slot: None, thread: None, new_thread: None, rename: None, subject: String::new(), body: String::new(), field: if to.is_some() { 0 } else { 1 }, t: 0.0 }
+        Writer { title, to, level: None, song_slot: None, thread: None, new_thread: None, rename: None, search: None, subject: String::new(), body: String::new(), field: if to.is_some() { 0 } else { 1 }, t: 0.0 }
     }
 
     fn limit(&self) -> usize {
         match (self.to, self.field) {
             _ if self.thread.is_some() => 300,
             _ if self.rename.is_some() => 20,
+            _ if self.search.is_some() => 40,
             _ if self.new_thread.is_some() => match (self.new_thread.as_ref().is_some_and(|n| n.group), self.field) {
                 (true, 0) => 20,
                 (true, _) => 300,
@@ -1655,7 +1702,7 @@ fn draw_new_thread(wr: &Writer, n: &NewThread, friends: Option<&Vec<User>>, c: &
 pub fn draw_writer_for(wr: &Writer, friends: Option<&Vec<User>>, c: &mut Canvas, ctx: &mut Ctx) {
     match &wr.new_thread {
         Some(n) => draw_new_thread(wr, n, friends, c, ctx),
-        None if wr.rename.is_some() => draw_rename(wr, c, ctx),
+        None if wr.rename.is_some() || wr.search.is_some() => draw_rename(wr, c, ctx),
         None => draw_writer(wr, c, ctx),
     }
 }
@@ -1666,8 +1713,9 @@ fn draw_rename(wr: &Writer, c: &mut Canvas, ctx: &mut Ctx) {
     let cx = w * 0.5;
     c.rect(0.0, 0.0, w, h, [0.0; 3], 150.0 / 255.0);
     c.nine_slice("GJ_square01.png", cx, 160.0, 300.0, 140.0, Look::default());
-    c.text("bigFont", "Rename Group Chat", cx, 216.0, Look::scaled(0.5));
-    c.text("chatFont", "Everyone sees this name", cx, 192.0, Look::scaled(0.5).alpha(160));
+    let (title, note, button) = if wr.search.is_some() { ("Search Messages", "Words in a message", "Search") } else { ("Rename Group Chat", "Everyone sees this name", "Save") };
+    c.text("bigFont", title, cx, 216.0, Look::scaled(0.5));
+    c.text("chatFont", note, cx, 192.0, Look::scaled(0.5).alpha(160));
     c.nine_slice("square02b_small.png", cx, 162.0, 250.0, 26.0, Look::default().rgb([93, 52, 31]));
     ctx.area(Btn::WriteField(1), cx, 162.0, 250.0, 26.0);
     c.text("chatFont", &wr.body, cx, 162.0, Look::scaled(0.7));
@@ -1679,7 +1727,7 @@ fn draw_rename(wr: &Writer, c: &mut Canvas, ctx: &mut Ctx) {
     ctx.area(Btn::WriteCancel, cx - 142.0, 218.0, 36.8, 38.0);
     let f = ctx.factor(Btn::WriteSend);
     c.nine_slice("GJ_button_01.png", cx, 112.0, 86.0 * f, 28.0 * f, Look::default());
-    c.text("bigFont", "Save", cx - 1.0, 114.0, Look::scaled(0.6 * f));
+    c.text("bigFont", button, cx - 1.0, 114.0, Look::scaled(0.6 * f));
     ctx.area(Btn::WriteSend, cx, 112.0, 86.0, 28.0);
 }
 
