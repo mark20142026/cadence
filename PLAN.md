@@ -150,7 +150,11 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       (cam370t), glows tinted and additive (the pale blocks), editor guides under the objects
       and the green playback line, ship fires 2–6 in play, Explode off (no shatter).
       verify_all 122/133.
-- [ ] Still open: group parents / linked objects in advanced follow and area triggers (worked
-      out in NOTES, not ported); SFX playback speed (the audio backend has no per-sound rate)
-      and per-sound proximity; the newer threads messaging and notifications (answer formats
-      not pinned without a real account to record against); My Lists (your own level lists).
+- [x] My Lists: your own lists (browser, list page, edit mode, difficulty, duplicate, delete),
+      levels added from a level page's list button, upload / delete (uploadGJLevelList body
+      from the decompile: seed2 = base64(xor(sha1(levels sample + account), seed)); not yet
+      recorded from the real game — its call:list harness command didn't send).
+- [ ] Still open: group parents / linked objects and SFX speed (agent running); the newer
+      threads messaging (getGJThreads and its ThreadViewPopup / NewThreadPopup / members /
+      invites) and notifications (getGJNotifications): their answer parsers are in unnamed
+      code not found yet, and there is no real account to record against.
