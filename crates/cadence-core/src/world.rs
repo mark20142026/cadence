@@ -1191,7 +1191,7 @@ impl World {
         let (cx, cy) = (self.level_pos[center_order as usize].0 as f32, self.level_pos[center_order as usize].1 as f32);
         // CCNode::nodeToParentTransform with rotation r: radians = -r·(π/180) in f32.
         let rad = -(delta * 0.017_453_292_f32);
-        let (cos, sin) = ((rad as f64).cos() as f32, (rad as f64).sin() as f32);
+        let (cos, sin) = (crate::mathf::cosf(rad), crate::mathf::sinf(rad));
         let (a, b, c, d) = (cos as f64, sin as f64, -sin as f64, cos as f64);
         for order in members {
             let i = order as usize;

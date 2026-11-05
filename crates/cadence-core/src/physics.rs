@@ -2947,7 +2947,7 @@ impl Player {
         }
         let ang = ang.clamp(-70.0, 70.0);
         let rad = ang * 0.017_453_292_f32;
-        let (c, s) = ((rad as f64).cos() as f32, (rad as f64).sin() as f32);
+        let (c, s) = (crate::mathf::cosf(rad), crate::mathf::sinf(rad));
         self.dash_y = (s / c.abs()) as f64;
         // The icon points along the dash (cocos rotation is clockwise) and stops spinning.
         self.dash_angle = ang;

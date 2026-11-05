@@ -1,28 +1,13 @@
 //! `GameToolbox::getEasedValue` (0x45155c): the easings move, rotate and other tween triggers
 //! use. Ported instruction by instruction: f32 arithmetic with the fused multiply-adds where
-//! the game has them, the bounce segments compared in f64 (`t < 1/2.75` as doubles). The libm
-//! calls (`powf`, `exp2f`, `sinf`, `cosf`) are computed in f64 and rounded, which gives the
-//! correctly rounded f32 on every platform (native and WASM alike).
+//! the game has them, the bounce segments compared in f64 (`t < 1/2.75` as doubles), the libm
+//! calls as the game makes them (`crate::mathf`).
+
+use crate::mathf::{cosf, exp2f, powf, sinf};
 
 /// The f32 π the game multiplies by (0x40490fdb).
 const PI: f32 = std::f32::consts::PI;
 const HALF_PI: f32 = std::f32::consts::FRAC_PI_2;
-
-fn powf(x: f32, y: f32) -> f32 {
-    (x as f64).powf(y as f64) as f32
-}
-
-fn exp2f(x: f32) -> f32 {
-    (x as f64).exp2() as f32
-}
-
-fn sinf(x: f32) -> f32 {
-    (x as f64).sin() as f32
-}
-
-fn cosf(x: f32) -> f32 {
-    (x as f64).cos() as f32
-}
 
 /// cocos2d's `bounceTime` as the game compiles it (0x451474).
 fn bounce_time(t: f32) -> f32 {

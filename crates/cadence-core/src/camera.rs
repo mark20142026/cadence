@@ -421,13 +421,11 @@ impl Tween {
 }
 
 /// `GameToolbox::getEasedValue` type 1 (ease in-out) with the given rate. The game calls the
-/// system `powf` at run time, which can differ from an exact square by an ulp; `black_box`
-/// keeps the compiler from folding `powf(x, 2.0)` into `x * x`, so native builds call the same
-/// function. (wasm uses Rust's own libm, which may differ by an ulp — invisible.)
+/// system `powf` at run time, which can differ from an exact square by an ulp (`crate::mathf`).
 fn ease_in_out(t: f32, rate: f32) -> f32 {
-    let rate = std::hint::black_box(rate);
+    use crate::mathf::powf;
     let x = t + t;
-    if 1.0 <= x { (2.0 - x).powf(rate).mul_add(-0.5, 1.0) } else { x.powf(rate) * 0.5 }
+    if 1.0 <= x { powf(2.0 - x, rate).mul_add(-0.5, 1.0) } else { powf(x, rate) * 0.5 }
 }
 
 const STEP: f32 = 1.0 / crate::physics::STEPS_PER_SECOND as f32;

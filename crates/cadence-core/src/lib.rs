@@ -15,6 +15,7 @@ pub mod gradients;
 pub mod groups;
 pub mod keyframes;
 pub mod level;
+pub mod mathf;
 pub mod objects;
 pub mod order;
 pub mod parents;

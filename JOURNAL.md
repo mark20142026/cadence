@@ -1371,3 +1371,10 @@ prebuilt trace mod), corner and muted.
 - verify_all 134/135 (s19-22: a wave→cube portal and two slopes in one pass; the game meets
   the first slope before the portal, Cadence the portal first — 2° for a few steps). Camera
   119/135: Dash s8–s19-22 (the step-3378 4-ulp blip and the static drift) and The Tower t4–t7.
+- Dash's camera (s8–s19-22): the step-3378 blip and the drift from ~13,650 were one cause. The
+  elastic-out zoom (easing 6) calls the system `exp2f` and `sinf`; Cadence computed them in f64
+  and rounded (correctly rounded), and Apple's are an ulp off that now and then. Zoom 1 ulp low
+  → camera y 4 ulps off for a step (y telescopes: y_n = y_0 + h/2z_0 − h/2z_n). New
+  `cadence_core::mathf`: the system functions on macOS, f64-rounded elsewhere; used by the
+  easings, the camera's ease in-out, the dash orb's angle and group rotation. Camera 131/135
+  (The Tower t4–t7 left).
