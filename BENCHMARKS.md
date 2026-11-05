@@ -118,7 +118,7 @@ noclip, measured the same way: from the level's start, 22 s, the first 30 frames
 Native: the release build (`CADENCE_BENCH=22`), frame = interval between presented frames.
 Browser: Chrome 157 (WebGPU) with its own profile, a 640-wide app window parked in the corner
 and never focused (background throttling off), `?dev=1&noclip&level=<id>`; frame = interval
-between `requestAnimationFrame` callbacks (`/tmp`-free script: driven over the DevTools
+between `requestAnimationFrame` callbacks (`tools/web_bench.mjs`, driven over the DevTools
 protocol). "Steady" leaves out stalls over 200 ms — in the browser that is a single ~1.5 s
 stall right after Play while the level's High-quality sheets go to the GPU.
 
