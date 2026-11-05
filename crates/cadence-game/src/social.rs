@@ -530,10 +530,10 @@ pub fn parse_thread_page(body: &str) -> ThreadPage {
     ThreadPage { messages, users, earlier: m(5).unwrap_or(0) > 0, locked: m(9).unwrap_or(0) != 0, status: m(10).map_or(-1, |v| v as i32) }
 }
 
-/// A thread's latest messages.
-pub async fn thread_messages(thread: i64) -> Result<ThreadPage, String> {
+/// A thread's latest messages, or those before message `before` ("Load earlier").
+pub async fn thread_messages(thread: i64, before: i64) -> Result<ThreadPage, String> {
     let id = me()?;
-    let body = crate::net::post("getGJThreadMessages.php", &format!("{}&threadID={thread}&beforeID=0&afterID=0&secret={}", id.base(), gjapi::SECRET)).await?;
+    let body = crate::net::post("getGJThreadMessages.php", &format!("{}&threadID={thread}&beforeID={before}&afterID=0&secret={}", id.base(), gjapi::SECRET)).await?;
     Ok(ok(body).map(|b| parse_thread_page(b.trim())).unwrap_or_default())
 }
 
@@ -541,6 +541,33 @@ pub async fn thread_messages(thread: i64) -> Result<ThreadPage, String> {
 /// 16-digit token (the same send retried isn't posted twice).
 pub fn thread_send_form(id: &Identity, thread: i64, text: &str, token: u64) -> String {
     format!("{}&threadID={thread}&secret={}&token={token}&body={}", id.base(), gjapi::SECRET, gjapi::b64(text.as_bytes()))
+}
+
+/// A new thread (`NewThreadPopup`), as GameLevelManager::sendThreadMessage builds it (decompiled
+/// at 0x1004c4bc0): thread 0, `&isDM=1` for a direct message, the recipient and the group's name
+/// (base64), then the group's members, description and emote when set (each base64), the
+/// token, and the first message (base64; empty for a group).
+pub fn new_thread_form(id: &Identity, dm_to: Option<i64>, targets: &[i64], name: &str, description: &str, body: &str, token: u64) -> String {
+    let mut f = format!("{}&threadID=0&secret={}", id.base(), gjapi::SECRET);
+    if dm_to.is_some() {
+        f.push_str("&isDM=1");
+    }
+    f.push_str(&format!("&toAccountID={}&subject={}", dm_to.unwrap_or(0), gjapi::b64(name.as_bytes())));
+    if !targets.is_empty() {
+        let list = targets.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+        f.push_str(&format!("&targets={}", gjapi::b64(list.as_bytes())));
+    }
+    if !description.is_empty() {
+        f.push_str(&format!("&description={}", gjapi::b64(description.as_bytes())));
+    }
+    f.push_str(&format!("&token={token}&body={}", gjapi::b64(body.as_bytes())));
+    f
+}
+
+pub async fn send_new_thread(dm_to: Option<i64>, targets: Vec<i64>, name: String, description: String, body: String) -> Result<(), String> {
+    let id = me()?;
+    let token = 1_000_000_000_000_000 + (gjapi::random() % 9_000_000_000_000_000);
+    ok(crate::net::post("sendGJThreadMessage.php", &new_thread_form(&id, dm_to, &targets, &name, &description, &body, token)).await?).map(|_| ())
 }
 
 pub async fn send_thread_message(thread: i64, text: String) -> Result<(), String> {
@@ -558,6 +585,15 @@ mod thread_page_tests {
         assert_eq!((p.messages[0].text.as_str(), p.messages[2].deleted, p.messages[1].account), ("Hello there, first message", true, 1));
         assert_eq!((p.users[0].name.as_str(), p.users[0].icon, p.users[1].account), ("Alpha", 15, 1));
         assert_eq!((p.earlier, p.locked, p.status), (true, true, 7));
+    }
+
+    #[test]
+    fn new_thread_forms() {
+        let id = crate::gjapi::Identity { udid: "U".into(), uuid: 0, account: None };
+        let dm = super::new_thread_form(&id, Some(21), &[], "", "", "Hi", 5);
+        assert!(dm.ends_with("&threadID=0&secret=Wmfd2893gb7&isDM=1&toAccountID=21&subject=&token=5&body=SGk="), "{dm}");
+        let group = super::new_thread_form(&id, None, &[21, 22], "Crew", "About", "", 5);
+        assert!(group.ends_with("&threadID=0&secret=Wmfd2893gb7&toAccountID=0&subject=Q3Jldw==&targets=MjEsMjI=&description=QWJvdXQ=&token=5&body="), "{group}");
     }
 
     #[test]

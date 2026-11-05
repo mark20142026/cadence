@@ -1101,12 +1101,26 @@ void pressLabel(std::string const& text) {
     if (hit) hit->activate();
 }
 
+/// Plain notices (FLAlertLayer itself, not a page built on it) taken off the scene without
+/// pressing anything, so the page under them shows.
+void dropNotices() {
+    auto scene = CCDirector::get()->getRunningScene();
+    if (!scene) return;
+    std::vector<CCNode*> drop;
+    for (auto c : CCArrayExt<CCNode*>(scene->getChildren()))
+        if (typeinfo_cast<FLAlertLayer*>(c) && std::string(typeid(*c).name()) == typeid(FLAlertLayer).name()) drop.push_back(c);
+    for (auto c : drop) c->removeFromParent();
+    if (!drop.empty()) log::info("gui: dropped {} notice(s)", drop.size());
+}
+
 /// One frame of the gui sequence (called before each present).
 void stepGui() {
     if (g_guiFrame < 0 || g_guiIndex >= g_spec.guis.size()) return;
     auto& [name, path] = g_spec.guis[g_guiIndex];
     g_guiFrame++;
     int lead = 0;
+    // .../dropnotice: every frame once the gui is open, until the shot
+    if (name.find("/dropnotice") != std::string::npos && g_guiFrame > lead + 40 && g_guiFrame < lead + g_guiShotFrame - 2) dropNotices();
     if (g_guiFrame == lead + 1) {
         CCDirector::get()->replaceScene(MenuLayer::scene(false));
     }
@@ -1258,17 +1272,6 @@ void stepGui() {
             else if (kind == "settings") ui->onSettings(nullptr);
             else if (kind == "pause") ui->onPause(nullptr);
         }
-    }
-    else if ((g_guiFrame == lead + g_guiShotFrame - 20 || g_guiFrame == lead + g_guiShotFrame - g_guiLate - 30) && name.find("/dropnotice") != std::string::npos) {
-        // .../dropnotice: take plain notices (FLAlertLayer itself, not a page built on it) off
-        // the scene without pressing anything, so the page under them shows (before a second
-        // press, and again before the shot)
-        auto scene = CCDirector::get()->getRunningScene();
-        std::vector<CCNode*> drop;
-        for (auto c : CCArrayExt<CCNode*>(scene->getChildren()))
-            if (typeinfo_cast<FLAlertLayer*>(c) && std::string(typeid(*c).name()) == typeid(FLAlertLayer).name()) drop.push_back(c);
-        for (auto c : drop) c->removeFromParent();
-        log::info("gui: dropped {} notice(s)", drop.size());
     }
     else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - (threePresses(name) ? 120 : 40) && name.find("/thenframe:") != std::string::npos) {
         // .../thenframe:<frame>: press the visible button whose sprite shows <frame> (safer than

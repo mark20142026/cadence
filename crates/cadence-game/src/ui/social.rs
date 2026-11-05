@@ -38,9 +38,12 @@ pub enum Msg {
     Messages(Vec<social::Message>),
     Threads(Result<(Vec<social::Thread>, usize, i32), ()>),
     ThreadPage(Result<social::ThreadPage, ()>),
+    /// Older messages ("Load earlier"), to go before those shown.
+    ThreadOlder(Result<social::ThreadPage, ()>),
     Opened(Box<social::Message>),
     Profile(Box<(crate::online::Profile, Counts, Vec<Post>)>),
     Users(Vec<User>),
+    Friends(Vec<User>),
     Done(Result<(), String>, &'static str),
     Error(String),
 }
@@ -56,6 +59,8 @@ pub enum Effect {
     Write { to: Option<i64>, title: &'static str },
     /// Open the box for a message in this thread.
     WriteThread(i64),
+    /// Open `NewThreadPopup` (a direct message or a group).
+    NewThread,
     /// A received request opened (`FriendRequestPopup`): its row, sender and message.
     Request { row: usize, name: String, text: String },
 }
@@ -72,6 +77,8 @@ pub struct Social {
     pub ticked: Vec<i64>,
     /// The thread open (`ThreadView`) and its messages.
     pub viewing: Option<social::Thread>,
+    /// Your friends, for the new-thread popup's "To".
+    pub friends: Option<Vec<User>>,
     pub thread_page: Option<Result<social::ThreadPage, ()>>,
     pub open_message: Option<social::Message>,
     pub stack: Vec<Page>,
@@ -92,7 +99,7 @@ pub fn row_btn(what: u16, row: usize) -> Btn {
 
 impl Social {
     pub fn open() -> Social {
-        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), viewing: None, thread_page: None, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
+        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), viewing: None, thread_page: None, friends: None, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
         s.load();
         s
     }
@@ -194,7 +201,7 @@ impl Social {
             Page::ThreadView => {
                 self.thread_page = None;
                 let id = self.viewing.as_ref().map_or(0, |t| t.id);
-                crate::net::spawn(async move { Msg::ThreadPage(social::thread_messages(id).await.map_err(|_| ())) })
+                crate::net::spawn(async move { Msg::ThreadPage(social::thread_messages(id, 0).await.map_err(|_| ())) })
             }
             Page::Threads(tab) => {
                 self.threads = None;
@@ -231,6 +238,12 @@ impl Social {
         }
     }
 
+    pub fn send_new_thread(&mut self, n: &NewThread, name: String, text: String) {
+        let ids: Vec<i64> = n.to.iter().map(|u| u.0).collect();
+        let (dm, targets, desc, body) = if n.group { (None, ids, text, String::new()) } else { (ids.first().copied(), Vec::new(), String::new(), text) };
+        self.job = Some(crate::net::spawn(async move { Msg::Done(social::send_new_thread(dm, targets, name, desc, body).await, "new thread") }));
+    }
+
     pub fn send_thread(&mut self, thread: i64, text: String) {
         self.job = Some(crate::net::spawn(async move { Msg::Done(social::send_thread_message(thread, text).await, "thread message") }));
     }
@@ -254,8 +267,24 @@ impl Social {
                 self.profile = Some(*p);
             }
             Msg::Users(u) => self.users = Some(u),
+            Msg::Friends(u) => self.friends = Some(u),
             Msg::Messages(m) => self.messages = Some(m),
             Msg::ThreadPage(p) => self.thread_page = Some(p),
+            Msg::ThreadOlder(Ok(older)) => {
+                if let Some(Ok(p)) = self.thread_page.as_mut() {
+                    let mut messages = older.messages;
+                    messages.retain(|m| !p.messages.iter().any(|n| n.id == m.id));
+                    messages.append(&mut p.messages);
+                    p.messages = messages;
+                    for u in older.users {
+                        if !p.users.iter().any(|v| v.account == u.account) {
+                            p.users.push(u);
+                        }
+                    }
+                    p.earlier = older.earlier;
+                }
+            }
+            Msg::ThreadOlder(Err(())) => return Effect::Alert("Error".into(), "Something went wrong...".into()),
             Msg::Threads(t) => {
                 self.ticked.clear();
                 self.threads = Some(t);
@@ -286,7 +315,7 @@ impl Social {
             Msg::Done(Err(code), what) => {
                 let text = match (what, code.as_str()) {
                     ("message", _) => "Failed to send the message. The player may not accept messages.",
-                    ("thread message", _) => "Failed to send the message. Please try again later.",
+                    ("thread message" | "new thread", _) => "Failed to send the message. Please try again later.",
                     ("post", _) => "Failed to post. Please try again later.",
                     _ => "Something went wrong. Please try again later.",
                 };
@@ -334,6 +363,12 @@ impl Social {
                 self.load();
             }
             (Page::Threads(_), Btn::Replay(6)) => self.go(Page::Messages(0)),
+            (Page::Threads(_), Btn::Replay(7)) => {
+                if self.friends.is_none() && !self.busy() {
+                    self.job = Some(crate::net::spawn(async { social::user_list(0).await.map_or_else(|_| Msg::Friends(Vec::new()), Msg::Friends) }));
+                }
+                return Effect::NewThread;
+            }
             (Page::Threads(tab), Btn::Replay(i @ 11..=13)) if i as u8 - 11 != tab => {
                 self.stack.pop();
                 self.go(Page::Threads(i as u8 - 11));
@@ -361,6 +396,10 @@ impl Social {
                 self.load();
             }
             (Page::ThreadView, Btn::Replay(8)) if !self.busy() => self.load(),
+            (Page::ThreadView, Btn::Social(7401)) if !self.busy() => {
+                let (id, before) = (self.viewing.as_ref().map_or(0, |t| t.id), self.thread_page.as_ref().and_then(|r| r.as_ref().ok()).and_then(|p| p.messages.first()).map_or(0, |m| m.id));
+                self.job = Some(crate::net::spawn(async move { Msg::ThreadOlder(social::thread_messages(id, before).await.map_err(|_| ())) }));
+            }
             (Page::ThreadView, Btn::Replay(12) | Btn::Social(7400)) if self.can_send() => {
                 return Effect::WriteThread(self.viewing.as_ref().map_or(0, |t| t.id));
             }
@@ -1063,8 +1102,10 @@ fn draw_thread_view(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
     c.clip = Some([79.5 + dx, 61.0, 489.5 + dx, 265.0]);
     let mut y = 255.0 + s.scroll;
     if p.earlier {
-        c.nine_slice("GJ_button_05.png", cx, y - 8.0, 106.0, 20.0, Look::default());
-        c.text("bigFont", "Load earlier", cx - 1.0, y - 6.0, Look::scaled(0.4));
+        let f = ctx.factor(Btn::Social(7401));
+        c.nine_slice("GJ_button_05.png", cx, y - 8.0, 106.0 * f, 20.0 * f, Look::default());
+        c.text("bigFont", "Load earlier", cx - 1.0, y - 6.0, Look::scaled(0.4 * f));
+        ctx.area(Btn::Social(7401), cx, y - 8.0, 106.0, 20.0);
         y -= 26.0;
     }
     let mut day = i64::MIN;
@@ -1141,6 +1182,9 @@ pub struct Writer {
     pub song_slot: Option<usize>,
     /// A message in this thread (`ThreadViewPopup`'s box).
     pub thread: Option<i64>,
+    /// `NewThreadPopup`: the subject is the group's name, the body the message (or the
+    /// group's description).
+    pub new_thread: Option<NewThread>,
     pub subject: String,
     pub body: String,
     /// The field typed into: 0 subject, 1 body (posts have the body only).
@@ -1150,12 +1194,17 @@ pub struct Writer {
 
 impl Writer {
     pub fn new(title: &'static str, to: Option<i64>) -> Writer {
-        Writer { title, to, level: None, song_slot: None, thread: None, subject: String::new(), body: String::new(), field: if to.is_some() { 0 } else { 1 }, t: 0.0 }
+        Writer { title, to, level: None, song_slot: None, thread: None, new_thread: None, subject: String::new(), body: String::new(), field: if to.is_some() { 0 } else { 1 }, t: 0.0 }
     }
 
     fn limit(&self) -> usize {
         match (self.to, self.field) {
             _ if self.thread.is_some() => 300,
+            _ if self.new_thread.is_some() => match (self.new_thread.as_ref().is_some_and(|n| n.group), self.field) {
+                (true, 0) => 20,
+                (true, _) => 300,
+                _ => 500,
+            },
             (None, _) => 140,
             (Some(_), 0) => 35,
             _ => 200,
@@ -1174,6 +1223,153 @@ impl Writer {
 
     pub fn backspace(&mut self) {
         if self.field == 0 { self.subject.pop() } else { self.body.pop() };
+    }
+}
+
+/// `NewThreadPopup`'s choices: a direct message or a group, who to, and the "To" picker open.
+#[derive(Clone, Debug, Default)]
+pub struct NewThread {
+    pub group: bool,
+    pub to: Vec<(i64, String)>,
+    pub picking: bool,
+}
+
+impl Writer {
+    pub fn new_thread() -> Writer {
+        let mut w = Writer::new("New Direct Message", None);
+        w.new_thread = Some(NewThread::default());
+        w
+    }
+
+    /// DM ↔ group (the popup's two buttons): a direct message keeps one recipient.
+    pub fn set_group(&mut self, group: bool) {
+        if let Some(n) = self.new_thread.as_mut() {
+            n.group = group;
+            n.to.truncate(if group { usize::MAX } else { 1 });
+        }
+        self.field = 1;
+    }
+
+    /// A friend picked in the "To" list: a direct message takes them (and closes the list),
+    /// a group adds or removes them.
+    pub fn pick(&mut self, account: i64, name: String) {
+        let Some(n) = self.new_thread.as_mut() else { return };
+        if n.group {
+            match n.to.iter().position(|u| u.0 == account) {
+                Some(i) => {
+                    n.to.remove(i);
+                }
+                None => n.to.push((account, name)),
+            }
+        } else {
+            n.to = vec![(account, name)];
+            n.picking = false;
+        }
+    }
+}
+
+/// `NewThreadPopup` (captured in both modes): title, "To:" and its box, the group's name box,
+/// the message (or description) box with the characters left, DM / group, Send — and the
+/// friends list when "To" is pressed.
+fn draw_new_thread(wr: &Writer, n: &NewThread, friends: Option<&Vec<User>>, c: &mut Canvas, ctx: &mut Ctx) {
+    let (w, h) = (c.width, c.height);
+    let dx = (w - 569.0) * 0.5;
+    c.rect(0.0, 0.0, w, h, [0.0; 3], 150.0 / 255.0);
+    let at = |x: f32| x + 38.0 + dx;
+    let brown = Look::default().rgb([93, 52, 31]);
+    c.nine_slice("GJ_square01.png", at(246.5), 160.0, 420.0, 230.0, Look::default());
+    c.text("goldFont", if n.group { "New Group Chat" } else { "New Direct Message" }, at(246.5), 259.0, Look::scaled(0.7));
+    c.sprite("GJ_infoIcon_001.png", at(111.5), 259.0, Look::scaled(0.5));
+    c.text("goldFont", "To:", at(66.5), 230.0, Look::scaled(0.5).anchor(0.0, 0.5));
+    c.nine_slice("square02b_small.png", at(266.5), 230.0, 320.0, 24.0, brown);
+    ctx.area(Btn::WritePick, at(266.5), 230.0, 320.0, 24.0);
+    let to = n.to.iter().map(|u| u.1.as_str()).collect::<Vec<_>>().join(", ");
+    if to.is_empty() {
+        c.text("bigFont", if n.group { "Select users..." } else { "Select user" }, at(114.5), 230.0, Look::scaled(0.45).anchor(0.0, 0.5).alpha(120));
+    } else {
+        let s = (300.0 / (c.text_size("bigFont", &to).0).max(1.0)).min(0.45);
+        c.text("bigFont", &to, at(114.5), 230.0, Look::scaled(s).anchor(0.0, 0.5));
+    }
+    let caret = (wr.t * 2.0).fract() < 0.5;
+    let left = |len: usize, max: usize| max.saturating_sub(len).to_string();
+    let (box_y, box_top) = if n.group { (131.0, 169.0) } else { (154.0, 192.0) };
+    if n.group {
+        c.nine_slice("square02b_small.png", at(246.5), 197.0, 360.0, 26.0, brown);
+        ctx.area(Btn::WriteField(0), at(246.5), 197.0, 360.0, 26.0);
+        if wr.subject.is_empty() {
+            c.text("chatFont", "Group name", at(231.5), 197.0, Look::scaled(0.7).rgb([195, 108, 65]));
+        } else {
+            c.text("chatFont", &wr.subject, at(231.5), 197.0, Look::scaled(0.7));
+        }
+        if wr.field == 0 && caret {
+            c.rect(at(231.5) + c.text_size("chatFont", &wr.subject).0 * 0.35 + 2.0, 190.0, 1.5, 14.0, [1.0; 3], 1.0);
+        }
+        c.text("chatFont", &left(wr.subject.chars().count(), 20), at(416.5), 197.0, Look::scaled(1.0).anchor(1.0, 0.5).alpha(100));
+    }
+    c.nine_slice("square02b_001.png", at(246.5), box_y, 360.0, 90.0, brown);
+    ctx.area(Btn::WriteField(1), at(246.5), box_y, 360.0, 90.0);
+    if wr.body.is_empty() {
+        c.text("chatFont", if n.group { "Description" } else { "Message" }, at(76.5), box_top, Look::scaled(0.75).anchor(0.0, 1.0).rgb([195, 108, 65]));
+    } else {
+        for (k, line) in super::wrap(c, &wr.body, 340.0, 0.75 / 1.6).iter().enumerate().take(5) {
+            c.text("chatFont", line, at(76.5), box_top - 15.0 * k as f32, Look::scaled(0.75).anchor(0.0, 1.0));
+        }
+    }
+    c.text("chatFont", &left(wr.body.chars().count(), if n.group { 300 } else { 500 }), at(446.5), 261.0, Look::scaled(1.0).anchor(1.0, 0.5).alpha(100));
+    let close = ctx.factor(Btn::WriteCancel);
+    c.sprite("GJ_closeBtn_001.png", at(44.5), 267.0, Look::scaled(0.8 * close));
+    ctx.area(Btn::WriteCancel, at(44.5), 267.0, 36.8, 38.0);
+    for (i, (name, group)) in [("threadBtn_dm_001.png", false), ("threadBtn_groupOn_001.png", true)].into_iter().enumerate() {
+        let id = Btn::WriteMode(group as u8);
+        let look = if n.group == group { Look::scaled(0.9 * ctx.factor(id)) } else { Look::scaled(0.9 * ctx.factor(id)).gray().rgb([240, 240, 240]).alpha(215) };
+        c.sprite(name, at(66.5 + 38.0 * i as f32), 67.0, look);
+        ctx.area(id, at(66.5 + 38.0 * i as f32), 67.0, 31.5, 31.5);
+    }
+    if n.group {
+        c.nine_slice("GJ_button_04.png", at(142.5), 67.0, 26.1, 26.1, Look::default());
+        c.sprite("particle_52_001.png", at(142.5), 67.0, Look::scaled(1.0125));
+    } else {
+        c.sprite("GJ_plusBtn_001.png", at(432.5), 67.0, Look::scaled(0.5));
+    }
+    c.sprite("particle_53_001.png", at(399.5), 67.0, Look::scaled(1.125));
+    let f = ctx.factor(Btn::WriteSend);
+    c.nine_slice("GJ_button_01.png", at(246.5), 67.0, 96.0 * f, 28.0 * f, Look::default());
+    c.text("bigFont", "Send", at(245.5), 69.0, Look::scaled(0.6 * f));
+    ctx.area(Btn::WriteSend, at(246.5), 67.0, 96.0, 28.0);
+    if n.picking {
+        // the friends to send to (FriendPickerPopup's choice, as a plain list)
+        ctx.buttons.clear();
+        c.rect(0.0, 0.0, w, h, [0.0; 3], 100.0 / 255.0);
+        let cx = 284.5 + dx;
+        c.nine_slice("GJ_square01.png", cx, 160.0, 300.0, 240.0, Look::default());
+        c.text("goldFont", if n.group { "Select users" } else { "Select user" }, cx, 262.0, Look::scaled(0.7));
+        match friends {
+            None => super::online::loading_circle(c, cx, 160.0, wr.t),
+            Some(l) if l.is_empty() => {
+                c.text("goldFont", "No friends", cx, 160.0, Look::scaled(0.6));
+            }
+            Some(l) => {
+                for (i, u) in l.iter().enumerate().take(8) {
+                    let y = 230.0 - 22.0 * i as f32;
+                    let id = Btn::WritePickRow(i as u16);
+                    let on = n.to.iter().any(|t| t.0 == u.account_id);
+                    c.sprite(if on { "GJ_checkOn_001.png" } else { "GJ_checkOff_001.png" }, cx - 120.0, y, Look::scaled(0.5));
+                    c.text("goldFont", &u.name, cx - 105.0, y, Look::scaled(0.5 * ctx.factor(id)).anchor(0.0, 0.5));
+                    ctx.area(id, cx, y, 280.0, 20.0);
+                }
+            }
+        }
+        let ok = ctx.factor(Btn::WritePick);
+        c.nine_slice("GJ_button_01.png", cx, 55.0, 60.0 * ok, 28.0 * ok, Look::default());
+        c.text("goldFont", "OK", cx, 57.0, Look::scaled(0.7 * ok));
+        ctx.area(Btn::WritePick, cx, 55.0, 60.0, 28.0);
+    }
+}
+
+pub fn draw_writer_for(wr: &Writer, friends: Option<&Vec<User>>, c: &mut Canvas, ctx: &mut Ctx) {
+    match &wr.new_thread {
+        Some(n) => draw_new_thread(wr, n, friends, c, ctx),
+        None => draw_writer(wr, c, ctx),
     }
 }
 

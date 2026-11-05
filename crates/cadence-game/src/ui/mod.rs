@@ -270,6 +270,10 @@ pub enum Btn {
     WriteField(u8),
     WriteCancel,
     WriteSend,
+    /// The new-thread popup: its "To" box (and the friends list's OK), DM / group, a friend
+    WritePick,
+    WriteMode(u8),
+    WritePickRow(u16),
     MenuSocial(u8),
     MenuNews,
     MenuClose,
@@ -1526,7 +1530,7 @@ impl Ui {
         if let Some(w) = self.writer.as_mut() {
             match key {
                 K::Backspace => w.backspace(),
-                K::Tab if w.to.is_some() => w.field ^= 1,
+                K::Tab if w.to.is_some() || w.new_thread.as_ref().is_some_and(|n| n.group) => w.field ^= 1,
                 K::Escape => self.writer = None,
                 _ => {}
             }
@@ -2034,6 +2038,35 @@ impl Ui {
                 }
             }
             Btn::WriteCancel => self.writer = None,
+            Btn::WritePick => {
+                if let Some(n) = self.writer.as_mut().and_then(|w| w.new_thread.as_mut()) {
+                    n.picking = !n.picking;
+                }
+            }
+            Btn::WriteMode(m) => {
+                if let Some(w) = self.writer.as_mut() {
+                    w.set_group(m == 1);
+                    w.title = if m == 1 { "New Group Chat" } else { "New Direct Message" };
+                }
+            }
+            Btn::WritePickRow(i) => {
+                let friend = self.social.as_ref().and_then(|s| s.friends.as_ref()).and_then(|l| l.get(i as usize)).map(|u| (u.account_id, u.name.clone()));
+                if let (Some(w), Some((id, name))) = (self.writer.as_mut(), friend) {
+                    w.pick(id, name);
+                }
+            }
+            // NewThreadPopup's Send: needs someone to send to, and a message (or a group name)
+            Btn::WriteSend if self.writer.as_ref().is_some_and(|w| w.new_thread.is_some()) => {
+                let ready = self.writer.as_ref().is_some_and(|w| w.new_thread.as_ref().is_some_and(|n| !n.to.is_empty() && if n.group { !w.subject.trim().is_empty() } else { !w.body.trim().is_empty() }));
+                if !ready {
+                    return;
+                }
+                if let (Some(w), Some(s)) = (self.writer.take(), self.social.as_mut()) {
+                    if let Some(n) = w.new_thread.as_ref() {
+                        s.send_new_thread(n, w.subject.clone(), w.body.clone());
+                    }
+                }
+            }
             // a custom song's id for your level
             Btn::WriteSend if self.writer.as_ref().is_some_and(|w| w.song_slot.is_some()) => {
                 if let Some(w) = self.writer.take() {
@@ -3695,6 +3728,16 @@ impl Ui {
             // your account's pages (CADENCE_SERVER at a stand-in with made-up answers)
             #[cfg(not(target_arch = "wasm32"))]
             "threadview" => self.social = Some(social::Social::open_first_thread()),
+            // NewThreadPopup over the threads (CADENCE_PAGE=1: a group)
+            #[cfg(not(target_arch = "wasm32"))]
+            "newthread" => {
+                self.social = Some(social::Social::open_at(social::Page::Threads(0)));
+                let mut w = social::Writer::new_thread();
+                if page == Some(1) {
+                    w.set_group(true);
+                }
+                self.writer = Some(w);
+            }
             #[cfg(not(target_arch = "wasm32"))]
             "myprofile" | "friends" | "requests" | "acctsettings" | "oldmessages" | "notifications" | "threads" => {
                 let page = match which {
@@ -4205,6 +4248,7 @@ impl Ui {
                 self.online.open_profile(account);
             }
             social::Effect::Write { to, title } => self.writer = Some(social::Writer::new(title, to)),
+            social::Effect::NewThread => self.writer = Some(social::Writer::new_thread()),
             social::Effect::WriteThread(thread) => {
                 let mut w = social::Writer::new("Message", None);
                 w.thread = Some(thread);
@@ -4682,7 +4726,8 @@ impl Ui {
         }
         if let Some(w) = &self.writer {
             ctx.buttons.clear();
-            self.popup_anim(&mut canvas, "writer", |c| social::draw_writer(w, c, &mut ctx));
+            let friends = self.social.as_ref().and_then(|s| s.friends.as_ref());
+            self.popup_anim(&mut canvas, "writer", |c| social::draw_writer_for(w, friends, c, &mut ctx));
         }
         if self.social.is_some() && self.screen != Screen::Online {
             self.online.draw_profile_over(&mut canvas, &mut ctx);

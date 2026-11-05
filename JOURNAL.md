@@ -1240,3 +1240,13 @@ prebuilt trace mod), corner and muted.
 - `src/clock.rs`: the system's UTC offset (libc / Win32 / JS Date) and the game's "Nov 15,
   2023" and "1:13 AM" labels. `ui/social.rs` Page::ThreadView over the threads, the message box
   opens the writer for the thread; rows open their thread, names open profiles.
+- New threads: the real NewThreadPopup captured in both modes (harness: `/dropnotice` now runs
+  every frame before the presses, so three-press paths get past the messaging rules;
+  `then2label:New`, `then3frame:threadBtn_groupOn_001.png`). The request's order is from the
+  decompile of GameLevelManager::sendThreadMessage (0x1004c4bc0, found with the new
+  StringRefs.java by its "&isDM=1"): `&threadID=0&secret=…[&isDM=1]&toAccountID=&subject=<b64>
+  [&targets=<b64 list>][&description=<b64>][&emote=<b64>][&token=]&body=<b64>`. Not recorded from
+  the game (its friend picker would need more harness work); the existing-thread send was.
+  Cadence: the writer's new-thread mode (DM: one friend + message, 500; group: friends + name
+  20 + description 300), "To" opens a list of your friends. GUI matches the captures closely.
+- "Load earlier": the same request with beforeID = the oldest shown; older messages go first.

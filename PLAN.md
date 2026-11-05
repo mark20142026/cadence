@@ -172,5 +172,8 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
 - [x] A thread's view (getGJThreadMessages → ThreadViewPopup): messages, players, the
       thread's state (earlier, locked, who can write), day separators and local times; sending
       (sendGJThreadMessage, recorded from the real game: base64 body + a random token).
-- [ ] Still open: new threads (NewThreadPopup), members, invites, thread options, search,
-      "Load earlier", and the "+" (share a level / list) and emote buttons in the message box.
+- [x] "Load earlier" (beforeID = the oldest message shown) and new threads (NewThreadPopup,
+      both modes as captured; the request in GameLevelManager::sendThreadMessage's order:
+      `&isDM=1`, `&toAccountID`, `&subject`, `&targets`, `&description`, `&token`, `&body`).
+- [ ] Still open: members, invites, thread options, search, and the "+" (share a level /
+      list) and emote buttons.
