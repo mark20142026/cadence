@@ -1300,3 +1300,16 @@ prebuilt trace mod), corner and muted.
   release build of the launcher replaced `target/release/cadence` and verify_all sat in a
   launcher window. The launcher now builds as `cadence-launcher`; tools/package.sh still ships
   it as `cadence` / `cadence.exe`.
+- Emotes: the real thread view captured with ":dizzy:", ":fire:", "l_128" and "li_123" in
+  messages (shown as sprites and "Level 128" / "List 123"), and its EmotePickerPopup. The
+  name → sprite tables found by scanning the binary's data for pointers to "slightsmile"
+  (chained-fixup pointers: low 36 bits): 0x30-byte entries {name, particle id, scale} in seven
+  tables at 0x100aa8d50 (Rating 17), 0x100aa90b0 (Faces 74), 0x100aa9ec0 (Hands 14),
+  0x100aaa190 + 0x100aaa370 (Bubbles 9 + 36), 0x100aaaa60 (Symbols 30), 0x100aab030 (Blocks
+  23, then 52 aliases such as slight_smile). `emotes.rs` is generated from them. In a message
+  an emote takes its sprite's width (16 × 0.7617, from the capture's positions) with the
+  spaces around it kept. The picker: 8 per row 26 apart, each group on a new row 12 lower,
+  emotes at 1.25 × their scale.
+- Shares: ThreadViewPopup::levelPicked / listPicked add " l_<id>" / " li_<id>"
+  (insertShareToken 0x1008149c0). Cadence's "+" asks for an ID and Level or List, then opens
+  the message box with the token; a shared level in a message opens the online search for it.

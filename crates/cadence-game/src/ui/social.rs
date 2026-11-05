@@ -70,6 +70,12 @@ pub enum Effect {
     RenameThread(i64, String),
     /// Open the box for searching this thread's messages.
     SearchThread(i64),
+    /// Open the message box for this thread with this text already in it.
+    WriteThreadWith(i64, String),
+    /// Open the box for sharing a level or list in this thread.
+    ShareInThread(i64),
+    /// Find this level online (a shared level in a message).
+    OpenLevel(i64),
     /// Pick friends to add to this group.
     AddMembers(i64),
     /// A received request opened (`FriendRequestPopup`): its row, sender and message.
@@ -105,6 +111,9 @@ pub struct Social {
     pub owner_adds: bool,
     /// `ReportPopup` on this thread: the reasons ticked, and the "Confirm Report" question.
     pub reporting: Option<(social::Thread, Vec<i32>, bool)>,
+    /// `EmotePickerPopup` open over the message box, and its scroll.
+    pub emote_picker: bool,
+    pub picker_scroll: f32,
     pub accepted: Option<social::Thread>,
     /// Your friends, for the new-thread popup's "To".
     pub friends: Option<Vec<User>>,
@@ -128,7 +137,7 @@ pub fn row_btn(what: u16, row: usize) -> Btn {
 
 impl Social {
     pub fn open() -> Social {
-        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), viewing: None, thread_page: None, friends: None, options: None, options_confirm: None, invites: None, ignoring: None, accepted: None, thread_search: None, members_of: None, members: None, members_confirm: None, owner_adds: false, reporting: None, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
+        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), viewing: None, thread_page: None, friends: None, options: None, options_confirm: None, invites: None, ignoring: None, accepted: None, thread_search: None, members_of: None, members: None, members_confirm: None, owner_adds: false, reporting: None, emote_picker: false, picker_scroll: 0.0, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
         s.load();
         s
     }
@@ -554,6 +563,10 @@ impl Social {
     }
 
     pub fn scroll_by(&mut self, delta: f32) {
+        if self.emote_picker {
+            self.picker_scroll = (self.picker_scroll + delta).clamp(0.0, (picker_height() - 150.0).max(0.0));
+            return;
+        }
         let rows = match self.page() {
             Page::Profile => self.profile.as_ref().map_or(0, |p| p.2.len()) as f32 * 90.0 - 92.0,
             Page::Friends(_) | Page::Requests(_) => self.users.as_ref().map_or(0, Vec::len) as f32 * 40.0 - 180.0,
@@ -570,6 +583,17 @@ impl Social {
 
     /// A click on the page's layout button `i` (`Btn::Replay`) or a row's (`Btn::Social`).
     pub fn click(&mut self, id: Btn) -> Effect {
+        if self.emote_picker {
+            // an emote goes into a new message; anywhere else closes the picker
+            self.emote_picker = false;
+            if let Btn::Social(code @ 8200..=8499) = id {
+                let thread = self.viewing.as_ref().map_or(0, |t| t.id);
+                if let Some(e) = crate::emotes::EMOTES.get((code - 8200) as usize) {
+                    return Effect::WriteThreadWith(thread, format!(":{}: ", e.0));
+                }
+            }
+            return Effect::None;
+        }
         if self.reporting.is_some() {
             return self.report_click(id);
         }
@@ -666,6 +690,11 @@ impl Social {
                 self.stack.pop();
                 self.load();
             }
+            (Page::ThreadView, Btn::Replay(11)) if self.can_send() => {
+                self.emote_picker = true;
+                self.picker_scroll = 0.0;
+            }
+            (Page::ThreadView, Btn::Replay(10)) if self.can_send() => return Effect::ShareInThread(self.viewing.as_ref().map_or(0, |t| t.id)),
             (Page::ThreadView, Btn::Replay(8)) if !self.busy() => {
                 self.thread_search = None;
                 self.load();
@@ -682,6 +711,14 @@ impl Social {
             }
             (Page::ThreadView, Btn::Replay(12) | Btn::Social(7400)) if self.can_send() => {
                 return Effect::WriteThread(self.viewing.as_ref().map_or(0, |t| t.id));
+            }
+            // a shared level in a message: find it online
+            (Page::ThreadView, Btn::Social(code)) if (8600..8700).contains(&code) => {
+                let text = self.thread_page.as_ref().and_then(|r| r.as_ref().ok()).and_then(|p| p.messages.get((code - 8600) as usize)).map(|m| m.text.clone()).unwrap_or_default();
+                let level = text.split(' ').find_map(|w| w.strip_prefix("l_").and_then(|n| n.parse::<i64>().ok()));
+                if let Some(id) = level {
+                    return Effect::OpenLevel(id);
+                }
             }
             (Page::ThreadView, Btn::Social(code)) if (7300..7400).contains(&code) => {
                 let account = self.thread_page.as_ref().and_then(|r| r.as_ref().ok()).and_then(|p| p.messages.get((code - 7300) as usize)).map_or(0, |m| m.account);
@@ -1370,6 +1407,120 @@ fn draw_threads(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32, tab: u8) {
     c.sprite("GJ_commentTop_001.png", lx + 170.0, ly + 4.0, Look::default().flip_y(true));
 }
 
+/// A piece of a message as the game shows it: text, a `:name:` emote, or a shared level /
+/// list (` l_<id>` / ` li_<id>`, shown as "Level <id>" / "List <id>" in color).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Piece {
+    Text(String),
+    Emote(u16, f32),
+    Share(String),
+}
+
+/// A message's words, emotes and shares (emotes may sit inside a word: "hi:fire:").
+pub fn message_pieces(text: &str) -> Vec<Piece> {
+    let mut out = Vec::new();
+    for (i, word) in text.split(' ').enumerate() {
+        if i > 0 {
+            out.push(Piece::Text(" ".into()));
+        }
+        let share = |p: &str, label: &str| word.strip_prefix(p).filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).map(|n| format!("{label} {n}"));
+        if let Some(s) = share("li_", "List").or_else(|| share("l_", "Level")) {
+            out.push(Piece::Share(s));
+            continue;
+        }
+        let mut rest = word;
+        while !rest.is_empty() {
+            let emote = rest.find(':').and_then(|a| rest[a + 1..].find(':').map(|b| (a, a + 1 + b))).and_then(|(a, b)| crate::emotes::find(&rest[a + 1..b]).map(|e| (a, b, e)));
+            match emote {
+                Some((a, b, (sprite, scale))) => {
+                    if a > 0 {
+                        out.push(Piece::Text(rest[..a].into()));
+                    }
+                    out.push(Piece::Emote(sprite, scale));
+                    rest = &rest[b + 1..];
+                }
+                None => {
+                    out.push(Piece::Text(rest.into()));
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The pieces laid out in lines `max` points wide at chatFont `scale` (an emote takes its own
+/// width; the spaces around it stay).
+/// A piece's width (spaces measured between letters: a lone space measures nothing).
+fn piece_width(c: &Canvas, p: &Piece, scale: f32) -> f32 {
+    let space = c.text_size("chatFont", "a a").0 - c.text_size("chatFont", "aa").0;
+    match p {
+        Piece::Text(t) | Piece::Share(t) => (c.text_size("chatFont", t.trim()).0 + space * (t.len() - t.trim().len()) as f32) * scale,
+        // its sprite's width and a little (from the capture: centers 36.2 apart around " and ")
+        Piece::Emote(_, s) => 16.0 * 0.7617 * s * scale / 0.75 + 1.0,
+    }
+}
+
+fn message_lines(c: &Canvas, text: &str, max: f32, scale: f32) -> Vec<Vec<Piece>> {
+    let width = |c: &Canvas, p: &Piece| piece_width(c, p, scale);
+    let mut lines: Vec<Vec<Piece>> = vec![Vec::new()];
+    let mut x = 0.0;
+    for p in message_pieces(text) {
+        let w = width(c, &p);
+        let line = lines.last_mut().expect("a line");
+        if x + w > max && !line.is_empty() && p != Piece::Text(" ".into()) {
+            lines.push(Vec::new());
+            x = 0.0;
+        }
+        if x == 0.0 && p == Piece::Text(" ".into()) {
+            continue;
+        }
+        x += w;
+        lines.last_mut().expect("a line").push(p);
+    }
+    lines
+}
+
+fn draw_message_lines(c: &mut Canvas, lines: &[Vec<Piece>], left: f32, top: f32, scale: f32, alpha: u8) {
+    for (k, line) in lines.iter().enumerate() {
+        let (mut x, y) = (left, top - 15.0 * k as f32);
+        for p in line {
+            match p {
+                Piece::Text(t) => {
+                    c.text("chatFont", t, x, y, Look::scaled(scale).anchor(0.0, 1.0).alpha(alpha));
+                    x += piece_width(c, p, scale);
+                }
+                Piece::Share(t) => {
+                    c.text("chatFont", t, x, y, Look::scaled(scale).anchor(0.0, 1.0).rgb([255, 200, 80]).alpha(alpha));
+                    x += piece_width(c, p, scale);
+                }
+                Piece::Emote(sprite, s) => {
+                    let w = piece_width(c, p, scale);
+                    // the captured message: 16-point emotes at 0.7617, 6.75 below the line's top
+                    c.sprite(&format!("particle_{sprite}_001.png"), x + w * 0.5, y - 6.75, Look::scaled(0.7617 * s * scale / 0.75).alpha(alpha));
+                    x += w;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod piece_tests {
+    use super::Piece;
+
+    #[test]
+    fn emotes_and_shares() {
+        let p = super::message_pieces("Hello :dizzy: and hi:fire: l_128 li_7 :nope:");
+        assert!(p.contains(&Piece::Emote(270, 1.0)));
+        assert!(p.contains(&Piece::Text("hi".into())));
+        assert!(p.contains(&Piece::Emote(228, 1.0)));
+        assert!(p.contains(&Piece::Share("Level 128".into())));
+        assert!(p.contains(&Piece::Share("List 7".into())));
+        assert!(p.contains(&Piece::Text(":nope:".into())));
+    }
+}
+
 /// `ThreadViewPopup` (captured with made-up messages): its frame, the thread's name, "Load
 /// earlier" when there are older ones, then each day's line and date and the messages (the
 /// sender's icon, name and time, the text, "deleted", "..."), and the message box — or the
@@ -1438,9 +1589,13 @@ fn draw_thread_view(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
             y -= 33.0;
         }
         let user = p.users.iter().find(|u| u.account == m.account);
-        let name = match (user, &me) {
-            (Some(u), _) if !u.name.is_empty() => u.name.clone(),
-            (_, Some((id, n))) if *id == m.account => n.clone(),
+        // the players' rows, your own name, or (as the game does) the thread's name for the
+        // other player of a direct message
+        let partner = s.viewing.as_ref().filter(|t| t.direct && t.account == m.account).map(|t| t.name.clone());
+        let name = match (user, &me, partner) {
+            (Some(u), _, _) if !u.name.is_empty() => u.name.clone(),
+            (_, Some((id, n)), _) if *id == m.account => n.clone(),
+            (_, _, Some(n)) => n,
             _ => "-".into(),
         };
         match user.filter(|u| u.icon > 0) {
@@ -1458,16 +1613,71 @@ fn draw_thread_view(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
         c.text("bigFont", &name, 111.5 + dx + w * 0.5, y + 7.0, Look::scaled(0.35 * ctx.factor(id)).rgb([255, 200, 80]));
         ctx.area(id, 111.5 + dx + w * 0.5, y + 7.0, w, 11.38);
         c.text("chatFont", &crate::clock::time_label(m.time, offset), 111.5 + dx + w + 5.0, y + 6.0, Look::scaled(0.5).anchor(0.0, 0.5).alpha(150));
-        let lines = super::wrap(c, &m.text, 330.0, 0.75 / 1.6);
-        let alpha = if m.deleted { 0.45 } else { 1.0 };
-        for (k, line) in lines.iter().enumerate() {
-            c.text("chatFont", line, 111.5 + dx, y - 2.0 - 15.0 * k as f32, Look::scaled(0.75).anchor(0.0, 1.0).alpha((alpha * 255.0) as u8));
+        let lines = message_lines(c, &m.text, 330.0, 0.75);
+        // a shared level can be pressed (its line)
+        if let Some(k) = lines.iter().position(|l| l.iter().any(|p| matches!(p, Piece::Share(t) if t.starts_with("Level")))) {
+            ctx.area(Btn::Social(8600 + i as u16), 111.5 + dx + 165.0, y - 9.5 - 15.0 * k as f32, 330.0, 15.0);
         }
+        draw_message_lines(c, &lines, 111.5 + dx, y - 2.0, 0.75, if m.deleted { 115 } else { 255 });
         if m.deleted {
             c.text("bigFont", "deleted", 455.5 + dx, y - 2.0, Look::scaled(0.3).anchor(1.0, 1.0).rgb([255, 120, 120]));
         }
         c.text("bigFont", "...", 469.08 + dx, y - 7.69, Look::scaled(0.35).alpha(120));
         y -= 43.0 + 15.0 * (lines.len().max(1) - 1) as f32;
+    }
+    c.clip = None;
+    if s.emote_picker {
+        draw_emote_picker(s, c, ctx, dx);
+    }
+}
+
+/// The picker's rows: each group starts a row of 8, 26 apart, 12 more between groups.
+fn picker_rows() -> Vec<(usize, f32, f32)> {
+    let mut out = Vec::new();
+    let mut y = 0.0;
+    for (g, &(_, first, count)) in crate::emotes::GROUPS.iter().enumerate() {
+        if g > 0 {
+            y += 12.0;
+        }
+        for k in 0..count {
+            if k > 0 && k % 8 == 0 {
+                y += 26.0;
+            }
+            out.push((first + k, (k % 8) as f32 * 26.0, y));
+        }
+        y += 26.0;
+    }
+    out
+}
+
+fn picker_height() -> f32 {
+    picker_rows().last().map_or(0.0, |r| r.2 + 26.0)
+}
+
+/// `EmotePickerPopup` (captured): a gray panel over the message box, the emotes by group at
+/// 1.25 × their own scale, scrolled with the wheel.
+fn draw_emote_picker(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
+    let at = |x: f32| x + 38.0 + dx;
+    c.nine_slice("GJ_square05.png", at(118.0), 131.5, 224.0, 161.0, Look::default().rgb([150, 150, 150]).alpha(200));
+    c.sprite("GJ_deleteIcon_001.png", at(10.0), 208.0, Look::scaled(0.35));
+    let total = picker_height();
+    if total > 150.0 {
+        let h = 150.0 * 150.0 / total;
+        let y = 206.0 - h - (150.0 - h) * s.picker_scroll / (total - 150.0);
+        c.rect(at(225.0), y, 3.0, h, [1.0; 3], 125.0 / 255.0);
+    }
+    c.clip = Some([at(8.0), 53.0, at(228.0), 208.0]);
+    for (i, x, y) in picker_rows() {
+        let y = 193.0 - y + s.picker_scroll;
+        if !(40.0..=220.0).contains(&y) {
+            continue;
+        }
+        let (_, sprite, scale) = crate::emotes::EMOTES[i];
+        let id = Btn::Social(8200 + i as u16);
+        c.sprite(&format!("particle_{sprite}_001.png"), at(27.0 + x), y, Look::scaled(1.25 * scale * ctx.factor(id)));
+        if (53.0..=208.0).contains(&y) {
+            ctx.area(id, at(27.0 + x), y, 26.0, 26.0);
+        }
     }
     c.clip = None;
 }
@@ -1800,6 +2010,8 @@ pub struct Writer {
     pub search: Option<i64>,
     /// Friends picked to add to this group (`MemberListPopup`'s Add Member).
     pub add_to: Option<i64>,
+    /// A level or list to share in this thread (the body is its ID).
+    pub share: Option<i64>,
     pub subject: String,
     pub body: String,
     /// The field typed into: 0 subject, 1 body (posts have the body only).
@@ -1809,7 +2021,7 @@ pub struct Writer {
 
 impl Writer {
     pub fn new(title: &'static str, to: Option<i64>) -> Writer {
-        Writer { title, to, level: None, song_slot: None, thread: None, new_thread: None, rename: None, search: None, add_to: None, subject: String::new(), body: String::new(), field: if to.is_some() { 0 } else { 1 }, t: 0.0 }
+        Writer { title, to, level: None, song_slot: None, thread: None, new_thread: None, rename: None, search: None, add_to: None, share: None, subject: String::new(), body: String::new(), field: if to.is_some() { 0 } else { 1 }, t: 0.0 }
     }
 
     fn limit(&self) -> usize {
@@ -1817,6 +2029,7 @@ impl Writer {
             _ if self.thread.is_some() => 300,
             _ if self.rename.is_some() => 20,
             _ if self.search.is_some() => 40,
+            _ if self.share.is_some() => 10,
             _ if self.new_thread.is_some() => match (self.new_thread.as_ref().is_some_and(|n| n.group), self.field) {
                 (true, 0) => 20,
                 (true, _) => 300,
@@ -1989,7 +2202,7 @@ fn draw_new_thread(wr: &Writer, n: &NewThread, friends: Option<&Vec<User>>, c: &
 pub fn draw_writer_for(wr: &Writer, friends: Option<&Vec<User>>, c: &mut Canvas, ctx: &mut Ctx) {
     match &wr.new_thread {
         Some(n) => draw_new_thread(wr, n, friends, c, ctx),
-        None if wr.rename.is_some() || wr.search.is_some() => draw_rename(wr, c, ctx),
+        None if wr.rename.is_some() || wr.search.is_some() || wr.share.is_some() => draw_rename(wr, c, ctx),
         None => draw_writer(wr, c, ctx),
     }
 }
@@ -2000,7 +2213,13 @@ fn draw_rename(wr: &Writer, c: &mut Canvas, ctx: &mut Ctx) {
     let cx = w * 0.5;
     c.rect(0.0, 0.0, w, h, [0.0; 3], 150.0 / 255.0);
     c.nine_slice("GJ_square01.png", cx, 160.0, 300.0, 140.0, Look::default());
-    let (title, note, button) = if wr.search.is_some() { ("Search Messages", "Words in a message", "Search") } else { ("Rename Group Chat", "Everyone sees this name", "Save") };
+    let (title, note, button) = if wr.search.is_some() {
+        ("Search Messages", "Words in a message", "Search")
+    } else if wr.share.is_some() {
+        ("Share", "A level or list ID", "Level")
+    } else {
+        ("Rename Group Chat", "Everyone sees this name", "Save")
+    };
     c.text("bigFont", title, cx, 216.0, Look::scaled(0.5));
     c.text("chatFont", note, cx, 192.0, Look::scaled(0.5).alpha(160));
     c.nine_slice("square02b_small.png", cx, 162.0, 250.0, 26.0, Look::default().rgb([93, 52, 31]));
@@ -2012,10 +2231,19 @@ fn draw_rename(wr: &Writer, c: &mut Canvas, ctx: &mut Ctx) {
     let close = ctx.factor(Btn::WriteCancel);
     c.sprite("GJ_closeBtn_001.png", cx - 142.0, 218.0, Look::scaled(0.8 * close));
     ctx.area(Btn::WriteCancel, cx - 142.0, 218.0, 36.8, 38.0);
+    // sharing has two: a level (Send's place) or a list
+    let bx = if wr.share.is_some() { cx - 50.0 } else { cx };
     let f = ctx.factor(Btn::WriteSend);
-    c.nine_slice("GJ_button_01.png", cx, 112.0, 86.0 * f, 28.0 * f, Look::default());
-    c.text("bigFont", button, cx - 1.0, 114.0, Look::scaled(0.6 * f));
-    ctx.area(Btn::WriteSend, cx, 112.0, 86.0, 28.0);
+    c.nine_slice("GJ_button_01.png", bx, 112.0, 86.0 * f, 28.0 * f, Look::default());
+    c.text("bigFont", button, bx - 1.0, 114.0, Look::scaled(0.6 * f));
+    ctx.area(Btn::WriteSend, bx, 112.0, 86.0, 28.0);
+    if wr.share.is_some() {
+        let list = Btn::WriteMode(9);
+        let f = ctx.factor(list);
+        c.nine_slice("GJ_button_01.png", cx + 50.0, 112.0, 86.0 * f, 28.0 * f, Look::default());
+        c.text("bigFont", "List", cx + 49.0, 114.0, Look::scaled(0.6 * f));
+        ctx.area(list, cx + 50.0, 112.0, 86.0, 28.0);
+    }
 }
 
 pub fn draw_writer(wr: &Writer, c: &mut Canvas, ctx: &mut Ctx) {

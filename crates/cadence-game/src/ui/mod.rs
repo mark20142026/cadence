@@ -2052,6 +2052,18 @@ impl Ui {
                     }
                 }
             }
+            // the share box's Level / List: the token goes into a new message (` l_<id>` /
+            // ` li_<id>`, as ThreadViewPopup::levelPicked / listPicked put it)
+            Btn::WriteMode(9) | Btn::WriteSend if self.writer.as_ref().is_some_and(|w| w.share.is_some()) => {
+                let list = id == Btn::WriteMode(9);
+                if let Some(w) = self.writer.as_mut() {
+                    let Ok(n) = w.body.trim().parse::<i64>() else { return };
+                    let thread = w.share.take().unwrap_or(0);
+                    *w = social::Writer::new("Message", None);
+                    w.thread = Some(thread);
+                    w.body = format!("{}_{n} ", if list { "li" } else { "l" });
+                }
+            }
             Btn::WriteMode(m) => {
                 if let Some(w) = self.writer.as_mut() {
                     w.set_group(m == 1);
@@ -3748,7 +3760,12 @@ impl Ui {
             }
             // your account's pages (CADENCE_SERVER at a stand-in with made-up answers)
             #[cfg(not(target_arch = "wasm32"))]
-            "threadview" => self.social = Some(social::Social::open_first_thread()),
+            "threadview" => {
+                let mut s = social::Social::open_first_thread();
+                // CADENCE_PAGE=1: the emote picker open
+                s.emote_picker = page == Some(1);
+                self.social = Some(s);
+            }
             // MemberListPopup on the first thread listed
             #[cfg(not(target_arch = "wasm32"))]
             "members" => {
@@ -4292,6 +4309,24 @@ impl Ui {
             }
             social::Effect::Write { to, title } => self.writer = Some(social::Writer::new(title, to)),
             social::Effect::NewThread => self.writer = Some(social::Writer::new_thread()),
+            social::Effect::WriteThreadWith(thread, text) => {
+                let mut w = social::Writer::new("Message", None);
+                w.thread = Some(thread);
+                w.body = text;
+                self.writer = Some(w);
+            }
+            social::Effect::OpenLevel(id) => {
+                self.social = None;
+                self.screen = Screen::Online;
+                let mut search = crate::online::Search::new(0);
+                search.query = id.to_string();
+                self.online.open_list(search, true);
+            }
+            social::Effect::ShareInThread(thread) => {
+                let mut w = social::Writer::new("Share", None);
+                w.share = Some(thread);
+                self.writer = Some(w);
+            }
             social::Effect::AddMembers(thread) => {
                 let mut w = social::Writer::new_thread();
                 w.set_group(true);

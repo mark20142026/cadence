@@ -186,10 +186,10 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       your friends (mode 4, "id,id"), who adds (mode 13) — all recorded except Add (decompiled).
 - [x] Report a thread (ReportPopup as captured, "Confirm Report"; reportGJContent type 8,
       reasons 0,1,2,3,7 joined with commas — read from the decompile; needs an account).
-- [ ] Still open: search in the invites; the message box's "+" (ThreadViewPopup::levelPicked /
-      listPicked / shareIDPicked add " l_<id>" / " li_<id>" to the text, insertShareToken at
-      0x1008149c0, "Message too long") and emotes (`:name:` tokens from the game's named table —
-      categories Rating, Faces, … — drawn as their sprites in messages); both need how a
-      message shows these tokens (a capture with them in a message's text).
+- [x] Emotes and shares in messages: `:name:` emotes (the game's seven tables, 255 names →
+      particle sprites, `emotes.rs`) drawn in the text as the real view does, the emote picker
+      (EmotePickerPopup as captured), "+" to share a level or list (` l_<id>` / ` li_<id>`,
+      shown as "Level <id>" / "List <id>"; a shared level opens online).
+- [ ] Still open: search in the invites.
 - [x] Search in a thread (searchGJThreadMessages, `&query=<b64>` after the secret, from the
       decompile; results replace the messages until search is pressed again).
