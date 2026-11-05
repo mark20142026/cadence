@@ -1082,3 +1082,25 @@ session's scratch (corner, muted); decompiles from the scratch Ghidra copy.
   proximity (audio backend); the editor's preview-lock line.
 - verify_all **122/133** (was 114/131): +pfslope, s12..s16-22, +kfcurve, +cam370t;
   `cargo test --workspace --release` green (57 core, 55 game).
+
+## 2026-11-05 (parents agent): group parents and linked objects in advanced follow and area triggers
+
+Worktree branch on main (f0f3f77); own harness build, game copy and home in the session scratch
+(corner, muted); decompiles from a scratch Ghidra copy (`FUN_1000d64d0`, rotateObjects,
+rotateAreaObjects, transformAreaObjects, resetAreaObjectValues, `FUN_1000fb3a4`, tryGetMainObject,
+tryGetObject, loadGroupParentsFromString).
+
+- `parents.rs`: keys 274 / 34 / 279 / 108 and the clusters per (target group, 280, 281);
+  `World::main_object` (tryGetMainObject), `rotate_objects` (rotateObjects), `unmodified_pos`.
+- Advanced follow: alone objects, then leaders moving their clusters; a turning cluster moves
+  twice its step (game code, confirmed by the trace). Targets are the group's main object;
+  560 / 565 use tryGetObject.
+- Area triggers: clusters for move / rotate / scale / fade / tint; scale, rotate, move order;
+  stale offsets reset at the end of the pass; the center is the main object or (0, 0).
+- New real trace `re/traces/gparent` (watchgroups 10, 11, 20, 21, 30, 31, 41–44: linked
+  cluster with a 34 leader, linked without a flag, a 279 leader, an explicit 274 parent, 280,
+  a child-group parent pulling an object outside the target group, area move with linked / 274
+  clusters, area rotate with a 274 cluster and alone): every position to print precision
+  (≤ 6.6e-6), rotations ≤ 1.5e-5 at frame steps. verify_all compares watch files now for
+  suites with a `watch.args` (cmp_watch.py options; cmp_watch.py got --fields, --rot-frames and
+  an exit status).

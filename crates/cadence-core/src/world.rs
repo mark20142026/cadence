@@ -291,6 +291,9 @@ pub struct World {
     pub adv: crate::advfollow::AdvFollow,
     /// Keyframe animations (keyframes.rs).
     pub keyframes: crate::keyframes::Keyframes,
+    /// Group parents (key 274) and the clusters of linked objects / parent groups that
+    /// advanced follow and area triggers move as one (parents.rs).
+    pub links: std::sync::Arc<crate::parents::GroupLinks>,
     pub player2_pos: Option<(f32, f32)>,
     pub camera_pos: (f32, f32),
 }
@@ -522,7 +525,10 @@ impl World {
                 members.entry(g).or_default();
             }
         }
-        let mut moving_orders = std::collections::HashSet::new();
+        // Group parents and linked objects (parents.rs): the clusters advanced follow and area
+        // triggers move as one, and the groups whose main object is a parent.
+        let links = crate::parents::GroupLinks::new(level);
+        let mut moving_orders: std::collections::HashSet<u32> = links.cluster_objects().collect();
         for (order, raw) in level.objects.iter().enumerate() {
             for g in raw.groups() {
                 if let Some(m) = members.get_mut(&g) {
@@ -738,6 +744,7 @@ impl World {
             restore_count: 0,
             adv: crate::advfollow::AdvFollow::new(level),
             keyframes: crate::keyframes::Keyframes::new(level),
+            links: std::sync::Arc::new(links),
             player2_pos: None,
             camera_pos: (0.0, 0.0),
         };
@@ -1201,6 +1208,50 @@ impl World {
 
     pub(crate) fn group_members(&self, group: i32) -> Option<&Vec<u32>> {
         self.members.get(&group)
+    }
+
+    /// `GameObject::getUnmodifiedPosition`: the position without this step's area offset.
+    pub(crate) fn unmodified_pos(&self, i: usize) -> (f32, f32) {
+        let (ox, oy) = self.area.offset_of(i);
+        let (x, y) = self.level_pos[i];
+        ((x - ox as f64) as f32, (y - oy as f64) as f32)
+    }
+
+    /// `GJBaseGameLayer::rotateObjects` (0xfe820): each object's unmodified position orbits
+    /// `center` by `angle` degrees through a pivot node's transform (cocos2d: radians =
+    /// −angle·π/180, f32), and the object moves to the result plus `offset`; objects that can
+    /// rotate freely turn by `angle` too.
+    pub(crate) fn rotate_objects(&mut self, objs: &[u32], angle: f32, center: (f32, f32), offset: (f32, f32)) {
+        let rad = -(angle * 0.017_453_292_f32);
+        let (sin, cos) = (rad.sin(), rad.cos());
+        for &o in objs {
+            let i = o as usize;
+            let p = self.unmodified_pos(i);
+            let (dx, dy) = (p.0 - center.0, p.1 - center.1);
+            // CCAffineTransformConcat (child at (dx, dy) under the pivot), contracted
+            let tx = dx.mul_add(cos, dy * -sin) + center.0;
+            let ty = dx.mul_add(sin, dy * cos) + center.1;
+            let (x, y) = self.level_pos[i];
+            let ny = y + ((ty + offset.1) - p.1) as f64;
+            let nx = x + ((tx + offset.0) - p.0) as f64;
+            let turn = if angle != 0.0 && self.can_rotate_free(i) { angle } else { 0.0 };
+            self.set_level_pos(i, (nx, ny), turn);
+        }
+    }
+
+    /// `tryGetMainObject`: the group's first parent object (key 274), else its only object,
+    /// else none (a group of several objects without a parent has no main object).
+    pub(crate) fn main_object(&self, group: i32) -> Option<u32> {
+        if group <= 0 {
+            return None;
+        }
+        if let Some(p) = self.links.parent_of(group) {
+            return Some(p);
+        }
+        match self.members.get(&group).map(|m| m.as_slice()) {
+            Some([only]) => Some(*only),
+            _ => None,
+        }
     }
 
     pub(crate) fn step_count_pub(&self) -> u64 {

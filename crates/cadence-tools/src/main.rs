@@ -286,10 +286,11 @@ fn watch(spec_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             for &i in members {
                 let (x, y) = world.level_position(i);
                 let o = &level.objects[i];
-                let rot = o.get_f32(6).unwrap_or(0.0) + world.turned[i];
+                // area rotations and scales are in the node's rotation and scale too
+                let rot = o.get_f32(6).unwrap_or(0.0) + world.turned[i] + world.area.turn[i];
                 let scale = o.get_f32(32).unwrap_or(1.0);
-                let sx = o.get_f32(128).unwrap_or(scale) * world.scaled[i].0;
-                let sy = o.get_f32(129).unwrap_or(scale) * world.scaled[i].1;
+                let sx = o.get_f32(128).unwrap_or(scale) * world.scaled[i].0 * world.area.scale[i].0;
+                let sy = o.get_f32(129).unwrap_or(scale) * world.scaled[i].1 * world.area.scale[i].1;
                 let eo = cadence_core::enter::EnterObject {
                     x: x as f32,
                     y: y as f32,

@@ -15,9 +15,15 @@
 //!   the low / high ones by speed), smoothed, braking (326) on sharp turns.
 //!
 //! Then the speed is capped (298), the object moves by velocity · dt and, with "rotate
-//! direction" (339), turns to face its direction. Not ported: group parents and linked objects
-//! moving as one (`m_targetGroups`, keys 280 / 281), the game's per-object random variances
-//! (`m_varianceValues`; a fixed hash here) and `fast_rand_0_1`'s sequence.
+//! direction" (339), turns to face its direction.
+//!
+//! Group parents and linked objects (parents.rs; `m_targetGroups` under
+//! `getSpecialKey(group, 280, 281)`): the objects moved alone go first, then each cluster leader
+//! is followed like an object and its whole cluster moves by the leader's step; a turn then
+//! orbits the cluster about the leader's unmodified position through `rotateObjects` with the
+//! step as its offset, so a turning cluster moves by twice the step (the game's own code, seen
+//! in real traces too). Not ported: the game's per-object random variances
+//! (`m_varianceValues`; a fixed hash here).
 
 use crate::level::RawObject;
 use crate::world::World;
@@ -76,6 +82,9 @@ pub struct AdvSpec {
     pub break_limit: (f32, f32),
     /// 305: accelerate toward the target rather than along the direction (mode 2).
     pub target_dir: bool,
+    /// 280 / 281: ignore group parents / linked objects (move every object alone).
+    pub ignore_parent: bool,
+    pub ignore_linked: bool,
     /// 571: an object it moved isn't moved again this step by lower-priority instances.
     pub exclusive: bool,
     /// Edit (3660): 566 / 567 x speed factor, 568 / 569 y; 535 by control id; re-target (3661).
@@ -141,6 +150,8 @@ impl AdvSpec {
             break_steer: p(330, 331),
             break_limit: p(332, 333),
             target_dir: on(305),
+            ignore_parent: on(280),
+            ignore_linked: on(281),
             exclusive: on(571),
             edit: raw.id() == 3660,
             retarget: raw.id() == 3661,
@@ -388,14 +399,15 @@ impl World {
     /// `getFollowSpeedVal`: a velocity of `speed` at `angle` degrees (0 up, clockwise), turned
     /// by the movement of group `by_move`'s main object (its last position − now) or away from
     /// group `away`'s.
-    fn follow_speed_val(&self, angle: f32, speed: f32, obj: u32, by_move: i32, away: i32) -> (f32, f32) {
-        let main = |g: i32| self.group_members(g).and_then(|m| m.first()).copied();
+    fn follow_speed_val(&mut self, angle: f32, speed: f32, obj: u32, by_move: i32, away: i32) -> (f32, f32) {
         let mut r = (0.0f32, 0.0f32);
-        if let Some(m) = (by_move > 0).then(|| main(by_move)).flatten() {
+        let by_move = if by_move > 0 { self.try_get_object(by_move) } else { None };
+        let away = if by_move.is_none() && away > 0 { self.try_get_object(away) } else { None };
+        if let Some(m) = by_move {
             let (lx, ly) = self.level_last_of(m as usize);
             let (x, y) = self.level_pos_of(m as usize);
             r = (lx - x as f32, ly - y as f32);
-        } else if let Some(m) = (away > 0).then(|| main(away)).flatten() {
+        } else if let Some(m) = away {
             let (x, y) = self.level_pos_of(obj as usize);
             let (ax, ay) = self.level_pos_of(m as usize);
             r = (x as f32 - ax as f32, y as f32 - ay as f32);
@@ -408,14 +420,30 @@ impl World {
         (d.0 * speed, d.1 * speed)
     }
 
-    /// A follow target's position now (`FUN_1000e7310` with no delay).
+    /// `tryGetObject`: the group's main object, else one of its objects at random
+    /// (`fast_rand_0_1`).
+    fn try_get_object(&mut self, group: i32) -> Option<u32> {
+        if let Some(o) = self.main_object(group) {
+            return Some(o);
+        }
+        let n = self.group_members(group).map_or(0, |m| m.len());
+        if n == 0 {
+            return None;
+        }
+        let r = self.adv.rand01();
+        let r = if r != 1.0 { r } else { 0.0 };
+        self.group_members(group).and_then(|m| m.get((r * n as f32) as usize)).copied()
+    }
+
+    /// A follow target's position now (`FUN_1000e7310` with no delay): a group's main object
+    /// (`tryGetMainObject`: its parent, or its only object).
     fn adv_target_now(&self, target: i32) -> Option<(f32, f32)> {
         match target {
             FOLLOW_P1 => self.last_player_pos(),
             FOLLOW_P2 => self.player2_pos,
             FOLLOW_CAMERA => Some(self.camera_pos),
             g => {
-                let &o = self.group_members(g)?.first()?;
+                let o = self.main_object(g)?;
                 let (x, y) = self.level_pos_of(o as usize);
                 Some((x as f32, y as f32))
             }
@@ -433,17 +461,30 @@ impl World {
         let dt = (self.step_secs * 240.0) as f32;
         let step = self.step_count_pub();
         let instances = self.adv.instances.clone();
-        for (k, inst) in instances.iter().enumerate() {
+        for inst in &instances {
             let Some(spec) = self.adv.specs.get(&inst.spec).copied() else { continue };
-            let members: Vec<u32> = self.group_members(inst.group).cloned().unwrap_or_default();
-            let _ = k;
-            for o in members {
-                self.adv_object(&spec, inst, o, dt, step);
+            match self.links.clusters(inst.group, spec.ignore_parent, spec.ignore_linked).cloned() {
+                None => {
+                    let members: Vec<u32> = self.group_members(inst.group).cloned().unwrap_or_default();
+                    for o in members {
+                        self.adv_object(&spec, inst, o, dt, step, None);
+                    }
+                }
+                Some(c) => {
+                    // pass 0: the objects moved alone; pass 1: the leaders with their clusters
+                    for &o in &c.alone {
+                        self.adv_object(&spec, inst, o, dt, step, None);
+                    }
+                    for &o in &c.leaders {
+                        self.adv_object(&spec, inst, o, dt, step, c.members.get(&o).map(|m| m.as_slice()));
+                    }
+                }
             }
         }
     }
 
-    fn adv_object(&mut self, s: &AdvSpec, inst: &AdvInstance, o: u32, dt: f32, step: u64) {
+    /// One object (or a cluster leader with its cluster) of an instance.
+    fn adv_object(&mut self, s: &AdvSpec, inst: &AdvInstance, o: u32, dt: f32, step: u64, cluster: Option<&[u32]>) {
         let v = |k: u32, x: (f32, f32)| if x.1 != 0.0 { x.1 * variance(o, k) } else { 0.0 };
         let i = o as usize;
         let st0 = self.adv.objects.get(&o).copied().unwrap_or_default();
@@ -582,12 +623,29 @@ impl World {
         } else if s.y_only {
             m.0 = 0.0;
         }
-        if m.0 != 0.0 || m.1 != 0.0 {
-            let (x, y) = self.level_pos_of(i);
-            self.set_level_pos_pub(i, (x + m.0 as f64, y + m.1 as f64));
+        let moved = m.0 != 0.0 || m.1 != 0.0;
+        let Some(cluster) = cluster else {
+            if moved {
+                let (x, y) = self.level_pos_of(i);
+                self.set_level_pos_pub(i, (x + m.0 as f64, y + m.1 as f64));
+            }
+            if turn != 0.0 && self.can_rotate_free(i) {
+                self.turn_object(i, turn);
+            }
+            return;
+        };
+        // a leader: `moveObjects` on its cluster, then `rotateObjects` about the leader's
+        // unmodified position with the step as the offset (moving the cluster a second time)
+        if moved {
+            for &k in cluster {
+                let (x, y) = self.level_pos_of(k as usize);
+                self.set_level_pos_pub(k as usize, (x + m.0 as f64, y + m.1 as f64));
+            }
         }
-        if turn != 0.0 && self.can_rotate_free(i) {
-            self.turn_object(i, turn);
+        if turn != 0.0 {
+            let center = self.unmodified_pos(i);
+            let offset = if moved { m } else { (0.0, 0.0) };
+            self.rotate_objects(cluster, turn, center, offset);
         }
     }
 
