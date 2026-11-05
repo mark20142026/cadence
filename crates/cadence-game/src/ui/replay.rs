@@ -64,6 +64,8 @@ pub enum Scene {
     Notifications,
     /// `MessageThreadsPage`: the newer messages (threads), its rows left out
     Threads,
+    /// `ThreadViewPopup`: one thread's messages, without them
+    ThreadView,
 }
 
 /// The scenes that are FLAlertLayer popups (they open with `FLAlertLayer::show`'s scale-in);
@@ -177,6 +179,7 @@ impl Scene {
             Scene::OldMessages => include_str!("scenes/oldmessages.txt"),
             Scene::Notifications => include_str!("scenes/notifications.txt"),
             Scene::Threads => include_str!("scenes/threads.txt"),
+            Scene::ThreadView => include_str!("scenes/threadview.txt"),
         }
     }
 }

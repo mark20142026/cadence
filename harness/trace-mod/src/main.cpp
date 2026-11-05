@@ -1259,9 +1259,10 @@ void stepGui() {
             else if (kind == "pause") ui->onPause(nullptr);
         }
     }
-    else if (g_guiFrame == lead + g_guiShotFrame - 20 && name.find("/dropnotice") != std::string::npos) {
+    else if ((g_guiFrame == lead + g_guiShotFrame - 20 || g_guiFrame == lead + g_guiShotFrame - g_guiLate - 30) && name.find("/dropnotice") != std::string::npos) {
         // .../dropnotice: take plain notices (FLAlertLayer itself, not a page built on it) off
-        // the scene without pressing anything, so the page under them shows
+        // the scene without pressing anything, so the page under them shows (before a second
+        // press, and again before the shot)
         auto scene = CCDirector::get()->getRunningScene();
         std::vector<CCNode*> drop;
         for (auto c : CCArrayExt<CCNode*>(scene->getChildren()))
@@ -1283,6 +1284,47 @@ void stepGui() {
         // a third press (three-step paths: a page, a notice's OK, a button)
         auto want = name.substr(name.find("/then3label:") + 12);
         pressLabel(want.substr(0, want.find('/')));
+    }
+    else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - 2 && name.find("/sendmsg:") != std::string::npos) {
+        // .../sendmsg:<text>: type <text> ('_' for spaces) into the first text box and press
+        // Send (only with CADENCE_HTTP_REDIRECT: the request goes to the local recorder)
+        if (std::getenv("CADENCE_HTTP_REDIRECT")) {
+            auto text = name.substr(name.find("/sendmsg:") + 9);
+            text = text.substr(0, text.find('/'));
+            for (auto& ch : text) if (ch == '_') ch = ' ';
+            // the last box drawn: the popup's, over the page's search box
+            CCTextInputNode* box = nullptr;
+            std::function<void(CCNode*)> walk = [&](CCNode* nd) {
+                for (auto c : CCArrayExt<CCNode*>(nd->getChildren())) {
+                    if (auto t = typeinfo_cast<CCTextInputNode*>(c)) box = t;
+                    else walk(c);
+                }
+            };
+            walk(CCDirector::get()->getRunningScene());
+            log::info("gui: send message: box {}", box ? "found" : "missing");
+            if (box) {
+                box->setString(text);
+                // as typing does: the popup keeps its own copy of the text
+                if (box->m_delegate) box->m_delegate->textChanged(box);
+                pressLabel("Send");
+            }
+        }
+    }
+    else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - 15 && name.find("/viewthread") != std::string::npos) {
+        // .../viewthread: open the first thread listed, as tapping its row does
+        // (GJThreadCell::onViewThread, 2.2091 ARM 0x1ebf38: not bound on macOS)
+        // (found by class name: the cell's type info isn't in the bindings)
+        CCNode* cell = nullptr;
+        std::function<void(CCNode*)> walk = [&](CCNode* nd) {
+            for (auto c : CCArrayExt<CCNode*>(nd->getChildren())) {
+                if (cell) return;
+                if (geode::cocos::getObjectName(c) == "GJThreadCell") { cell = c; return; }
+                walk(c);
+            }
+        };
+        walk(CCDirector::get()->getRunningScene());
+        log::info("gui: view thread: {}", cell ? "found" : "missing");
+        if (cell) reinterpret_cast<void (*)(CCNode*, CCObject*)>(geode::base::get() + 0x1ebf38)(cell, nullptr);
     }
     else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - (threePresses(name) ? 80 : 15) && name.find("/then2label:") != std::string::npos) {
         auto want = name.substr(name.find("/then2label:") + 12);

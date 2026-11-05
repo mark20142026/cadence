@@ -5,6 +5,7 @@ pub mod animobj;
 pub mod app;
 pub mod assets;
 pub mod audio;
+pub mod clock;
 pub mod cloud;
 pub mod death;
 #[cfg(not(target_arch = "wasm32"))]

@@ -28,6 +28,8 @@ pub enum Page {
     History,
     /// The message threads (`MessageThreadsPage`): 0 all, 1 direct messages, 2 groups
     Threads(u8),
+    /// One thread's messages (`ThreadViewPopup`, over the threads), the one in `viewing`
+    ThreadView,
 }
 
 pub enum Msg {
@@ -35,6 +37,7 @@ pub enum Msg {
     Notifications(Result<(Vec<social::Notification>, usize), ()>),
     Messages(Vec<social::Message>),
     Threads(Result<(Vec<social::Thread>, usize, i32), ()>),
+    ThreadPage(Result<social::ThreadPage, ()>),
     Opened(Box<social::Message>),
     Profile(Box<(crate::online::Profile, Counts, Vec<Post>)>),
     Users(Vec<User>),
@@ -51,6 +54,8 @@ pub enum Effect {
     Profile(i64),
     /// Open the write-a-post / write-a-message box.
     Write { to: Option<i64>, title: &'static str },
+    /// Open the box for a message in this thread.
+    WriteThread(i64),
     /// A received request opened (`FriendRequestPopup`): its row, sender and message.
     Request { row: usize, name: String, text: String },
 }
@@ -65,6 +70,9 @@ pub struct Social {
     /// The threads listed (rows, total, invites waiting), and the rows ticked.
     pub threads: Option<Result<(Vec<social::Thread>, usize, i32), ()>>,
     pub ticked: Vec<i64>,
+    /// The thread open (`ThreadView`) and its messages.
+    pub viewing: Option<social::Thread>,
+    pub thread_page: Option<Result<social::ThreadPage, ()>>,
     pub open_message: Option<social::Message>,
     pub stack: Vec<Page>,
     pub profile: Option<(crate::online::Profile, Counts, Vec<Post>)>,
@@ -84,7 +92,7 @@ pub fn row_btn(what: u16, row: usize) -> Btn {
 
 impl Social {
     pub fn open() -> Social {
-        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
+        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), viewing: None, thread_page: None, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
         s.load();
         s
     }
@@ -104,6 +112,19 @@ impl Social {
                 std::thread::sleep(std::time::Duration::from_millis(10));
                 s.update(0.0);
             }
+        }
+        s
+    }
+
+    /// The first listed thread opened (headless screenshots, like `open_at`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open_first_thread() -> Social {
+        let mut s = Social::open_at(Page::Threads(0));
+        s.viewing = s.threads.as_ref().and_then(|r| r.as_ref().ok()).and_then(|(l, _, _)| l.first()).cloned();
+        s.go(Page::ThreadView);
+        while s.busy() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            s.update(0.0);
         }
         s
     }
@@ -170,6 +191,11 @@ impl Social {
                     })
                 })
             }
+            Page::ThreadView => {
+                self.thread_page = None;
+                let id = self.viewing.as_ref().map_or(0, |t| t.id);
+                crate::net::spawn(async move { Msg::ThreadPage(social::thread_messages(id).await.map_err(|_| ())) })
+            }
             Page::Threads(tab) => {
                 self.threads = None;
                 crate::net::spawn(async move { Msg::Threads(social::threads(tab as i32, 0).await.map_err(|_| ())) })
@@ -196,6 +222,19 @@ impl Social {
         self.act(Act::Post(text), "post");
     }
 
+    /// Whether the open thread takes messages (not locked; status 0 or 1 — 2–7 are the
+    /// blocked kinds, 8 removed).
+    pub fn can_send(&self) -> bool {
+        match self.thread_page.as_ref().and_then(|r| r.as_ref().ok()) {
+            Some(p) => !p.locked && p.status <= 1,
+            None => false,
+        }
+    }
+
+    pub fn send_thread(&mut self, thread: i64, text: String) {
+        self.job = Some(crate::net::spawn(async move { Msg::Done(social::send_thread_message(thread, text).await, "thread message") }));
+    }
+
     pub fn message(&mut self, to: i64, subject: String, body: String) {
         self.act(Act::Message { to, subject, body }, "message");
     }
@@ -216,6 +255,7 @@ impl Social {
             }
             Msg::Users(u) => self.users = Some(u),
             Msg::Messages(m) => self.messages = Some(m),
+            Msg::ThreadPage(p) => self.thread_page = Some(p),
             Msg::Threads(t) => {
                 self.ticked.clear();
                 self.threads = Some(t);
@@ -239,12 +279,14 @@ impl Social {
                         return Effect::Alert("Success".into(), "Settings updated.".into());
                     }
                     "message" => return Effect::Alert("Message sent".into(), "Your message has been sent.".into()),
+                    // the thread shows it (reloaded below)
                     _ => self.load(),
                 }
             }
             Msg::Done(Err(code), what) => {
                 let text = match (what, code.as_str()) {
                     ("message", _) => "Failed to send the message. The player may not accept messages.",
+                    ("thread message", _) => "Failed to send the message. Please try again later.",
                     ("post", _) => "Failed to post. Please try again later.",
                     _ => "Something went wrong. Please try again later.",
                 };
@@ -262,6 +304,7 @@ impl Social {
             Page::Messages(_) => self.messages.as_ref().map_or(0, Vec::len) as f32 * 50.0 - 188.0,
             Page::Notifications => self.notifications.as_ref().and_then(|r| r.as_ref().ok()).map_or(0, |(l, _)| l.len()) as f32 * 40.0 - 196.0,
             Page::History => s_len(&self.history) as f32 * 44.0 - 176.0,
+            Page::ThreadView => self.thread_page.as_ref().and_then(|r| r.as_ref().ok()).map_or(0, |p| p.messages.len()) as f32 * 43.0 - 150.0,
             Page::Threads(_) => self.threads.as_ref().and_then(|r| r.as_ref().ok()).map_or(0, |(l, _, _)| l.len()) as f32 * 40.0 - 196.0,
         };
         self.scroll = (self.scroll + delta).clamp(0.0, rows.max(0.0));
@@ -299,6 +342,33 @@ impl Social {
             (Page::Threads(_), Btn::Replay(15)) => {
                 let all: Vec<i64> = self.threads.as_ref().and_then(|r| r.as_ref().ok()).map(|(l, _, _)| l.iter().map(|t| t.id).collect()).unwrap_or_default();
                 self.ticked = if self.ticked.len() == all.len() { Vec::new() } else { all };
+            }
+            // a row opens its thread; a direct message's name, the player's profile
+            (Page::Threads(_), Btn::Social(code)) if (7200..7300).contains(&code) => {
+                if let Some(t) = self.threads.as_ref().and_then(|r| r.as_ref().ok()).and_then(|(l, _, _)| l.get((code - 7200) as usize)).cloned() {
+                    self.viewing = Some(t);
+                    self.go(Page::ThreadView);
+                }
+            }
+            (Page::Threads(_), Btn::Social(code)) if (7000..7100).contains(&code) => {
+                if let Some(t) = self.threads.as_ref().and_then(|r| r.as_ref().ok()).and_then(|(l, _, _)| l.get((code - 7000) as usize)) {
+                    return Effect::Profile(t.account);
+                }
+            }
+            // the thread: close, refresh, the message box and Send, a sender's name
+            (Page::ThreadView, Btn::Replay(6)) => {
+                self.stack.pop();
+                self.load();
+            }
+            (Page::ThreadView, Btn::Replay(8)) if !self.busy() => self.load(),
+            (Page::ThreadView, Btn::Replay(12) | Btn::Social(7400)) if self.can_send() => {
+                return Effect::WriteThread(self.viewing.as_ref().map_or(0, |t| t.id));
+            }
+            (Page::ThreadView, Btn::Social(code)) if (7300..7400).contains(&code) => {
+                let account = self.thread_page.as_ref().and_then(|r| r.as_ref().ok()).and_then(|p| p.messages.get((code - 7300) as usize)).map_or(0, |m| m.account);
+                if account > 0 {
+                    return Effect::Profile(account);
+                }
             }
             (Page::Threads(_), Btn::Social(code)) if (7100..7200).contains(&code) => {
                 let row = (code - 7100) as usize;
@@ -493,6 +563,13 @@ pub fn draw(s: &Social, c: &mut Canvas, ctx: &mut Ctx) {
         Page::Messages(tab) => draw_messages(s, c, ctx, dx, tab),
         Page::Notifications => draw_notifications(s, c, ctx, dx),
         Page::Threads(tab) => draw_threads(s, c, ctx, dx, tab),
+        Page::ThreadView => {
+            let tab = s.stack.iter().rev().find_map(|p| if let Page::Threads(t) = p { Some(*t) } else { None }).unwrap_or(0);
+            draw_threads(s, c, ctx, dx, tab);
+            ctx.buttons.clear();
+            c.rect(0.0, 0.0, c.width, c.height, [0.0; 3], 150.0 / 255.0);
+            draw_thread_view(s, c, ctx, dx);
+        }
         Page::History => draw_history(s, c, ctx, dx),
         Page::Settings => {
             draw_profile(s, c, ctx, dx);
@@ -900,6 +977,7 @@ fn draw_threads(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32, tab: u8) {
             continue;
         }
         c.rect(lx, y - 20.0, 340.0, 40.0, rgb(if i % 2 == 0 { [161, 88, 44] } else { [194, 114, 62] }), 1.0);
+        ctx.area(Btn::Social(7200 + i as u16), lx + 170.0, y, 340.0, 40.0);
         // the name (a direct message) or the title, then what follows it on the line
         let mut x;
         if t.direct {
@@ -953,6 +1031,85 @@ fn draw_threads(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32, tab: u8) {
     c.sprite("GJ_commentTop_001.png", lx + 170.0, ly + 4.0, Look::default().flip_y(true));
 }
 
+/// `ThreadViewPopup` (captured with made-up messages): its frame, the thread's name, "Load
+/// earlier" when there are older ones, then each day's line and date and the messages (the
+/// sender's icon, name and time, the text, "deleted", "..."), and the message box — or the
+/// notice saying why you can't write here.
+fn draw_thread_view(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
+    let page = s.thread_page.as_ref().and_then(|r| r.as_ref().ok());
+    let open = s.can_send();
+    replay::draw_where(c, ctx, Scene::ThreadView, &|k, name, _, y| open || !(y < 60.0 && (k != 'B' || matches!(name, "10" | "11" | "12"))));
+    let cx = 284.5 + dx;
+    let title = s.viewing.as_ref().map_or(String::new(), |t| if t.direct { t.name.clone() } else { t.title.clone() });
+    c.text("goldFont", &title, cx, 284.0, Look::scaled(0.7));
+    if open {
+        ctx.area(Btn::Social(7400), 283.0 + dx, 37.0, 293.0, 28.0);
+    } else if let Some(p) = page {
+        let text = if p.locked { "This conversation has been locked." } else { "You can't message this user." };
+        let w = c.text_size("goldFont", text).0 * 0.5;
+        c.text("goldFont", text, cx, 37.0, Look::scaled(0.5));
+        c.sprite("GJ_infoIcon_001.png", cx + w * 0.5 + 10.5, 37.0, Look::scaled(0.5));
+    }
+    let Some(p) = page else {
+        if matches!(s.thread_page, Some(Err(()))) {
+            c.text("goldFont", "Something went wrong...", cx, 163.0, Look::scaled(0.6));
+        } else {
+            super::online::loading_circle(c, cx, 163.0, s.t);
+        }
+        return;
+    };
+    let me = crate::gjapi::identity().account.map(|a| (a.account_id, a.name.clone()));
+    let offset = crate::clock::local_offset(p.messages.first().map_or(0, |m| m.time));
+    c.clip = Some([79.5 + dx, 61.0, 489.5 + dx, 265.0]);
+    let mut y = 255.0 + s.scroll;
+    if p.earlier {
+        c.nine_slice("GJ_button_05.png", cx, y - 8.0, 106.0, 20.0, Look::default());
+        c.text("bigFont", "Load earlier", cx - 1.0, y - 6.0, Look::scaled(0.4));
+        y -= 26.0;
+    }
+    let mut day = i64::MIN;
+    for (i, m) in p.messages.iter().enumerate() {
+        if crate::clock::day(m.time, offset) != day {
+            day = crate::clock::day(m.time, offset);
+            c.sprite("floorLine_001.png", cx, y, Look::default().scale_xy(0.8784, 1.0).rgb([255, 230, 60]).alpha(125).blend(crate::render::Blend::Additive));
+            c.text("chatFont", &format!("- {} -", crate::clock::date_label(m.time, offset)), cx, y - 11.0, Look::scaled(0.5).alpha(150));
+            y -= 33.0;
+        }
+        let user = p.users.iter().find(|u| u.account == m.account);
+        let name = match (user, &me) {
+            (Some(u), _) if !u.name.is_empty() => u.name.clone(),
+            (_, Some((id, n))) if *id == m.account => n.clone(),
+            _ => "-".into(),
+        };
+        match user.filter(|u| u.icon > 0) {
+            Some(u) => {
+                let base = super::garage::icon_sheet((u.icon_type as usize).min(8), u.icon as u32);
+                super::garage::draw_icon(c, &base, 96.5 + dx, y, 0.55, super::menu::color_for_idx(u.color1.max(0) as usize), super::menu::color_for_idx(u.color2.max(0) as usize));
+            }
+            None => {
+                c.sprite("player_01_001.png", 96.5 + dx, y, Look::scaled(0.55).rgb([125, 125, 125]));
+                c.sprite("player_01_2_001.png", 96.5 + dx, y, Look::scaled(0.55).rgb([80, 80, 80]));
+            }
+        }
+        let w = c.text_size("bigFont", &name).0 * 0.35;
+        let id = Btn::Social(7300 + i as u16);
+        c.text("bigFont", &name, 111.5 + dx + w * 0.5, y + 7.0, Look::scaled(0.35 * ctx.factor(id)).rgb([255, 200, 80]));
+        ctx.area(id, 111.5 + dx + w * 0.5, y + 7.0, w, 11.38);
+        c.text("chatFont", &crate::clock::time_label(m.time, offset), 111.5 + dx + w + 5.0, y + 6.0, Look::scaled(0.5).anchor(0.0, 0.5).alpha(150));
+        let lines = super::wrap(c, &m.text, 330.0, 0.75 / 1.6);
+        let alpha = if m.deleted { 0.45 } else { 1.0 };
+        for (k, line) in lines.iter().enumerate() {
+            c.text("chatFont", line, 111.5 + dx, y - 2.0 - 15.0 * k as f32, Look::scaled(0.75).anchor(0.0, 1.0).alpha((alpha * 255.0) as u8));
+        }
+        if m.deleted {
+            c.text("bigFont", "deleted", 455.5 + dx, y - 2.0, Look::scaled(0.3).anchor(1.0, 1.0).rgb([255, 120, 120]));
+        }
+        c.text("bigFont", "...", 469.08 + dx, y - 7.69, Look::scaled(0.35).alpha(120));
+        y -= 43.0 + 15.0 * (lines.len().max(1) - 1) as f32;
+    }
+    c.clip = None;
+}
+
 /// `GJAccountSettingsLayer`: the layout with this account's choices checked.
 fn draw_settings(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
     // the check boxes' rows and their options' x (from the layout: the boxes at y 225, 185,
@@ -982,6 +1139,8 @@ pub struct Writer {
     pub level: Option<i64>,
     /// A custom song id for your level in this slot.
     pub song_slot: Option<usize>,
+    /// A message in this thread (`ThreadViewPopup`'s box).
+    pub thread: Option<i64>,
     pub subject: String,
     pub body: String,
     /// The field typed into: 0 subject, 1 body (posts have the body only).
@@ -991,11 +1150,12 @@ pub struct Writer {
 
 impl Writer {
     pub fn new(title: &'static str, to: Option<i64>) -> Writer {
-        Writer { title, to, level: None, song_slot: None, subject: String::new(), body: String::new(), field: if to.is_some() { 0 } else { 1 }, t: 0.0 }
+        Writer { title, to, level: None, song_slot: None, thread: None, subject: String::new(), body: String::new(), field: if to.is_some() { 0 } else { 1 }, t: 0.0 }
     }
 
     fn limit(&self) -> usize {
         match (self.to, self.field) {
+            _ if self.thread.is_some() => 300,
             (None, _) => 140,
             (Some(_), 0) => 35,
             _ => 200,
@@ -1027,7 +1187,7 @@ pub fn draw_writer(wr: &Writer, c: &mut Canvas, ctx: &mut Ctx) {
     let fields: Vec<(u8, f32, f32, &str, &str)> = if wr.to.is_some() {
         vec![(0, cy + 52.0, 30.0, &wr.subject, "Subject"), (1, cy - 12.0, 80.0, &wr.body, "Message")]
     } else {
-        vec![(1, cy + 10.0, 110.0, &wr.body, "Write something...")]
+        vec![(1, cy + 10.0, 110.0, &wr.body, if wr.thread.is_some() { "Message" } else { "Write something..." })]
     };
     for (id, fy, fh, value, placeholder) in fields {
         c.nine_slice("square02_small.png", cx, fy, 360.0, fh, Look::default().alpha(100));
@@ -1045,7 +1205,7 @@ pub fn draw_writer(wr: &Writer, c: &mut Canvas, ctx: &mut Ctx) {
     }
     let left = wr.limit().saturating_sub(if wr.field == 0 { wr.subject.chars().count() } else { wr.body.chars().count() });
     c.text("chatFont", &left.to_string(), cx + 190.0, cy - 88.0, Look::scaled(0.6).anchor(1.0, 0.5).alpha(160));
-    let send = if wr.to.is_some() { "Send" } else { "Post" };
+    let send = if wr.to.is_some() || wr.thread.is_some() { "Send" } else { "Post" };
     let (w1, w2) = (super::login::button_width(c, "Cancel"), super::login::button_width(c, send));
     let total = w1 + 15.0 + w2;
     for (id, text, x, bw) in [(Btn::WriteCancel, "Cancel", cx - total * 0.5 + w1 * 0.5, w1), (Btn::WriteSend, send, cx + total * 0.5 - w2 * 0.5, w2)] {
@@ -1061,6 +1221,7 @@ pub fn wanted_sheets(s: &Social) -> Vec<String> {
     let mut v: Vec<String> = match s.page() {
         Page::Profile => s.profile.as_ref().map(|(p, _, _)| (0..9).map(|k| super::garage::icon_sheet(k, p.icons[k])).collect()).unwrap_or_default(),
         Page::Friends(_) | Page::Requests(_) => s.users.iter().flatten().map(|u| super::garage::icon_sheet((u.icon_type as usize).min(8), u.icon)).collect(),
+        Page::ThreadView => s.thread_page.iter().flatten().flat_map(|p| p.users.iter()).map(|u| super::garage::icon_sheet((u.icon_type as usize).min(8), u.icon.max(1) as u32)).collect(),
         Page::Threads(_) => s.threads.iter().flatten().flat_map(|(l, _, _)| l.iter()).filter(|t| t.direct).map(|t| super::garage::icon_sheet((t.icon_type as usize).min(8), t.icon.max(1) as u32)).collect(),
         Page::Settings | Page::Messages(_) | Page::Notifications | Page::History => Vec::new(),
     };

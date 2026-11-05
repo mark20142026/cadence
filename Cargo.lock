@@ -635,6 +635,7 @@ dependencies = [
  "console_error_panic_hook",
  "curl",
  "js-sys",
+ "libc",
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
  "plist",
@@ -648,6 +649,7 @@ dependencies = [
  "web-sys",
  "web-time",
  "wgpu",
+ "windows-sys 0.61.2",
  "winit",
  "zune-jpeg",
 ]

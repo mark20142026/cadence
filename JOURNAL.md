@@ -1219,3 +1219,24 @@ prebuilt trace mod), corner and muted.
   exact reverb and pitch-shift sound.
 - verify_all **124/135** (was 123/134; +gremap, the same 11 failing). `cargo test --workspace
   --release` green (73 core, 66 game).
+
+## 2026-11-05 — message threads: a thread's view and sending
+
+- getGJThreadMessages (request `&threadID=&beforeID=0&afterID=0&secret=`): the handler is
+  FUN_100490d04 (it calls the delegate's threadMessagesFinished). `#` parts: 0 the messages
+  (parsed at 0x1004c6374: `id:account:text b64:time[:deleted]`), 1 the players (0x1004c676c:
+  `account:user:name b64:icon:color1:color2:glow color:kind:special`; a second list with more
+  fields isn't mapped), 4 the thread's state (`owner:?:members:title b64:last read:earlier:
+  later:time:description b64:locked:status`; status overrides the thread's dmStatus — 0/1
+  can write, 2–7 blocked kinds, 8 removed). Parts 1–3 are also kept as a page cursor.
+- Captured the real ThreadViewPopup with the harness: `/viewthread` calls
+  GJThreadCell::onViewThread (ARM 0x1ebf38, not bound; the cell found by class name) on the
+  first row — the name in a row is a profile link, the row opens the thread. Three captures
+  pinned the footer: locked → "This conversation has been locked.", status 2–7 → "You can't
+  message this user.", else the message box (+, emote, field, Send).
+- sendGJThreadMessage recorded (harness `/sendmsg:<text>` types into the popup's box, calls its
+  textChanged as typing does, presses Send; recorder only):
+  `&threadID=9001&secret=Wmfd2893gb7&token=<16 digits>&body=<base64>`.
+- `src/clock.rs`: the system's UTC offset (libc / Win32 / JS Date) and the game's "Nov 15,
+  2023" and "1:13 AM" labels. `ui/social.rs` Page::ThreadView over the threads, the message box
+  opens the writer for the thread; rows open their thread, names open profiles.

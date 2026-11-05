@@ -169,5 +169,8 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       move (agent, merged; new trace gremap). verify_all 124/135.
 - [x] Message threads list (getGJThreads → MessageThreadsPage): rows by position as the
       game's parser reads them, drawn like the real page with made-up threads.
-- [ ] Still open: a thread's own view (ThreadViewPopup, getGJThreadMessages), sending
-      (sendGJThreadMessage), new threads, members, invites, thread options and search.
+- [x] A thread's view (getGJThreadMessages → ThreadViewPopup): messages, players, the
+      thread's state (earlier, locked, who can write), day separators and local times; sending
+      (sendGJThreadMessage, recorded from the real game: base64 body + a random token).
+- [ ] Still open: new threads (NewThreadPopup), members, invites, thread options, search,
+      "Load earlier", and the "+" (share a level / list) and emote buttons in the message box.

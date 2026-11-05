@@ -2056,6 +2056,12 @@ impl Ui {
             }
             Btn::WriteSend => {
                 if let (Some(w), Some(s)) = (self.writer.take(), self.social.as_mut()) {
+                    if let Some(thread) = w.thread {
+                        if !w.body.trim().is_empty() {
+                            s.send_thread(thread, w.body);
+                        }
+                        return;
+                    }
                     match w.to {
                         Some(to) => s.message(to, w.subject, w.body),
                         None if !w.body.trim().is_empty() => s.post(w.body),
@@ -3101,7 +3107,7 @@ impl Ui {
         };
         match scene {
             // drawn and clicked by `ui::social`, never as a replayed screen
-            replay::Scene::MyProfile | replay::Scene::Friends | replay::Scene::Requests | replay::Scene::AcctSettings | replay::Scene::ShareLevel | replay::Scene::OldMessages | replay::Scene::Notifications | replay::Scene::Threads => {}
+            replay::Scene::MyProfile | replay::Scene::Friends | replay::Scene::Requests | replay::Scene::AcctSettings | replay::Scene::ShareLevel | replay::Scene::OldMessages | replay::Scene::Notifications | replay::Scene::Threads | replay::Scene::ThreadView => {}
             // OK (the first button) closes; the others (easing, pages, info) aren't ported
             replay::Scene::Trigger(_) | replay::Scene::Special(_) => {
                 if i == 0 {
@@ -3688,6 +3694,8 @@ impl Ui {
             }
             // your account's pages (CADENCE_SERVER at a stand-in with made-up answers)
             #[cfg(not(target_arch = "wasm32"))]
+            "threadview" => self.social = Some(social::Social::open_first_thread()),
+            #[cfg(not(target_arch = "wasm32"))]
             "myprofile" | "friends" | "requests" | "acctsettings" | "oldmessages" | "notifications" | "threads" => {
                 let page = match which {
                     "threads" => social::Page::Threads(0),
@@ -4197,6 +4205,11 @@ impl Ui {
                 self.online.open_profile(account);
             }
             social::Effect::Write { to, title } => self.writer = Some(social::Writer::new(title, to)),
+            social::Effect::WriteThread(thread) => {
+                let mut w = social::Writer::new("Message", None);
+                w.thread = Some(thread);
+                self.writer = Some(w);
+            }
             social::Effect::Request { row, name, text } => {
                 self.confirm = Some(Confirm {
                     title: name,
@@ -5310,7 +5323,7 @@ fn draw_alert(a: &Alert, canvas: &mut Canvas, ctx: &mut Ctx) {
 }
 
 /// Greedy word wrap at `max` points for chatFont at `scale`.
-fn wrap(canvas: &Canvas, text: &str, max: f32, scale: f32) -> Vec<String> {
+pub(crate) fn wrap(canvas: &Canvas, text: &str, max: f32, scale: f32) -> Vec<String> {
     let mut out = Vec::new();
     let mut line = String::new();
     for word in text.split_whitespace() {

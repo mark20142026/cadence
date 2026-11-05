@@ -464,3 +464,106 @@ mod thread_tests {
     }
 }
 
+/// One message in a thread (`GJThreadMessage`; parsed by the game at 0x1004c6374): `id :
+/// account : text (base64) : time : deleted`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ThreadMessage {
+    pub id: i64,
+    pub account: i64,
+    pub text: String,
+    pub time: i64,
+    pub deleted: bool,
+}
+
+/// A player named in a thread's answer: `account : user : name (base64) : icon : color 1 :
+/// color 2 : glow color : kind : glow`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ThreadUser {
+    pub account: i64,
+    pub name: String,
+    pub icon: i32,
+    pub color1: i32,
+    pub color2: i32,
+    pub icon_type: i32,
+}
+
+/// A thread's messages (`getGJThreadMessages.php`, GameLevelManager at 0x100490d04): `#` parts
+/// 0 the messages, 1 the players, 4 the thread's state (`owner : … : members : title (base64) :
+/// last read : earlier : later : time : description (base64) : locked : can send (0/1 yes,
+/// 2–7 blocked, 8 removed)`). Mapped from captures of the real ThreadViewPopup.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ThreadPage {
+    pub messages: Vec<ThreadMessage>,
+    pub users: Vec<ThreadUser>,
+    pub earlier: bool,
+    pub locked: bool,
+    /// -1 when the answer doesn't say
+    pub status: i32,
+}
+
+pub fn parse_thread_page(body: &str) -> ThreadPage {
+    let parts: Vec<&str> = body.split('#').collect();
+    let part = |i: usize| parts.get(i).copied().unwrap_or("");
+    let messages = part(0)
+        .split('|')
+        .filter_map(|r| {
+            let f: Vec<&str> = r.split(':').collect();
+            if f.len() < 4 {
+                return None;
+            }
+            Some(ThreadMessage { id: f[0].parse().ok()?, account: f[1].parse().unwrap_or(0), text: b64_text(f[2]), time: f[3].parse().unwrap_or(0), deleted: f.get(4).is_some_and(|v| *v != "0") })
+        })
+        .collect();
+    let users = part(1)
+        .split('|')
+        .filter_map(|r| {
+            let f: Vec<&str> = r.split(':').collect();
+            if f.len() < 3 {
+                return None;
+            }
+            let n = |i: usize| f.get(i).and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
+            Some(ThreadUser { account: f[0].parse().ok()?, name: b64_text(f[2]), icon: n(3), color1: n(4), color2: n(5), icon_type: n(7) })
+        })
+        .collect();
+    let meta: Vec<&str> = part(4).split(':').collect();
+    let m = |i: usize| meta.get(i).and_then(|v| v.parse::<i64>().ok());
+    ThreadPage { messages, users, earlier: m(5).unwrap_or(0) > 0, locked: m(9).unwrap_or(0) != 0, status: m(10).map_or(-1, |v| v as i32) }
+}
+
+/// A thread's latest messages.
+pub async fn thread_messages(thread: i64) -> Result<ThreadPage, String> {
+    let id = me()?;
+    let body = crate::net::post("getGJThreadMessages.php", &format!("{}&threadID={thread}&beforeID=0&afterID=0&secret={}", id.base(), gjapi::SECRET)).await?;
+    Ok(ok(body).map(|b| parse_thread_page(b.trim())).unwrap_or_default())
+}
+
+/// `sendGJThreadMessage.php` as the game sends it (recorded): the text base64'd, and a random
+/// 16-digit token (the same send retried isn't posted twice).
+pub fn thread_send_form(id: &Identity, thread: i64, text: &str, token: u64) -> String {
+    format!("{}&threadID={thread}&secret={}&token={token}&body={}", id.base(), gjapi::SECRET, gjapi::b64(text.as_bytes()))
+}
+
+pub async fn send_thread_message(thread: i64, text: String) -> Result<(), String> {
+    let id = me()?;
+    let token = 1_000_000_000_000_000 + (gjapi::random() % 9_000_000_000_000_000);
+    ok(crate::net::post("sendGJThreadMessage.php", &thread_send_form(&id, thread, &text, token)).await?).map(|_| ())
+}
+
+#[cfg(test)]
+mod thread_page_tests {
+    #[test]
+    fn messages_users_and_state() {
+        let p = super::parse_thread_page("7001:21:SGVsbG8gdGhlcmUsIGZpcnN0IG1lc3NhZ2U=:1700000000:0|7002:1:SGkgQWxwaGEhIFRoaXMgb25lIGlzIG1pbmU=:1700000100:0|7003:21:VGhpcmQgbWVzc2FnZSwgZmxhZ2dlZA==:1700000200:1#21:121:QWxwaGE=:15:3:12:5:0:2|1:101:Q2FkZW5jZVRlc3Q=:4:6:7:8:0:0###9001:21:2:TWV0YSBUaXRsZQ==:5:1:0:1700000300:TWV0YSBEZXNj:1:7#P5#P6#11,12,13,14");
+        assert_eq!(p.messages.len(), 3);
+        assert_eq!((p.messages[0].text.as_str(), p.messages[2].deleted, p.messages[1].account), ("Hello there, first message", true, 1));
+        assert_eq!((p.users[0].name.as_str(), p.users[0].icon, p.users[1].account), ("Alpha", 15, 1));
+        assert_eq!((p.earlier, p.locked, p.status), (true, true, 7));
+    }
+
+    #[test]
+    fn send_form_as_recorded() {
+        let id = crate::gjapi::Identity { udid: "U".into(), uuid: 0, account: None };
+        assert!(super::thread_send_form(&id, 9001, "Hello from the harness", 1880999592558863).ends_with("&threadID=9001&secret=Wmfd2893gb7&token=1880999592558863&body=SGVsbG8gZnJvbSB0aGUgaGFybmVzcw=="));
+    }
+}
+

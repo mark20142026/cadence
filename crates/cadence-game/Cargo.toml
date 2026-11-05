@@ -37,6 +37,12 @@ ureq = "2"
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "macos")))'.dependencies]
 curl = "0.4"
 
+# local time for message times (the thread view): the system's offset from UTC
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Time", "Win32_Foundation"] }
+
 # CADENCE_CORNER parks the window with AppKit (the versions winit already uses)
 [target.'cfg(target_os = "macos")'.dependencies]
 curl = { version = "0.4", default-features = false, features = ["force-system-lib-on-osx"] }
