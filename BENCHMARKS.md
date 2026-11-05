@@ -109,3 +109,42 @@ Mean over the 15 levels: CPU 39.5% vanilla, 29.0% Cadence, 28.9% with the cache;
   Machine's 24 slow frames with the cache were noise: two repeats each gave 75/62 slow frames
   without it and 82/86 with it, at 33–34% CPU either way. The cache stays (pixel-identical) but
   is not a speed win on this machine.
+
+## Browser (WebAssembly) vs native, same Mac (2026-11-05)
+
+MacBook Air M2, macOS 27, 60 Hz display, nothing else running. Both at 1280×720-ish pixels
+(native 640×360 points, the browser canvas 640×356 points at 2×), High texture quality in both,
+noclip, measured the same way: from the level's start, 22 s, the first 30 frames left out.
+Native: the release build (`CADENCE_BENCH=22`), frame = interval between presented frames.
+Browser: Chrome 157 (WebGPU) with its own profile, a 640-wide app window parked in the corner
+and never focused (background throttling off), `?dev=1&noclip&level=<id>`; frame = interval
+between `requestAnimationFrame` callbacks (`/tmp`-free script: driven over the DevTools
+protocol). "Steady" leaves out stalls over 200 ms — in the browser that is a single ~1.5 s
+stall right after Play while the level's High-quality sheets go to the GPU.
+
+```
+level         run       FPS      steady   p50 ms   p99 ms  >20ms  stalls
+Bloodbath     native    59.952   59.952   16.667   17.292     2   —
+              native    60.002   60.002   16.677   17.723     2   —
+              browser   55.919   60.000   16.700   17.700     1   1482 ms (loading)
+              browser   55.919   59.953   16.700   17.700     2   1467 ms (loading)
+Lag Machine   native    57.874   57.874   16.680   33.476   102   —
+              native    57.913   57.913   16.685   33.465    93   —
+              browser   55.824   60.000   16.700   17.700     1   1517 ms (loading)
+              browser   55.870   60.003   16.700   17.700     1   1501 ms (loading)
+```
+
+Averages of the two runs, browser − native:
+
+| Level | Native FPS | Browser FPS | Difference | Browser steady | Difference (steady) |
+|---|---|---|---|---|---|
+| Bloodbath | 59.977 | 55.919 | −4.058 | 59.977 | 0.000 |
+| Lag Machine | 57.894 | 55.847 | −2.047 | 60.002 | +2.108 |
+
+- The browser's whole deficit is the loading stall at the start (High textures uploaded when the
+  level starts; Medium halves it). Once playing it holds 60.000 on both levels.
+- Natively Lag Machine has ~100 frames over 20 ms (frames at 33 ms); in the browser none. The two
+  measure different points (presented frames vs animation-frame callbacks), so part of that gap
+  can be the measurement, not the build.
+- Medium texture quality (the browser page's default) measured 58.607 / 58.564 FPS with a
+  ~0.52 s loading stall.
