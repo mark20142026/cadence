@@ -1402,3 +1402,10 @@ prebuilt trace mod), corner and muted.
   1/403 of the angle still to go, registered before processRotationActions.
 - New unit tests: move_trigger_modes, aim_angles_fold_like_the_game. verify_all unchanged
   (134/135, camera 135/135). The Tower floors 2–4 use these modes and have no traces yet.
+- Bug (Mark): entering a level's page and the editor skipped the game's fade. New / a level in
+  My Levels only swapped the overlay page (same screen), so `clicked` saw no scene change; and
+  on Edit / Save and Exit the page vanished at the click instead of at the fade's middle. Now
+  LevelBrowserLayer ↔ EditLevelLayer fades like a scene (CCTransitionFade 0.5 s), and any
+  page change goes with its scene at the middle. Test: level_page_and_editor_fade_in.
+- Linux package: `strip --strip-debug` on the binaries (83 MB → expected ~12 MB; the release
+  profile's debug info stays inside ELF executables).

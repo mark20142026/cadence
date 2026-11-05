@@ -850,6 +850,9 @@ pub struct Ui {
     /// the one a fade is taking it to.
     online_shown: online::View,
     fade_view: Option<online::View>,
+    /// The level page (EditLevelLayer) is its own scene in the game, entered and left through a
+    /// CCTransitionFade: the page a running fade switches to at its middle.
+    fade_replay: Option<Option<(replay::Scene, Screen)>>,
 }
 
 impl Ui {
@@ -935,6 +938,7 @@ impl Ui {
             fade: None,
             online_shown: online::View::Search,
             fade_view: None,
+            fade_replay: None,
         };
         ui.menu.reset_player(&mut ui.rng);
         ui
@@ -1983,13 +1987,29 @@ impl Ui {
             return;
         }
         let (screen, pending) = (self.screen, self.pending.len());
+        let page = self.replay;
         self.clicked_now(id);
-        // A scene change (another screen, a level started or left) waits for the fade's middle.
+        if !self.transitions {
+            return;
+        }
+        // A scene change (another screen, a level started or left) waits for the fade's middle,
+        // and the page on screen goes with the scene it belongs to.
         let scene = |a: &Action| matches!(a, Action::Play(_) | Action::LeaveLevel | Action::PlayOnline);
-        if self.transitions && (self.screen != screen || self.pending[pending..].iter().any(scene)) {
+        if self.screen != screen || self.pending[pending..].iter().any(scene) {
             let actions: Vec<Action> = self.pending.drain(pending..).collect();
             let target = std::mem::replace(&mut self.screen, screen);
             self.fade = Some((0.0, Some((target, actions))));
+            if self.replay != page {
+                self.fade_replay = Some(std::mem::replace(&mut self.replay, page));
+            }
+            return;
+        }
+        // Entering or leaving a level's page (LevelBrowserLayer ↔ EditLevelLayer) on the same
+        // screen is a scene change in the game too: the page switches at the fade's middle.
+        let level_page = |r: Option<(replay::Scene, Screen)>| matches!(r, Some((replay::Scene::EditLevel, _)));
+        if level_page(page) != level_page(self.replay) {
+            self.fade_replay = Some(std::mem::replace(&mut self.replay, page));
+            self.fade = Some((0.0, None));
         }
     }
 
@@ -4671,6 +4691,9 @@ impl Ui {
                     self.online.view = v;
                     self.online_shown = v;
                 }
+                if let Some(r) = self.fade_replay.take() {
+                    self.replay = r;
+                }
             }
             if *t >= FADE_TIME {
                 self.fade = None;
@@ -5538,6 +5561,30 @@ mod tests {
         ui.clicked(Btn::LevelsPrev);
         ui.advance(1.0);
         assert_eq!(ui.levels.page(), 23, "pages loop");
+    }
+
+    #[test]
+    fn level_page_and_editor_fade_in() {
+        let mut ui = ui();
+        ui.transitions = true;
+        ui.screen = Screen::Online;
+        // New (LevelBrowserLayer → EditLevelLayer): the list stays until the fade's middle
+        ui.clicked(Btn::MyNew);
+        assert!(ui.fade.is_some());
+        assert_eq!(ui.replay, None);
+        ui.advance(FADE_TIME * 0.6);
+        assert!(matches!(ui.replay, Some((replay::Scene::EditLevel, _))));
+        ui.advance(FADE_TIME);
+        assert!(ui.fade.is_none());
+        // Edit (→ LevelEditorLayer): the page stays until the middle, then the editor
+        ui.clicked(Btn::Replay(0));
+        assert!(ui.fade.is_some());
+        assert_eq!(ui.screen, Screen::Online);
+        assert!(matches!(ui.replay, Some((replay::Scene::EditLevel, _))));
+        ui.advance(FADE_TIME * 0.6);
+        assert_eq!(ui.screen, Screen::Editor);
+        assert_eq!(ui.replay, None);
+        assert!(ui.take_actions().contains(&Action::EnterEditor));
     }
 
     #[test]
