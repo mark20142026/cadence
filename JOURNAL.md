@@ -1268,3 +1268,10 @@ prebuilt trace mod), corner and muted.
   "Created:" stamp in local time, `clock::stamp_label`), Clear / Leave ask first, Rename opens
   RenameThreadPopup (as captured; Save sends mode 2). Members and Report are shown dimmed until
   their requests are mapped. Test `update_forms_as_recorded`.
+- Invites: getGJThreadInvites (`&secret=` only, recorded); its parser FUN_100492a18 makes a
+  GJMessageThread per row of > 5 fields (fields read from the disassembly; a capture of the
+  real InvitesPopup with a made-up group invite and message request showed field 5 is the
+  age and 7 the request's message). Accept = updateGJThread mode 8 (the game then loads the
+  thread), Ignore = mode 9 after "Ignore this? They won't be notified." (recorded with the new
+  `/press:` steps, which leave the notices that a press opens). Cadence: Page::Invites, drawn
+  from the capture; the threads page's invites button opens it.

@@ -570,8 +570,69 @@ pub async fn send_new_thread(dm_to: Option<i64>, targets: Vec<i64>, name: String
     ok(crate::net::post("sendGJThreadMessage.php", &new_thread_form(&id, dm_to, &targets, &name, &description, &body, token)).await?).map(|_| ())
 }
 
+/// A group invite or a message request (`getGJThreadInvites.php`, `&secret=` only; the game's
+/// parser FUN_100492a18 reads each row's fields by position): 0 the thread, 1 who sent it,
+/// 2 their name (base64), 3 the group's title (base64), 4 members, 5 age, 7 the request's
+/// message (base64), 9 a direct message, 10 ignored, 11–16 the sender's icon.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Invite {
+    pub thread: i64,
+    pub account: i64,
+    pub name: String,
+    pub title: String,
+    pub members: i32,
+    pub age: String,
+    pub message: String,
+    pub direct: bool,
+    pub ignored: bool,
+    pub icon: i32,
+    pub color1: i32,
+    pub color2: i32,
+    pub glow_color: i32,
+    pub icon_type: i32,
+}
+
+pub fn parse_invites(body: &str) -> Vec<Invite> {
+    body.split('#')
+        .next()
+        .unwrap_or("")
+        .split('|')
+        .filter_map(|r| {
+            let f: Vec<&str> = r.split(':').collect();
+            if f.len() < 6 {
+                return None;
+            }
+            let s = |i: usize| f.get(i).copied().unwrap_or("");
+            let n = |i: usize| s(i).parse::<i64>().unwrap_or(0);
+            Some(Invite {
+                thread: n(0),
+                account: n(1),
+                name: b64_text(s(2)),
+                title: b64_text(s(3)),
+                members: n(4) as i32,
+                age: s(5).into(),
+                message: b64_text(s(7)),
+                direct: n(9) == 1,
+                ignored: n(10) == 1,
+                icon: n(11) as i32,
+                color1: n(12) as i32,
+                color2: n(13) as i32,
+                glow_color: n(14) as i32,
+                icon_type: n(15) as i32,
+            })
+        })
+        .collect()
+}
+
+pub async fn invites() -> Result<Vec<Invite>, String> {
+    let id = me()?;
+    let body = crate::net::post("getGJThreadInvites.php", &format!("{}&secret={}", id.base(), gjapi::SECRET)).await?;
+    Ok(ok(body).map(|b| parse_invites(b.trim())).unwrap_or_default())
+}
+
 /// `updateGJThread.php` (recorded from the real ThreadOptionsPopup and RenameThreadPopup):
-/// mode 1 clear, 2 rename (value: the name), 5 leave, 10 mute ("1"/"0"), 15 pin ("1"/"0");
+/// mode 1 clear, 2 rename (value: the name), 5 leave, 8 accept an invite, 9 ignore it,
+/// 10 mute ("1"/"0"), 15 pin ("1"/"0");
 /// the value base64'd.
 pub fn update_thread_form(id: &Identity, thread: i64, mode: i32, value: Option<&str>) -> String {
     let mut f = format!("{}&threadID={thread}&mode={mode}&secret={}", id.base(), gjapi::SECRET);
@@ -601,6 +662,14 @@ mod thread_page_tests {
         assert_eq!((p.messages[0].text.as_str(), p.messages[2].deleted, p.messages[1].account), ("Hello there, first message", true, 1));
         assert_eq!((p.users[0].name.as_str(), p.users[0].icon, p.users[1].account), ("Alpha", 15, 1));
         assert_eq!((p.earlier, p.locked, p.status), (true, true, 7));
+    }
+
+    #[test]
+    fn invites_by_position() {
+        let l = super::parse_invites("9101:21:QWxwaGE=:Q29vbCBHcm91cA==:4:F5a:2 hours:Sm9pbiB1cyBwbGVhc2U=:R3JvdXAgYWJvdXQgbGV2ZWxz:0:0:15:3:12:5:0:2:F17a:1700000000|9102:22:QmV0YQ==:QmV0YSBUaXRsZQ==:2:F5b:1 day:SGksIGNhbiB3ZSB0YWxrPw==:RGVzYyBC:1:0:30:9:4:5:1:0:F17b:1700000500");
+        assert_eq!(l.len(), 2);
+        assert_eq!((l[0].title.as_str(), l[0].members, l[0].age.as_str(), l[0].direct), ("Cool Group", 4, "F5a", false));
+        assert_eq!((l[1].name.as_str(), l[1].message.as_str(), l[1].direct, l[1].icon_type), ("Beta", "Hi, can we talk?", true, 1));
     }
 
     #[test]

@@ -3734,6 +3734,9 @@ impl Ui {
             // your account's pages (CADENCE_SERVER at a stand-in with made-up answers)
             #[cfg(not(target_arch = "wasm32"))]
             "threadview" => self.social = Some(social::Social::open_first_thread()),
+            // InvitesPopup over the threads
+            #[cfg(not(target_arch = "wasm32"))]
+            "invites" => self.social = Some(social::Social::open_at(social::Page::Invites(false))),
             // ThreadOptionsPopup on the first thread listed
             #[cfg(not(target_arch = "wasm32"))]
             "threadopts" => {

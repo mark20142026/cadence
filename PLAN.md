@@ -178,6 +178,9 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
 - [x] Thread options (ThreadOptionsPopup from a row's "..." or the thread's): View Profile,
       Rename (RenameThreadPopup), Mute/Unmute, Pin/Unpin, Clear and Leave (asking first) —
       updateGJThread modes 2, 10, 15, 1, 5 as recorded.
+- [x] Invites and message requests (getGJThreadInvites → InvitesPopup, as captured): Accept
+      (updateGJThread mode 8, then the thread opens), Ignore (asks first; mode 9), Pending ↔
+      Ignored.
 - [ ] Still open: members (answer format/handler not found yet; the button is dimmed),
-      report (the thread's report type not read yet; dimmed), invites, search, and the "+"
-      (share) and emote buttons.
+      report (the thread's report type not read yet; dimmed), search in a thread and in the
+      invites, and the "+" (share) and emote buttons.

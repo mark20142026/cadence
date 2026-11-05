@@ -30,6 +30,8 @@ pub enum Page {
     Threads(u8),
     /// One thread's messages (`ThreadViewPopup`, over the threads), the one in `viewing`
     ThreadView,
+    /// Your invites and message requests (`InvitesPopup`): false pending, true ignored
+    Invites(bool),
 }
 
 pub enum Msg {
@@ -40,6 +42,7 @@ pub enum Msg {
     ThreadPage(Result<social::ThreadPage, ()>),
     /// Older messages ("Load earlier"), to go before those shown.
     ThreadOlder(Result<social::ThreadPage, ()>),
+    Invites(Result<Vec<social::Invite>, ()>),
     Opened(Box<social::Message>),
     Profile(Box<(crate::online::Profile, Counts, Vec<Post>)>),
     Users(Vec<User>),
@@ -82,6 +85,11 @@ pub struct Social {
     /// `ThreadOptionsPopup` open on this thread, and its Clear / Leave question.
     pub options: Option<social::Thread>,
     pub options_confirm: Option<i32>,
+    /// The invites listed, the one being ignored (asking first), and the one accepted (its
+    /// thread opens once the server says yes).
+    pub invites: Option<Result<Vec<social::Invite>, ()>>,
+    pub ignoring: Option<i64>,
+    pub accepted: Option<social::Thread>,
     /// Your friends, for the new-thread popup's "To".
     pub friends: Option<Vec<User>>,
     pub thread_page: Option<Result<social::ThreadPage, ()>>,
@@ -104,7 +112,7 @@ pub fn row_btn(what: u16, row: usize) -> Btn {
 
 impl Social {
     pub fn open() -> Social {
-        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), viewing: None, thread_page: None, friends: None, options: None, options_confirm: None, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
+        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), viewing: None, thread_page: None, friends: None, options: None, options_confirm: None, invites: None, ignoring: None, accepted: None, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
         s.load();
         s
     }
@@ -202,6 +210,10 @@ impl Social {
                         Err(_) => Err(()),
                     })
                 })
+            }
+            Page::Invites(_) => {
+                self.invites = None;
+                crate::net::spawn(async { Msg::Invites(social::invites().await.map_err(|_| ())) })
             }
             Page::ThreadView => {
                 self.thread_page = None;
@@ -341,6 +353,7 @@ impl Social {
             Msg::Friends(u) => self.friends = Some(u),
             Msg::Messages(m) => self.messages = Some(m),
             Msg::ThreadPage(p) => self.thread_page = Some(p),
+            Msg::Invites(l) => self.invites = Some(l),
             Msg::ThreadOlder(Ok(older)) => {
                 if let Some(Ok(p)) = self.thread_page.as_mut() {
                     let mut messages = older.messages;
@@ -373,6 +386,13 @@ impl Social {
             Msg::Done(Ok(()), what) => {
                 // the page reloads what changed
                 match what {
+                    "accept invite" => {
+                        if let Some(t) = self.accepted.take() {
+                            self.viewing = Some(t);
+                            self.stack.pop();
+                            self.go(Page::ThreadView);
+                        }
+                    }
                     "post" | "delete" => self.load(),
                     "settings" => {
                         self.stack.pop();
@@ -404,6 +424,7 @@ impl Social {
             Page::Messages(_) => self.messages.as_ref().map_or(0, Vec::len) as f32 * 50.0 - 188.0,
             Page::Notifications => self.notifications.as_ref().and_then(|r| r.as_ref().ok()).map_or(0, |(l, _)| l.len()) as f32 * 40.0 - 196.0,
             Page::History => s_len(&self.history) as f32 * 44.0 - 176.0,
+            Page::Invites(_) => 0.0,
             Page::ThreadView => self.thread_page.as_ref().and_then(|r| r.as_ref().ok()).map_or(0, |p| p.messages.len()) as f32 * 43.0 - 150.0,
             Page::Threads(_) => self.threads.as_ref().and_then(|r| r.as_ref().ok()).map_or(0, |(l, _, _)| l.len()) as f32 * 40.0 - 196.0,
         };
@@ -437,6 +458,37 @@ impl Social {
                 self.load();
             }
             (Page::Threads(_), Btn::Replay(6)) => self.go(Page::Messages(0)),
+            (Page::Threads(_), Btn::Replay(16)) => self.go(Page::Invites(false)),
+            // the invites: Ignore asks first; close, Pending ↔ Ignored, Accept, a name
+            (Page::Invites(_), Btn::Social(code)) if self.ignoring.is_some() => {
+                let thread = self.ignoring.take().unwrap_or(0);
+                if code == 7891 {
+                    self.job = Some(crate::net::spawn(async move { Msg::Done(social::update_thread(thread, 9, None).await, "ignore invite") }));
+                }
+            }
+            (Page::Invites(_), Btn::Social(7899)) => {
+                self.stack.pop();
+                self.load();
+            }
+            (Page::Invites(ignored), Btn::Social(7898)) => {
+                self.stack.pop();
+                self.stack.push(Page::Invites(!ignored));
+            }
+            (Page::Invites(ignored), Btn::Social(code)) if (7800..7990).contains(&code) => {
+                let shown: Vec<social::Invite> = self.invites.as_ref().and_then(|r| r.as_ref().ok()).map(|l| l.iter().filter(|i| i.ignored == ignored).cloned().collect()).unwrap_or_default();
+                let Some(inv) = shown.get((code % 50) as usize).cloned() else { return Effect::None };
+                match code / 50 {
+                    // 7800–7849 Accept, 7850–7899 Ignore, 7950–7989 the sender's name
+                    156 => {
+                        self.accepted = Some(social::Thread { id: inv.thread, account: inv.account, name: inv.name.clone(), title: inv.title.clone(), direct: inv.direct, icon: inv.icon, color1: inv.color1, color2: inv.color2, glow_color: inv.glow_color, icon_type: inv.icon_type, ..Default::default() });
+                        let thread = inv.thread;
+                        self.job = Some(crate::net::spawn(async move { Msg::Done(social::update_thread(thread, 8, None).await, "accept invite") }));
+                    }
+                    157 if !ignored => self.ignoring = Some(inv.thread),
+                    159 => return Effect::Profile(inv.account),
+                    _ => {}
+                }
+            }
             (Page::Threads(_), Btn::Replay(7)) => {
                 if self.friends.is_none() && !self.busy() {
                     self.job = Some(crate::net::spawn(async { social::user_list(0).await.map_or_else(|_| Msg::Friends(Vec::new()), Msg::Friends) }));
@@ -680,6 +732,12 @@ pub fn draw(s: &Social, c: &mut Canvas, ctx: &mut Ctx) {
         Page::Messages(tab) => draw_messages(s, c, ctx, dx, tab),
         Page::Notifications => draw_notifications(s, c, ctx, dx),
         Page::Threads(tab) => draw_threads(s, c, ctx, dx, tab),
+        Page::Invites(ignored) => {
+            draw_threads(s, c, ctx, dx, 0);
+            ctx.buttons.clear();
+            c.rect(0.0, 0.0, c.width, c.height, [0.0; 3], 150.0 / 255.0);
+            draw_invites(s, c, ctx, dx, ignored);
+        }
         Page::ThreadView => {
             let tab = s.stack.iter().rev().find_map(|p| if let Page::Threads(t) = p { Some(*t) } else { None }).unwrap_or(0);
             draw_threads(s, c, ctx, dx, tab);
@@ -1279,6 +1337,103 @@ fn draw_thread_options(s: &Social, t: &social::Thread, c: &mut Canvas, ctx: &mut
     }
 }
 
+/// `InvitesPopup` (captured with a made-up group invite and message request): "Pending" (or
+/// "Ignored"), the search box, and rows 54 apart — a group's picture, title and member count,
+/// who invited you and when; or a request's sender, "Message Request - … ago" and its message —
+/// with Accept and Ignore. Ignore asks first, as the game does.
+fn draw_invites(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32, ignored: bool) {
+    let at = |x: f32| x + 38.0 + dx;
+    let cx = at(246.5);
+    c.nine_slice("GJ_square01.png", cx, 160.0, 340.0, 260.0, Look::default());
+    c.nine_slice("square02_small.png", cx, 136.0, 310.0, 180.0, Look::default().rgb([0, 0, 0]).alpha(80));
+    c.text("goldFont", if ignored { "Ignored" } else { "Pending" }, cx, 274.0, Look::scaled(0.7));
+    c.sprite("GJ_infoIcon_001.png", at(197.5), 274.0, Look::scaled(0.5));
+    c.nine_slice("square02b_small.png", at(231.03), 245.0, 200.0, 24.0, Look::default().rgb([93, 52, 31]));
+    c.text("chatFont", "Search", at(231.03), 245.0, Look::scaled(0.6).rgb([195, 108, 65]));
+    c.sprite("GJ_longBtn07_001.png", at(348.5), 244.0, Look::scaled(0.682));
+    let close = Btn::Social(7899);
+    c.sprite("GJ_closeBtn_001.png", at(80.5), 282.0, Look::scaled(0.72 * ctx.factor(close)));
+    ctx.area(close, at(80.5), 282.0, 33.12, 34.2);
+    let flip = Btn::Social(7898);
+    let f = ctx.factor(flip);
+    c.nine_slice("GJ_button_04.png", at(380.5), 273.0, 57.6 * f, 17.6 * f, Look::default());
+    c.text("bigFont", if ignored { "Pending" } else { "Ignored" }, at(379.7), 274.6, Look::scaled(0.32 * f));
+    ctx.area(flip, at(380.5), 273.0, 57.6, 17.6);
+    let list: Vec<&social::Invite> = match &s.invites {
+        None => return super::online::loading_circle(c, cx, 136.0, s.t),
+        Some(Err(())) => {
+            c.text("goldFont", "Something went wrong...", cx, 136.0, Look::scaled(0.6));
+            return;
+        }
+        Some(Ok(l)) => l.iter().filter(|i| i.ignored == ignored).collect(),
+    };
+    if list.is_empty() {
+        c.text("chatFont", if ignored { "Nothing ignored" } else { "No invites" }, cx, 136.0, Look::scaled(0.7).alpha(150));
+    }
+    c.clip = Some([at(91.5), 46.0, at(401.5), 226.0]);
+    for (i, inv) in list.iter().enumerate().take(4) {
+        let y = 199.0 - 54.0 * i as f32;
+        if i > 0 {
+            c.rect(at(99.5), y + 27.0, 294.0, 1.0, [0.0; 3], 50.0 / 255.0);
+        }
+        let name_btn = Btn::Social(7950 + i as u16);
+        let icon = |c: &mut Canvas, x: f32, y: f32, scale: f32| {
+            let base = super::garage::icon_sheet((inv.icon_type as usize).min(8), inv.icon.max(1) as u32);
+            super::garage::draw_icon(c, &base, x, y, scale, super::menu::color_for_idx(inv.color1.max(0) as usize), super::menu::color_for_idx(inv.color2.max(0) as usize));
+        };
+        if inv.direct {
+            icon(c, at(113.5), y, 0.5);
+            let w = c.text_size("goldFont", &inv.name).0 * 0.45;
+            c.text("goldFont", &inv.name, at(131.5) + w * 0.5, y + 18.0, Look::scaled(0.45 * ctx.factor(name_btn)));
+            ctx.area(name_btn, at(131.5) + w * 0.5, y + 18.0, w, 11.7);
+            c.text("chatFont", &format!("Message Request - {} ago", inv.age), at(131.5), y + 1.0, Look::scaled(0.5).anchor(0.0, 0.5).alpha(150));
+            if !inv.message.is_empty() {
+                c.text("chatFont", &format!("\"{}\"", inv.message), at(131.5), y - 15.0, Look::scaled(0.45).anchor(0.0, 0.5).alpha(210));
+            }
+        } else {
+            c.sprite("particle_52_001.png", at(113.5), y, Look::scaled(1.0125));
+            let tw = c.text_size("bigFont", &inv.title).0 * 0.45;
+            c.text("bigFont", &inv.title, at(131.5), y + 10.0, Look::scaled(0.45).anchor(0.0, 0.5));
+            let members = format!("{} Member{}", inv.members, if inv.members == 1 { "" } else { "s" });
+            let mw = c.text_size("goldFont", &members).0 * 0.45;
+            c.text("goldFont", &members, at(131.5) + tw + 6.0 + mw * 0.5, y + 10.0, Look::scaled(0.45));
+            icon(c, at(137.5), y - 9.0, 0.36);
+            let w = c.text_size("goldFont", &inv.name).0 * 0.45;
+            c.text("goldFont", &inv.name, at(147.5) + w * 0.5, y - 9.0, Look::scaled(0.45 * ctx.factor(name_btn)));
+            ctx.area(name_btn, at(147.5) + w * 0.5, y - 9.0, w, 11.7);
+            c.text("chatFont", &format!("invited you {} ago", inv.age), at(147.5) + w + 4.0, y - 9.5, Look::scaled(0.5).anchor(0.0, 0.5).alpha(150));
+        }
+        for (k, (label, sheet)) in [("Accept", "GJ_button_01.png"), ("Ignore", "GJ_button_05.png")].into_iter().enumerate() {
+            if ignored && k == 1 {
+                continue;
+            }
+            let id = Btn::Social(7800 + 50 * k as u16 + i as u16);
+            let f = ctx.factor(id);
+            let by = y + 11.0 - 22.0 * k as f32;
+            c.nine_slice(sheet, at(364.5), by, 60.0 * f, 20.0 * f, Look::default());
+            c.text("bigFont", label, at(363.5), by + 2.0, Look::scaled(0.35 * f));
+            ctx.area(id, at(364.5), by, 60.0, 20.0);
+        }
+    }
+    c.clip = None;
+    if s.ignoring.is_some() {
+        // the game's question (its FLAlertLayer)
+        ctx.buttons.clear();
+        c.rect(0.0, 0.0, c.width, c.height, [0.0; 3], 100.0 / 255.0);
+        c.nine_slice("square01_001.png", cx, 160.0, 380.0, 160.0, Look::default());
+        c.text("goldFont", "Ignore", cx, 216.0, Look::scaled(0.9));
+        c.text("chatFont", "Ignore this?", cx, 186.0, Look::scaled(0.8));
+        c.text("chatFont", "They won't be notified.", cx, 166.0, Look::scaled(0.8).rgb([255, 255, 0]));
+        c.text("chatFont", "Change your mind under Ignored.", cx, 146.0, Look::scaled(0.8).rgb([255, 255, 0]));
+        for (id, label, x, sheet) in [(Btn::Social(7890), "Back", cx - 70.0, "GJ_button_01.png"), (Btn::Social(7891), "Ignore", cx + 70.0, "GJ_button_05.png")] {
+            let f = ctx.factor(id);
+            c.nine_slice(sheet, x, 108.0, 116.0 * f, 34.0 * f, Look::default());
+            c.text("goldFont", label, x, 110.0, Look::scaled(0.8 * f));
+            ctx.area(id, x, 108.0, 116.0, 34.0);
+        }
+    }
+}
+
 /// `GJAccountSettingsLayer`: the layout with this account's choices checked.
 fn draw_settings(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
     // the check boxes' rows and their options' x (from the layout: the boxes at y 225, 185,
@@ -1572,6 +1727,7 @@ pub fn wanted_sheets(s: &Social) -> Vec<String> {
     let mut v: Vec<String> = match s.page() {
         Page::Profile => s.profile.as_ref().map(|(p, _, _)| (0..9).map(|k| super::garage::icon_sheet(k, p.icons[k])).collect()).unwrap_or_default(),
         Page::Friends(_) | Page::Requests(_) => s.users.iter().flatten().map(|u| super::garage::icon_sheet((u.icon_type as usize).min(8), u.icon)).collect(),
+        Page::Invites(_) => s.invites.iter().flatten().flatten().map(|i| super::garage::icon_sheet((i.icon_type as usize).min(8), i.icon.max(1) as u32)).collect(),
         Page::ThreadView => s.thread_page.iter().flatten().flat_map(|p| p.users.iter()).map(|u| super::garage::icon_sheet((u.icon_type as usize).min(8), u.icon.max(1) as u32)).collect(),
         Page::Threads(_) => s.threads.iter().flatten().flat_map(|(l, _, _)| l.iter()).filter(|t| t.direct).map(|t| super::garage::icon_sheet((t.icon_type as usize).min(8), t.icon.max(1) as u32)).collect(),
         Page::Settings | Page::Messages(_) | Page::Notifications | Page::History => Vec::new(),
