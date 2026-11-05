@@ -1,4 +1,4 @@
-//! The game's f32 libm calls (`sinf`, `cosf`, `exp2f`, `powf`). On macOS these are the system's
+//! The game's f32 libm calls (`sinf`, `cosf`, `exp2f`, `powf`, `atan2f`). On macOS these are the system's
 //! own, as the game calls them: Apple's are now and then an ulp from the correctly rounded value
 //! (Dash's elastic zoom at step 3378 and its camera drift came from that). Elsewhere they're
 //! computed in f64 and rounded, the correctly rounded f32, which equals Apple's almost always.
@@ -23,6 +23,16 @@ pub fn exp2f(x: f32) -> f32 {
 #[cfg(target_os = "macos")]
 pub fn powf(x: f32, y: f32) -> f32 {
     x.powf(std::hint::black_box(y))
+}
+
+#[cfg(target_os = "macos")]
+pub fn atan2f(y: f32, x: f32) -> f32 {
+    std::hint::black_box(y).atan2(x)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn atan2f(y: f32, x: f32) -> f32 {
+    (y as f64).atan2(x as f64) as f32
 }
 
 #[cfg(not(target_os = "macos"))]

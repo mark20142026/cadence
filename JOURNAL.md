@@ -1386,3 +1386,19 @@ prebuilt trace mod), corner and muted.
   portal order). Breaks eight suites; the game's comparator (0x1000cbbd8) sorts sections by
   unique ID (+0x394), which follows load order (killer uids = load order + a small offset). So
   s19-22's order comes from somewhere else.
+- Move trigger 2.2 modes, from the decompile (keys mapped in customObjectSetup): player 1 / 2
+  as the target (138 / 200; player 2 is player 1 outside dual mode), direction mode (394: the
+  unit vector to the target × 396, `ccpNormalize`), dynamic (397 with target or direction:
+  `triggerDynamicMoveCommand` → `processDynamicObjectActions(0)` after the rotations, each step
+  the eased share of what's left × the line to the target now, with the game's nudge when an
+  easing hits 1 early), silent (544: `moveObjectsSilent` moves the group and its last
+  positions at once), camera lock (141 / 142: + mod × the camera's movement on an axis without
+  the player lock; y rounded to f32, `prepareMoveActions`). Target and direction moves drop the
+  locks. Small step (393) is the editor's slider step only. Stop triggers cancel dynamic moves.
+- Rotate trigger aim / follow (100 / 394): FUN_1000f0c34 — the rotated object's bearing from the
+  center (or its rotation) against the bearing to the target, kept inside the min x / min y /
+  max x / max y objects (516–519, struct order), or the target's own rotation; + offset 402;
+  folded the game's way (190 stays 190, 370 → 10). Dynamic (397, duration ≠ 0): every step
+  1/403 of the angle still to go, registered before processRotationActions.
+- New unit tests: move_trigger_modes, aim_angles_fold_like_the_game. verify_all unchanged
+  (134/135, camera 135/135). The Tower floors 2–4 use these modes and have no traces yet.

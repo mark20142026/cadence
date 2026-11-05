@@ -51,7 +51,7 @@ rotation differs for a few steps (see "What isn't fully exact" below).
 | Camera (follow, corridors, dual ground, key 370, level end, teleports, platformer band, spawned camera triggers, zoom) | Bit for bit in all 135 suites | camera columns, cam370t |
 | libm calls (`sinf`, `cosf`, `exp2f`, `powf`) | Apple's, now and then an ulp from the correctly rounded value | The system's on macOS; elsewhere correctly rounded (f64, rounded) | Bit for bit on macOS (Dash's elastic zoom needed it) |
 | Move / rotate / follow / spawn / advanced follow / area triggers, group parents | Within 1e-4 (watched groups) or bit for bit (player) | Geometrical Dominator, gparent, gremap, kfcurve, areahsv |
-| Follow (1347), item triggers | Ported from the decompile, not traced | — |
+| Follow (1347), item triggers, the 2.2 move modes (player targets, direction, dynamic, silent, camera lock) and rotate modes (aim, follow, dynamic, bounds) | Ported from the decompile, not traced | unit tests |
 | Random triggers (`fast_rand`) | Bit for bit | rand |
 | Audio, particles, shaders | Not physics; ported or approximated separately | NOTES.md |
 
@@ -122,7 +122,9 @@ rotation differs for a few steps (see "What isn't fully exact" below).
 | Area HSV | area effects | Ported | areahsv passes |
 | Random triggers | `fast_rand` (seeded) | Same generator | Bit for bit (rand) |
 | Follow (1347), item triggers | from the decompile | Ported | Not yet checked against a trace |
-| Rotate / move aim modes, player targets for move-to-target, scale and teleport centers on multi-object groups | — | Not ported | — |
+| Move trigger 2.2 modes: player 1 / 2 as target (138 / 200), direction mode (394, 396), dynamic (397: aimed again every step, its own eased clock), silent (544: last positions too), camera lock (141 / 142) | `triggerMoveCommand`, `getMoveTargetDelta`, `triggerDynamicMoveCommand`, `processDynamicObjectActions`, `moveObjectsSilent`, `prepareMoveActions` | Ported | Not yet checked against a trace (Tower floors 2–4 use them) |
+| Rotate trigger aim / follow (100 / 394), target 401 or players, offset 402, bounds 516–519, dynamic (397, 1/403 of the angle per step) | `triggerRotateCommand`, FUN_1000f0c34, `triggerDynamicRotateCommand` | Ported | Not yet checked against a trace (The Tower's suites, whose level has one, still pass) |
+| Scale and teleport centers on multi-object groups without a parent | — | The group's first object | — |
 
 ## Coverage by level
 
@@ -181,9 +183,12 @@ rotated player box.
 
 - Off macOS the libm calls are correctly rounded rather than Apple's: an ulp apart now and then
   (the game on Windows uses Microsoft's, which differs from both in the same way).
-- Rotate / move aim modes, player targets for move-to-target, scale and teleport centers of
-  groups with several objects and no parent (these use the group's first object).
-- Follow (1347) and item triggers: ported from the decompile, not traced.
+- Scale and teleport centers of groups with several objects and no parent (these use the
+  group's first object).
+- Ported from the decompile but not yet traced: follow (1347), item triggers, the move
+  trigger's 2.2 modes (player targets, direction, dynamic, silent, camera lock) and the rotate
+  trigger's aim / follow / dynamic modes. Recording The Tower's upper floors (5002–5004), which
+  use them, would check them.
 
 ## Not physics, for completeness
 

@@ -20,7 +20,7 @@ use crate::easing;
 use crate::level::{LevelString, RawObject};
 use crate::world::Rect;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MoveSpec {
     pub group: i32,
     pub dx: f32,
@@ -35,14 +35,29 @@ pub struct MoveSpec {
     /// Keys 143/144: the lock's multipliers on the player's movement (0 means 1;
     /// `runMoveCommand` +0x80/+0x88).
     pub lock_mod: (f32, f32),
-    /// Move to target (key 100): (target group 71, center group 395 or the moved group, axis
-    /// 101: 0 both, 1 x only, 2 y only). The offset is worked out when the trigger fires.
+    /// Move to target (key 100) or direction mode (394): (target group 71, center group 395 or
+    /// the moved group, axis 101 — target mode only: 0 both, 1 x only, 2 y only). The offset is
+    /// worked out when the trigger fires (`getMoveTargetDelta`), or every step when dynamic.
     pub target: Option<(i32, i32, i32)>,
+    /// Keys 138 / 200: the target is player 1 / player 2 (player 1 outside dual mode).
+    pub target_player: u8,
+    /// Direction mode (394): move this far (396) along the line to the target.
+    pub direction: Option<f32>,
+    /// Key 397: aim again every step (`triggerDynamicMoveCommand`, target or direction mode).
+    pub dynamic: bool,
+    /// Key 544: move at once, last positions too (`moveObjectsSilent`: no velocity).
+    pub silent: bool,
+    /// Keys 141 / 142: also move by the camera's movement, on an axis without the player lock.
+    pub lock_cam: (bool, bool),
 }
 
 /// A rotate trigger (1346): keys 51 group, 71 center group, 68 degrees plus 69 full turns,
 /// 10 duration, 30 easing, 85 rate, 70 lock the objects' own rotation.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Aim (100) / follow (394) modes turn the group toward a target (401, or players 138 / 200)
+/// or to its rotation, plus an offset (402); aim targets are kept inside the min x / min y /
+/// max x / max y objects (516–519). Dynamic (397) aims again every step, closing 1/403 of the
+/// angle per step.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RotateSpec {
     pub group: i32,
     pub center: i32,
@@ -51,6 +66,14 @@ pub struct RotateSpec {
     pub easing: i32,
     pub rate: f32,
     pub lock: bool,
+    pub aim: bool,
+    pub follow: bool,
+    pub dynamic: bool,
+    pub target: i32,
+    pub target_player: u8,
+    pub offset: f32,
+    pub dynamic_easing: i32,
+    pub bounds: [i32; 4],
 }
 
 /// Scale trigger (2067, `TransformTriggerGameObject`): keys 51 target, 71 center, 150/151
@@ -520,10 +543,25 @@ impl Trigger {
                     let m = |k| raw.get_f32(k).filter(|&v| v != 0.0).unwrap_or(1.0);
                     (m(143), m(144))
                 },
-                target: (raw.get(100) == Some("1")).then(|| {
-                    let center = raw.get_i32(395).filter(|&c| c > 0).unwrap_or(group);
-                    (raw.get_i32(71).unwrap_or(0), center, raw.get_i32(101).unwrap_or(0))
-                }),
+                target: {
+                    let target_mode = raw.get(100) == Some("1");
+                    (target_mode || raw.get(394) == Some("1")).then(|| {
+                        let center = raw.get_i32(395).filter(|&c| c > 0).unwrap_or(group);
+                        let axis = if target_mode { raw.get_i32(101).unwrap_or(0) } else { 0 };
+                        (raw.get_i32(71).unwrap_or(0), center, axis)
+                    })
+                },
+                target_player: if raw.get(138) == Some("1") {
+                    1
+                } else if raw.get(200) == Some("1") {
+                    2
+                } else {
+                    0
+                },
+                direction: (raw.get(394) == Some("1")).then(|| raw.get_f32(396).unwrap_or(0.0)),
+                dynamic: raw.get(397) == Some("1"),
+                silent: raw.get(544) == Some("1"),
+                lock_cam: (raw.get(141) == Some("1"), raw.get(142) == Some("1")),
             }),
             1346 => Action::Rotate(RotateSpec {
                 group,
@@ -533,6 +571,20 @@ impl Trigger {
                 easing: raw.get_i32(30).unwrap_or(0),
                 rate: raw.get_f32(85).unwrap_or(2.0),
                 lock: raw.get(70) == Some("1"),
+                aim: raw.get(100) == Some("1"),
+                follow: raw.get(394) == Some("1"),
+                dynamic: raw.get(397) == Some("1"),
+                target: raw.get_i32(401).unwrap_or(0),
+                target_player: if raw.get(138) == Some("1") {
+                    1
+                } else if raw.get(200) == Some("1") {
+                    2
+                } else {
+                    0
+                },
+                offset: raw.get_f32(402).unwrap_or(0.0),
+                dynamic_easing: raw.get_i32(403).unwrap_or(0),
+                bounds: [516, 517, 518, 519].map(|k| raw.get_i32(k).unwrap_or(0)),
             }),
             2067 => {
                 let get = |k: u32| raw.get_f32(k).filter(|v| *v != 0.0).unwrap_or(1.0);
@@ -773,6 +825,7 @@ impl MoveCommand {
             lock_y: false,
             lock_mod: (1.0, 1.0),
             target: None,
+            ..Default::default()
         };
         MoveCommand { rotate: Some((r.center, r.lock)), ..MoveCommand::new(spec) }
     }
@@ -789,6 +842,7 @@ impl MoveCommand {
             lock_y: false,
             lock_mod: (1.0, 1.0),
             target: None,
+            ..Default::default()
         };
         MoveCommand { scale: Some((s.center, s.only_move)), ..MoveCommand::new(spec) }
     }
@@ -864,6 +918,8 @@ pub struct GroupTriggers {
     /// Touch-triggered triggers, with whether they fired.
     touch: Vec<(Trigger, bool)>,
     pub commands: Vec<MoveCommand>,
+    /// Groups stop triggers named since the world last looked (its dynamic moves stop too).
+    pub stopped: Vec<i32>,
     /// Pending delayed spawns: (seconds left, group, the spawn trigger's groups, remap).
     delayed: Vec<(f64, i32, Vec<i32>, u16)>,
     /// Spawn remaps (index 0 is the empty one).
@@ -1129,6 +1185,7 @@ impl GroupTriggers {
                     }
                     Action::Stop { group } => {
                         self.commands.retain(|c| !c.origin.contains(&group));
+                        self.stopped.push(group);
                         self.delayed.retain(|d| !d.2.contains(&group));
                         self.delayed_actions.retain(|d| !d.2.contains(&group));
                     }

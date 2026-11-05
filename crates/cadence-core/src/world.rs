@@ -307,6 +307,65 @@ pub struct World {
     pub links: std::sync::Arc<crate::parents::GroupLinks>,
     pub player2_pos: Option<(f32, f32)>,
     pub camera_pos: (f32, f32),
+    /// The camera's position at the last step (its movement feeds the camera locks).
+    last_camera: Option<(f32, f32)>,
+    /// The players' positions when triggers fire: the step's start in `pre_step`, after the
+    /// player's move in `post_step` (move-to-player targets).
+    player_now: (f32, f32),
+    player2_now: Option<(f32, f32)>,
+    /// Dynamic moves (`triggerDynamicMoveCommand`, `processDynamicObjectActions`).
+    dynamic_moves: Vec<DynamicMove>,
+    /// Dynamic rotations (`triggerDynamicRotateCommand`).
+    dynamic_rotates: Vec<DynamicRotate>,
+    /// Player 1's rotation when triggers fire (rotate triggers following the player's turn).
+    player_rot_now: f32,
+}
+
+/// `ccpNormalize`: the unit vector, (1, 0) for a zero one.
+fn normalized(v: (f32, f32)) -> (f32, f32) {
+    let length = (v.0 * v.0 + v.1 * v.1).sqrt();
+    if length == 0.0 {
+        (1.0, 0.0)
+    } else {
+        (v.0 / length, v.1 / length)
+    }
+}
+
+/// One dynamic move: a target- or direction-mode move trigger that aims again every step.
+#[derive(Clone, Debug)]
+struct DynamicMove {
+    spec: crate::groups::MoveSpec,
+    /// The center object (level order).
+    center: usize,
+    target: MoveTarget,
+    /// +0x40: the move's own clock; +0x44: duration × the eased value so far; +0x48: that
+    /// eased value; +0x4c: the first step doesn't advance the clock.
+    elapsed: f32,
+    eased_time: f32,
+    eased: f32,
+    first: bool,
+    origin: Vec<i32>,
+}
+
+/// One dynamic rotation: an aim- or follow-mode rotate trigger that aims again every step.
+#[derive(Clone, Debug)]
+struct DynamicRotate {
+    spec: crate::groups::RotateSpec,
+    center: usize,
+    rotated: usize,
+    target: MoveTarget,
+    /// The min x / min y / max x / max y objects, found when the trigger fired.
+    bounds: [Option<usize>; 4],
+    elapsed: f32,
+    first: bool,
+    origin: Vec<i32>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MoveTarget {
+    Object(usize),
+    Player1,
+    Player2,
 }
 
 /// A spawn particle trigger's values (`SpawnParticleGameObject::customObjectSetup` 0x188b3c).
@@ -791,6 +850,12 @@ impl World {
             links: std::sync::Arc::new(links),
             player2_pos: None,
             camera_pos: (0.0, 0.0),
+            last_camera: None,
+            player_now: (0.0, 0.0),
+            player2_now: None,
+            dynamic_moves: Vec::new(),
+            dynamic_rotates: Vec::new(),
+            player_rot_now: 0.0,
         };
         if first_dynamic < world.objects.len() || !world.members.is_empty() || !world.enter_specs.is_empty() || !world.triggers.actions().is_empty() {
             world.initial = Some(Box::new(world.clone()));
@@ -914,6 +979,13 @@ impl World {
             None => (0.0, 0.0),
         };
         self.last_player = Some(player);
+        self.player_now = player;
+        self.player2_now = self.player2_pos;
+        let (cdx, cdy) = match self.last_camera {
+            Some((x, y)) => (self.camera_pos.0 - x, self.camera_pos.1 - y),
+            None => (0.0, 0.0),
+        };
+        self.last_camera = Some(self.camera_pos);
         self.teleport_now = self.teleport.take();
         self.control_now = self.control.take();
         self.reverse = false;
@@ -941,7 +1013,7 @@ impl World {
                 self.set_level_pos(order as usize, pos, 0.0);
             }
         }
-        if self.triggers.commands.is_empty() && self.keyframes.commands.is_empty() {
+        if self.triggers.commands.is_empty() && self.keyframes.commands.is_empty() && self.dynamic_moves.is_empty() && self.dynamic_rotates.is_empty() {
             self.process_adv_follow();
             self.process_area_moves();
             return;
@@ -987,9 +1059,13 @@ impl World {
             }
             if cmd.spec.lock_x {
                 dx += pdx as f64 * cmd.spec.lock_mod.0 as f64;
+            } else if cmd.spec.lock_cam.0 {
+                dx += cdx as f64 * cmd.spec.lock_mod.0 as f64;
             }
             if cmd.spec.lock_y {
                 dy += pdy as f64 * cmd.spec.lock_mod.1 as f64;
+            } else if cmd.spec.lock_cam.1 {
+                dy += (cdy as f64 * cmd.spec.lock_mod.1 as f64) as f32 as f64;
             }
             match moves.iter_mut().find(|m| m.0 == cmd.spec.group) {
                 Some(m) => {
@@ -1045,6 +1121,13 @@ impl World {
             }
         }
         self.triggers.commands.retain(|c| !c.done || c.follow.is_some());
+        // processDynamicObjectActions (rotations): registered before processRotationActions
+        for (group, center, degrees, lock) in self.step_dynamic_rotates(dt) {
+            match turns.iter_mut().find(|t| t.0 == group && t.1 == center) {
+                Some(t) => t.2 += degrees,
+                None => turns.push((group, center, degrees, lock)),
+            }
+        }
         // processRotationActions runs first and takes the group's move along (claimMoveAction).
         for (group, center, degrees, lock) in turns {
             let delta = degrees as f32;
@@ -1067,6 +1150,16 @@ impl World {
                 None => (0.0, 0.0),
             };
             self.rotate_group(group, center, delta, claimed, lock);
+        }
+        // processDynamicObjectActions (moves): after the rotations, into the group's move
+        for (group, dx, dy) in self.step_dynamic_moves(dt) {
+            match moves.iter_mut().find(|m| m.0 == group) {
+                Some(m) => {
+                    m.1 += dx;
+                    m.2 += dy;
+                }
+                None => moves.push((group, dx, dy)),
+            }
         }
         for (group, dx, dy) in moves {
             let (fx, fy) = (dx as f32, dy as f32);
@@ -1359,6 +1452,9 @@ impl World {
     pub fn post_step(&mut self, player: &crate::physics::Player) {
         let dt = 1.0 / crate::physics::STEPS_PER_SECOND as f64;
         let player_rect = &player.rect();
+        self.player_now = (player.x, player.y);
+        self.player2_now = player.dual.as_ref().map(|p| (p.x, p.y));
+        self.player_rot_now = player.rotation;
         // Custom orbs the player fired this step (`activateCustomRing`): spawn or toggle their
         // group. (The game does it at once, inside the press or the collision pass.)
         for &i in &player.custom_fired {
@@ -1568,6 +1664,10 @@ impl World {
     pub fn catch_up(&mut self, _player: &crate::physics::Player) {}
 
     fn apply(&mut self, actions: Vec<(crate::groups::Action, Vec<i32>)>) {
+        for group in std::mem::take(&mut self.triggers.stopped) {
+            self.dynamic_moves.retain(|m| !m.origin.contains(&group));
+            self.dynamic_rotates.retain(|m| !m.origin.contains(&group));
+        }
         for (action, origin) in actions {
             {
                 match action {
@@ -1576,26 +1676,69 @@ impl World {
                         // objects (kA40: tryGetObject, a random object without one); none, or the
                         // same object: no movement
                         if let Some((target, center, axis)) = spec.target {
-                            let (from, to) = if self.random_move_targets {
-                                (self.try_get_object(center), self.try_get_object(target))
-                            } else {
-                                (self.main_object(center), self.main_object(target))
+                            let from = if self.random_move_targets { self.try_get_object(center) } else { self.main_object(center) };
+                            let to = match spec.target_player {
+                                1 => Some(MoveTarget::Player1),
+                                2 => Some(MoveTarget::Player2),
+                                _ => if self.random_move_targets { self.try_get_object(target) } else { self.main_object(target) }
+                                    .filter(|&t| Some(t) != from)
+                                    .map(|t| MoveTarget::Object(t as usize)),
                             };
-                            let (dx, dy) = match (to, from) {
-                                (Some(t), Some(c)) if t != c => {
-                                    let (t, c) = (self.level_pos[t as usize], self.level_pos[c as usize]);
-                                    (t.0 as f32 - c.0 as f32, t.1 as f32 - c.1 as f32)
+                            if spec.dynamic {
+                                // triggerDynamicMoveCommand: aimed again every step
+                                if let (Some(center), Some(target)) = (from, to) {
+                                    self.dynamic_moves.push(DynamicMove { spec, center: center as usize, target, elapsed: 0.0, eased_time: 0.0, eased: 0.0, first: true, origin: origin.clone() });
+                                }
+                                continue;
+                            }
+                            let (mut dx, mut dy) = match (from, to) {
+                                (Some(c), Some(t)) => {
+                                    let (t, c) = (self.move_target_pos(t), self.level_pos[c as usize]);
+                                    (t.0 - c.0 as f32, t.1 - c.1 as f32)
                                 }
                                 _ => (0.0, 0.0),
                             };
+                            if let Some(distance) = spec.direction {
+                                (dx, dy) = normalized((dx, dy));
+                                (dx, dy) = (dx * distance, dy * distance);
+                            }
                             spec.dx = if axis == 2 { 0.0 } else { dx };
                             spec.dy = if axis == 1 { 0.0 } else { dy };
+                            // (target and direction moves don't follow the player or camera)
+                            spec.lock_x = false;
+                            spec.lock_y = false;
+                            spec.lock_cam = (false, false);
+                        }
+                        if spec.silent {
+                            // moveObjectsSilent: at once, and the last positions with it
+                            self.move_group_silent(spec.group, spec.dx as f64, spec.dy as f64);
+                            continue;
                         }
                         let mut c = crate::groups::MoveCommand::new(spec);
                         c.origin = origin;
                         self.triggers.commands.push(c);
                     }
-                    crate::groups::Action::Rotate(spec) => {
+                    crate::groups::Action::Rotate(mut spec) => {
+                        if spec.aim || spec.follow {
+                            // triggerRotateCommand: the angle to the target (or its rotation)
+                            let center = self.try_get_object(if spec.center != 0 { spec.center } else { spec.group });
+                            let rotated = self.try_get_object(spec.group);
+                            let target = self.rotate_target(&spec);
+                            let found = (center, rotated, target);
+                            let bounds = match found {
+                                (Some(_), Some(_), Some(_)) => spec.bounds.map(|g| self.try_get_object(g).map(|o| o as usize)),
+                                _ => [None; 4],
+                            };
+                            if spec.dynamic && spec.duration != 0.0 {
+                                if let (Some(c), Some(r), Some(t)) = found {
+                                    self.dynamic_rotates.push(DynamicRotate { spec, center: c as usize, rotated: r as usize, target: t, bounds, elapsed: 0.0, first: true, origin: origin.clone() });
+                                }
+                                continue;
+                            }
+                            if let (Some(c), Some(r), Some(t)) = found {
+                                spec.degrees = self.aim_angle(&spec, c as usize, r as usize, t, bounds);
+                            }
+                        }
                         let mut c = crate::groups::MoveCommand::rotation(spec);
                         c.origin = origin;
                         self.triggers.commands.push(c);
@@ -1617,6 +1760,7 @@ impl World {
                             lock_y: false,
                             lock_mod: (1.0, 1.0),
                             target: None,
+                            ..Default::default()
                         };
                         let mut c = crate::groups::MoveCommand::new(spec);
                         c.follow = Some((followed, mod_x, mod_y));
@@ -1635,6 +1779,7 @@ impl World {
                             lock_y: false,
                             lock_mod: (1.0, 1.0),
                             target: None,
+                            ..Default::default()
                         };
                         let mut c = crate::groups::MoveCommand::new(spec);
                         c.follow_y = Some((speed, delay, offset, max_speed));
@@ -2047,6 +2192,168 @@ impl World {
     }
 
     /// `GJBaseGameLayer::moveObjects`: every object of the group moves by (dx, dy) in f64.
+    /// A move target's position now (`getRealPosition`): an object, or a player (player 2 is
+    /// player 1 outside dual mode).
+    fn move_target_pos(&self, t: MoveTarget) -> (f32, f32) {
+        match t {
+            MoveTarget::Object(i) => (self.level_pos[i].0 as f32, self.level_pos[i].1 as f32),
+            MoveTarget::Player1 => self.player_now,
+            MoveTarget::Player2 => self.player2_now.unwrap_or(self.player_now),
+        }
+    }
+
+    /// The rotate trigger's target: a player (player 2 is player 1 outside dual mode) or the
+    /// rotation target group's object (`getRotateCommandTargets`).
+    fn rotate_target(&mut self, spec: &crate::groups::RotateSpec) -> Option<MoveTarget> {
+        match spec.target_player {
+            1 => Some(MoveTarget::Player1),
+            2 => Some(MoveTarget::Player2),
+            _ => self.try_get_object(spec.target).map(|t| MoveTarget::Object(t as usize)),
+        }
+    }
+
+    /// FUN_1000f0c34: how far the rotated object must turn about the center to face the
+    /// target (aim; the target kept inside the bound objects) or to match the target's own
+    /// rotation (follow), plus the offset, in degrees, folded the game's way.
+    fn aim_angle(&self, spec: &crate::groups::RotateSpec, center: usize, rotated: usize, target: MoveTarget, bounds: [Option<usize>; 4]) -> f32 {
+        use crate::mathf::atan2f;
+        let pos = |i: usize| (self.level_pos[i].0 as f32, self.level_pos[i].1 as f32);
+        let bearing = |v: (f32, f32)| atan2f(v.1, v.0) * -57.29578 + 90.0;
+        let (c, r) = (pos(center), pos(rotated));
+        let now = if center == rotated {
+            self.turned_of(rotated)
+        } else {
+            let v = (r.0 - c.0, r.1 - c.1);
+            if (v.1 * v.1 + v.0 * v.0).sqrt() < 0.01 { self.turned_of(rotated) } else { bearing(v) }
+        };
+        let to = match target {
+            MoveTarget::Object(t) if t == center => 0.0,
+            _ if spec.aim => {
+                let mut t = self.move_target_pos(target);
+                let bound = |k: usize| bounds[k].map(pos);
+                if let Some(b) = bound(0) {
+                    if t.0 < b.0 {
+                        t.0 = b.0;
+                    }
+                }
+                if let Some(b) = bound(1) {
+                    if t.1 < b.1 {
+                        t.1 = b.1;
+                    }
+                }
+                if let Some(b) = bound(2) {
+                    if b.0 < t.0 {
+                        t.0 = b.0;
+                    }
+                }
+                if let Some(b) = bound(3) {
+                    if b.1 < t.1 {
+                        t.1 = b.1;
+                    }
+                }
+                let v = (t.0 - c.0, t.1 - c.1);
+                if 0.01 <= (v.1 * v.1 + v.0 * v.0).sqrt() { bearing(v) } else { 0.0 }
+            }
+            MoveTarget::Object(t) => self.turned_of(t),
+            MoveTarget::Player1 | MoveTarget::Player2 => self.player_rot_now,
+        };
+        let a = (to - now) + spec.offset;
+        if -180.0 <= a {
+            if a <= 180.0 {
+                return a;
+            }
+            a + -360.0 * ((((a / 180.0) as i32) as f32 * 0.5) as i32) as f32
+        } else {
+            a + 360.0 * ((((a.abs() / 180.0) as i32) as f32 * 0.5) as i32) as f32
+        }
+    }
+
+    /// `processDynamicObjectActions` for rotations: each turns its group by the angle still
+    /// to go over the dynamic easing (403, at least 1), until its duration runs out (−1: never).
+    fn step_dynamic_rotates(&mut self, dt: f32) -> Vec<(i32, i32, f64, bool)> {
+        let mut out = Vec::new();
+        let mut rotates = std::mem::take(&mut self.dynamic_rotates);
+        rotates.retain_mut(|m| {
+            let d = m.spec.duration;
+            let left = d - m.elapsed;
+            if d != -1.0 && !(0.0 < left) && !m.first {
+                return false;
+            }
+            if m.first {
+                m.first = false;
+            } else if d != -1.0 {
+                m.elapsed += if left <= dt { left } else { dt };
+            }
+            let angle = self.aim_angle(&m.spec, m.center, m.rotated, m.target, m.bounds);
+            let steps = if m.spec.dynamic_easing < 2 { 1 } else { m.spec.dynamic_easing };
+            out.push((m.spec.group, m.spec.center, (angle / steps as f32) as f64, m.spec.lock));
+            true
+        });
+        self.dynamic_rotates = rotates;
+        out
+    }
+
+    /// `moveObjectsSilent`: the group moves at once and its last positions with it, so the
+    /// move carries no velocity (nothing standing on it is carried).
+    fn move_group_silent(&mut self, group: i32, dx: f64, dy: f64) {
+        let Some(members) = self.members.get(&group).cloned() else { return };
+        for order in members {
+            let i = order as usize;
+            let (x, y) = self.level_pos[i];
+            let pos = (x + dx, y + dy);
+            self.set_level_pos(i, pos, 0.0);
+            self.level_last[i] = (pos.0 as f32, pos.1 as f32);
+        }
+    }
+
+    /// `processDynamicObjectActions` for moves: each dynamic move's share of this step (its
+    /// eased progress over what was left), times the line from its center to its target now
+    /// (direction mode: the distance still to go along it). Finished moves drop out.
+    fn step_dynamic_moves(&mut self, dt: f32) -> Vec<(i32, f64, f64)> {
+        let mut out = Vec::new();
+        let mut moves = std::mem::take(&mut self.dynamic_moves);
+        moves.retain_mut(|m| {
+            let d = m.spec.duration;
+            let left = d - m.elapsed;
+            if d != -1.0 && !(0.0 < left) && !m.first {
+                if !self.finished_moves.contains(&m.spec.group) {
+                    self.finished_moves.push(m.spec.group);
+                }
+                return false;
+            }
+            if m.first {
+                m.first = false;
+            } else if d != -1.0 {
+                m.elapsed += if left <= dt { left } else { dt };
+            }
+            let remaining = d - m.eased_time;
+            let e = crate::easing::eased(m.elapsed / d, m.spec.rate, m.spec.easing);
+            let before = m.eased_time;
+            // an easing that reaches exactly 1 before the end is nudged off it
+            let v = if e != 1.0 || left.is_nan() || dt.is_nan() || left <= dt {
+                e
+            } else {
+                e + if 1.0 <= m.eased { -0.0001 } else { 0.0001 }
+            };
+            m.eased_time = d * v;
+            m.eased = v;
+            let frac = if remaining == 0.0 { 0.0 } else { (d * v - before) / remaining };
+            let share = if 0.0 < d { frac } else { 1.0 };
+            let t = self.move_target_pos(m.target);
+            let c = (self.level_pos[m.center].0 as f32, self.level_pos[m.center].1 as f32);
+            let (mut vx, mut vy) = (t.0 - c.0, t.1 - c.1);
+            if let Some(distance) = m.spec.direction {
+                let k = if 0.0 < d { remaining / d } else { 1.0 };
+                let n = normalized((vx, vy));
+                (vx, vy) = (n.0 * (k * distance), n.1 * (k * distance));
+            }
+            out.push((m.spec.group, (vx * share) as f64, (vy * share) as f64));
+            true
+        });
+        self.dynamic_moves = moves;
+        out
+    }
+
     fn move_group(&mut self, group: i32, dx: f64, dy: f64) {
         let Some(members) = self.members.get(&group).cloned() else { return };
         for order in members {
@@ -2237,6 +2544,65 @@ mod tests {
         assert!(w.reverse_pending());
         w.pre_step((0.0, 0.0));
         assert!(!w.reverse_pending());
+    }
+
+    #[test]
+    fn move_trigger_modes() {
+        use crate::groups::{Action, MoveSpec};
+        // two blocks: group 5 at (300, 195), group 6 at (390, 315) (level y + 90); the move
+        // triggers make the groups known
+        let level = LevelString::parse("kA13,0;1,1,2,300,3,105,57,5;1,1,2,390,3,225,57,6;1,901,2,0,3,0,51,5;1,901,2,0,3,0,51,6");
+        let pos = |w: &World, i: usize| (w.level_pos[i].0 as f32, w.level_pos[i].1 as f32);
+        // silent: at once, the last position too (no velocity)
+        let mut w = World::from_level(&level);
+        act(&mut w, Action::Move(MoveSpec { group: 5, dx: 30.0, dy: -15.0, silent: true, ..Default::default() }));
+        assert_eq!(pos(&w, 0), (330.0, 180.0));
+        assert_eq!(w.level_last[0], (330.0, 180.0));
+        // to the player (target mode, instant)
+        let mut w = World::from_level(&level);
+        w.pre_step((500.0, 165.0));
+        act(&mut w, Action::Move(MoveSpec { group: 5, target: Some((0, 5, 0)), target_player: 1, ..Default::default() }));
+        assert_eq!(w.triggers.commands[0].spec.dx, 200.0);
+        // (an instant move lands the step after next: the command's first tick doesn't count)
+        w.pre_step((500.0, 165.0));
+        w.pre_step((500.0, 165.0));
+        assert_eq!(pos(&w, 0), (500.0, 165.0));
+        // direction mode: 50 units along the line to group 6 (a 90 × 120 offset → 30, 40)
+        let mut w = World::from_level(&level);
+        act(&mut w, Action::Move(MoveSpec { group: 5, target: Some((6, 5, 0)), direction: Some(50.0), ..Default::default() }));
+        w.pre_step((0.0, 0.0));
+        w.pre_step((0.0, 0.0));
+        assert_eq!(pos(&w, 0), (330.0, 235.0));
+        // dynamic, 1 s linear: the first step closes 1/240 of the way, aiming again each step
+        let mut w = World::from_level(&level);
+        act(&mut w, Action::Move(MoveSpec { group: 5, target: Some((6, 5, 0)), dynamic: true, duration: 1.0, ..Default::default() }));
+        w.pre_step((0.0, 0.0));
+        assert_eq!(pos(&w, 0), (300.0, 195.0));
+        for _ in 0..240 {
+            w.pre_step((0.0, 0.0));
+        }
+        let p = pos(&w, 0);
+        assert!((p.0 - 390.0).abs() < 1e-3 && (p.1 - 315.0).abs() < 1e-3, "{p:?}");
+    }
+
+    #[test]
+    fn aim_angles_fold_like_the_game() {
+        use crate::groups::RotateSpec;
+        // the rotated block at (300, 105) about a center at (300, 75); target to its right
+        let level = LevelString::parse("kA13,0;1,1,2,300,3,105,57,5;1,1,2,300,3,75,57,7;1,1,2,400,3,75,57,6");
+        let w = World::from_level(&level);
+        let spec = RotateSpec { group: 5, center: 7, aim: true, ..Default::default() };
+        // now pointing up (0°), target to the right (90°): turn +90
+        assert_eq!(w.aim_angle(&spec, 1, 0, MoveTarget::Object(2), [None; 4]), 90.0);
+        // an offset past 180 folds the game's way: 190 stays, 370 → 10
+        let spec = RotateSpec { offset: 100.0, ..spec };
+        assert_eq!(w.aim_angle(&spec, 1, 0, MoveTarget::Object(2), [None; 4]), 190.0);
+        let spec = RotateSpec { offset: 280.0, ..spec };
+        assert_eq!(w.aim_angle(&spec, 1, 0, MoveTarget::Object(2), [None; 4]), 10.0);
+        // a max-x bound left of the target pulls the aim back to straight up
+        let spec = RotateSpec { offset: 0.0, ..spec };
+        assert_eq!(w.aim_angle(&spec, 1, 0, MoveTarget::Object(2), [None, None, Some(1), None]), 0.0);
+        assert_eq!(normalized((0.0, 0.0)), (1.0, 0.0));
     }
 
     #[test]

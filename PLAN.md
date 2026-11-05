@@ -172,6 +172,8 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       writes them, the dual ground's 0.4 s, end-portal / teleport / platformer / spawned camera
       triggers, Apple's libm for the game's f32 calls, the platformer zoom offset.
       verify_all 134/135, camera 135/135.
+- [x] The move trigger's 2.2 modes (player targets, direction, dynamic, silent, camera lock)
+      and the rotate trigger's aim / follow / dynamic modes, from the decompile (untraced).
 - [x] Message threads list (getGJThreads → MessageThreadsPage): rows by position as the
       game's parser reads them, drawn like the real page with made-up threads.
 - [x] A thread's view (getGJThreadMessages → ThreadViewPopup): messages, players, the
