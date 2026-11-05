@@ -97,12 +97,15 @@ enum TriggerKind {
 /// like the world's triggers (x; y while sideways; crossing backward when going left), once
 /// each. Touch-triggered ones (key 11) are kept apart in `touch` and fire when a player's
 /// rect meets their scaled 30×30 square (as the world's touch triggers); spawn-triggered ones
-/// aren't handled.
+/// (key 62) are kept by level order and fire when the world spawns their group
+/// (`World::fired_camera`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CameraTriggers {
     list: Arc<Vec<CameraTrigger>>,
     /// Touch-triggered camera triggers and the square a player touches them in.
     touch: Arc<Vec<(crate::world::Rect, CameraTrigger)>>,
+    /// Spawn-triggered camera triggers, by level order.
+    spawned: Arc<std::collections::HashMap<u32, CameraTrigger>>,
     /// Every position trigger of the level in its order channel (`orderSpawnObjects`).
     pub order: Arc<crate::order::OrderLists>,
 }
@@ -117,10 +120,9 @@ impl CameraTriggers {
         }
         let mut list = Vec::new();
         let mut touch = Vec::new();
+        let mut spawned = std::collections::HashMap::new();
         for (order, raw) in level.objects.iter().enumerate() {
-            if raw.get(62) == Some("1") {
-                continue;
-            }
+            let by_spawn = raw.get(62) == Some("1");
             let duration = raw.get_f32(10).unwrap_or(0.0);
             let easing = raw.get_i32(30).unwrap_or(0);
             // customObjectSetup: a rate of 0 or less is 2.
@@ -185,7 +187,9 @@ impl CameraTriggers {
                 _ => continue,
             };
             let t = CameraTrigger { x: raw.x(), y: raw.y() + crate::world::GROUND_OFFSET, order: order as u32, kind };
-            if raw.get(11) == Some("1") {
+            if by_spawn {
+                spawned.insert(order as u32, t);
+            } else if raw.get(11) == Some("1") {
                 // The world's touch square (`Trigger::touch_rect`): 30×30 by the scale.
                 let s = raw.get_f32(32).unwrap_or(1.0);
                 let (w, h) = (30.0 * raw.get_f32(128).unwrap_or(s).abs(), 30.0 * raw.get_f32(129).unwrap_or(s).abs());
@@ -197,11 +201,16 @@ impl CameraTriggers {
         list.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.order.cmp(&b.order)));
         let camera_orders: std::collections::HashMap<u32, usize> = list.iter().enumerate().map(|(i, t)| (t.order, i)).collect();
         let order = crate::order::OrderLists::from_level(level, &camera_orders);
-        CameraTriggers { list: Arc::new(list), touch: Arc::new(touch), order: Arc::new(order) }
+        CameraTriggers { list: Arc::new(list), touch: Arc::new(touch), spawned: Arc::new(spawned), order: Arc::new(order) }
     }
 
     /// Camera trigger `index` firing now: its action, with a static camera's target position
     /// from the world.
+    /// A spawn-triggered camera trigger (by level order) the world spawned.
+    pub fn spawned_action(&self, order: u32, world: &crate::world::World) -> Option<CameraAction> {
+        self.spawned.get(&order).and_then(|t| Self::action_of(t, world))
+    }
+
     pub fn action(&self, index: usize, world: &crate::world::World) -> Option<CameraAction> {
         Self::action_of(&self.list[index], world)
     }
@@ -368,6 +377,8 @@ pub struct Camera {
     pub gameplay_no_zoom: [bool; 2],
     /// Camera edges (+0x420.. left, right, up, down): the edge object by level order (see
     /// `CameraAction::Edge`).
+    /// Last step's follow easing per axis (+0x4ac), for the platformer's falling easing.
+    pub last_ease: [f32; 2],
     /// The teleport ease (+0x4a8): a smooth-camera teleport sets 0.5 s; while it runs the y
     /// axis eases by 30.
     pub teleport_timer: f32,
@@ -488,6 +499,7 @@ impl Camera {
             edges: [None; 4],
             level_end_x: None,
             teleport_timer: 0.0,
+            last_ease: [0.0; 2],
         }
     }
 
@@ -516,7 +528,7 @@ impl Camera {
         let corridor = if player.free_mode { None } else { player.corridor };
         if corridor != self.corridor {
             match corridor {
-                Some((floor, ceiling)) => self.animate_in(floor, ceiling, view_w),
+                Some((floor, ceiling)) => self.animate_in(floor, ceiling, view_w, player.dual.is_some()),
                 None => self.animate_out(),
             }
             self.corridor = corridor;
@@ -601,8 +613,10 @@ impl Camera {
             edge_pos(1).map_or(-99999.0, |p| p.0 - wz),
             edge_pos(2).map_or(player.max_gameplay_y + -150.0, |p| p.1) - hz,
         ];
+        // (the level's left limit, 15, is the least a left edge can be; in platformer levels it
+        // is the minimum for the edge easing even without an edge)
         let min = [
-            edge_pos(0).map_or(-99999.0, |p| p.0),
+            edge_pos(0).map_or(if player.platformer.on { Self::START_X } else { -99999.0 }, |p| if sideways { p.0 } else { p.0.max(Self::START_X) }),
             edge_pos(3).map(|p| p.1).filter(|&y| 0.0 < y).unwrap_or(0.0),
         ];
         // the edges' own flags: an edge set by a trigger also eases the camera into it
@@ -662,6 +676,36 @@ impl Camera {
                         }
                     } else {
                         target[a] = off + ((p - half) - hi);
+                    }
+                    if basic && platformer {
+                        // platformer, moving away from where the player last stood (or inside
+                        // the band): the target recenters on that spot, eased by 30 —
+                        // above the band only toward the player (decompile lines 343–432)
+                        let above = p + off > hi + center;
+                        let below = !above && !(center - lo <= p + off);
+                        let flip = a == 1; // bVar31 ^ bVar11 (not upside down)
+                        let away = if above { !flip } else if below { flip } else { false };
+                        if !away {
+                            let g = if a == 0 { player.last_grounded.0 } else { player.last_grounded.1 };
+                            let gt = (g - half) + off;
+                            let recenter = if !flip {
+                                gt < target[a] && gt < cam[a] && p <= g
+                            } else {
+                                target[a] < gt && cam[a] < gt && g <= p
+                            };
+                            if recenter {
+                                target[a] = gt;
+                                ease[a] = 30.0;
+                            }
+                        }
+                        // platformer: the easing follows the distance (30 − 0.2·|target − cam|,
+                        // at most 30, never below this step's), and when it drops it comes down
+                        // from last step's by 10/dt (decompile lines 444–452)
+                        let dynamic = ((target[a] - cam[a]).abs() / -100.0).mul_add(20.0, 30.0).min(30.0);
+                        let e = if dynamic <= ease[a] { ease[a] } else { dynamic };
+                        let last = self.last_ease[a];
+                        let steps = if dt <= 0.0 { 10.0 } else { 10.0 / dt };
+                        ease[a] = if e < last { last + (e - last) / steps } else { e };
                     }
                 } else {
                     // The gameplay offset, eased toward its target by the player's movement.
@@ -769,7 +813,7 @@ impl Camera {
         }
         self.last_target = target;
         if debug_camera() {
-            eprintln!("cam y: cam {:?} target {:?} ease {:?} z {} lz {} static {:?} basic {basic} side {sideways} up {up} p {:?}", cam, target, ease, z, lz, self.static_active, ppos);
+            eprintln!("cam y: cam {:?} target {:?} ease {:?} z {} lz {} static {:?} basic {basic} side {sideways} up {up} p {:?} min {:?}", cam, target, ease, z, lz, self.static_active, ppos, min);
         }
         // the teleport ease (+0x4a8): y eased by 30 while it counts down (dt/60 a step)
         if !instant[1] {
@@ -792,6 +836,7 @@ impl Camera {
                 target[a] = min[a];
             }
         }
+        self.last_ease = ease;
         for a in 0..2 {
             cam[a] = if 1.0 < ease[a] {
                 let e = if dt <= 0.0 { ease[a] } else { ease[a] / dt };
@@ -936,10 +981,11 @@ impl Camera {
         self.corridor = corridor;
     }
 
-    fn animate_in(&mut self, floor: f32, ceiling: f32, view_w: f32) {
+    /// `animateInDualGroundNew`: 0.4 s in dual mode (+0x3f2) or from another corridor, else 0.5.
+    fn animate_in(&mut self, floor: f32, ceiling: f32, view_w: f32, dual: bool) {
         let half = VIEW_HEIGHT * 0.5;
         let height = ceiling - floor;
-        let duration = if self.fly_active { 0.4 } else { 0.5 };
+        let duration = if dual || self.fly_active { 0.4 } else { 0.5 };
         // The ground tween restarts unless the same corridor is already showing.
         if !self.fly_active || self.mode_height != height {
             let mut from = self.ground;

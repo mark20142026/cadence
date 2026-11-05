@@ -222,6 +222,9 @@ pub struct World {
     /// Color/pulse/alpha triggers (level orders) that spawns or touches fired since the app last
     /// took them (`Action::Effect`).
     pub fired_effects: Vec<u32>,
+    /// Spawn-triggered camera triggers (level orders) fired this step; the player's camera
+    /// step applies them.
+    pub fired_camera: Vec<u32>,
     /// Per level object: when an animate trigger (1585) last started it (attempt seconds).
     pub animated_at: Vec<Option<f64>>,
     /// Sequence triggers (3607) by level order: their steps (group, count), the step reached
@@ -490,7 +493,8 @@ impl World {
                 | crate::groups::Action::Reverse
                 | crate::groups::Action::Enter { .. }
                 | crate::groups::Action::EnterStop { .. }
-                | crate::groups::Action::Effect { .. } => {}
+                | crate::groups::Action::Effect { .. }
+                | crate::groups::Action::Camera { .. } => {}
                 crate::groups::Action::Sfx(play) => {
                     // the proximity group and its listener group
                     if let Some(p) = play.proximity {
@@ -643,6 +647,7 @@ impl World {
             area: crate::area::AreaState::new(n),
             level_end: false,
             fired_effects: Vec::new(),
+            fired_camera: Vec::new(),
             songs: Vec::new(),
             sfx: Vec::new(),
             timers: std::collections::BTreeMap::new(),
@@ -903,6 +908,7 @@ impl World {
     /// The start of a physics step, before the player moves: run the move commands
     /// (`prepareMoveActions` + `processMoveActions`). `player` is player 1's position now.
     pub fn pre_step(&mut self, player: (f32, f32)) {
+        self.fired_camera.clear();
         let (pdx, pdy) = match self.last_player {
             Some((x, y)) => (player.0 - x, player.1 - y),
             None => (0.0, 0.0),
@@ -1800,6 +1806,7 @@ impl World {
                     }
                     crate::groups::Action::Random { .. } => {}
                     crate::groups::Action::Effect { order } => self.fired_effects.push(order),
+                    crate::groups::Action::Camera { order } => self.fired_camera.push(order),
                     crate::groups::Action::Count { item, target, group, on, .. } => {
                         // Armed; fires now if the count already matches.
                         if self.triggers.items.get(&item).copied().unwrap_or(0) == target {

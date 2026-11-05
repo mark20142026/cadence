@@ -201,6 +201,8 @@ pub enum Action {
     /// Player Control (1932, `activatePlayerControlTrigger`): 540 stop jump (releases the
     /// button), 541 stop move (platformer directions), 542 stop rotation, 543 stop slide.
     PlayerControl { stop_jump: bool, stop_move: bool, stop_rotation: bool },
+    /// A camera trigger fired by a spawn (by level order; `World::fired_camera`).
+    Camera { order: u32 },
     /// Teleport trigger (3022): player 1 to group 51's main object (352 / 353 keep x / y, 354
     /// gravity after: 1 normal, 2 flipped, 3 toggled; 55 smooth camera).
     Teleport { group: i32, keep_x: bool, keep_y: bool, gravity: i8, smooth: bool },
@@ -698,6 +700,8 @@ impl Trigger {
             // Shader (2904–2924) and gradient (2903) triggers, by position, spawn or touch:
             // `crate::shaders::Shaders::fire` / `crate::gradients::Gradients::fire`.
             id if id == crate::gradients::GRADIENT || crate::shaders::is_shader_trigger(id) => Action::Effect { order },
+            // Camera triggers fired by a spawn (`crate::camera::CameraTriggers::spawned_action`).
+            1913 | 1914 | 1916 | 2015 | 2062 | 2900 | 2901 | 2925 | 2999 | 3029..=3031 if raw.get(62) == Some("1") => Action::Camera { order },
             _ => return None,
         };
         Some(Trigger {

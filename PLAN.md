@@ -167,6 +167,10 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       ranges 596–599, start/end, fades, loops, unique id / interval rules, reverb presets
       approximated) and spawn remaps in advanced follow + main objects for rotate / follow /
       move (agent, merged; new trace gremap). verify_all 124/135 (confirmed again on main after the merges).
+- [x] Rotation and camera pass: updateShipRotation whole (sideways, going left, platformer,
+      the moving-block snap flag), the robot's grounded rate, dual-death rows as the harness
+      writes them, the dual ground's 0.4 s, end-portal / teleport / platformer / spawned camera
+      triggers. verify_all 134/135, camera 119/135.
 - [x] Message threads list (getGJThreads → MessageThreadsPage): rows by position as the
       game's parser reads them, drawn like the real page with made-up threads.
 - [x] A thread's view (getGJThreadMessages → ThreadViewPopup): messages, players, the

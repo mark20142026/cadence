@@ -119,19 +119,21 @@ fn trace_line(step: u32, p: &cadence_core::physics::Player, cam: (f32, f32)) -> 
 /// Simulate an attempt: player 1's trace, and player 2's for the steps in dual mode.
 /// `dash_ends`: for traces recorded before the harness made the cocos scheduler deterministic,
 /// the real rotation at each step a dash ended (the icon spin ran on wall-clock time there);
-/// it's given to player 1 after that step.
+/// it's given to player 1 after that step. `legacy_dual_death`: see `legacy_dual_death`.
 fn simulate_both(
     world: &cadence_core::world::World,
     inputs: &std::collections::BTreeMap<u32, Vec<(bool, u8)>>,
     steps: u32,
     view_w: f32,
     dash_ends: &BTreeMap<u32, f32>,
+    legacy_dual_death: bool,
 ) -> (String, String) {
     let header = "step,dt,x,y,yvel,rot,flags,speed,size,gravity,fx,fy,cam_x,cam_y\n";
     let mut world = world.clone();
     let world = &mut world;
     world.reset();
     let mut player = spawn_player(world);
+    player.rotation_at_dual_death = !legacy_dual_death;
     player.reset_camera(world, view_w);
     let mut out = format!("# cadence replay\n{header}");
     let mut out2 = format!("# cadence replay player 2\n{header}");
@@ -374,7 +376,8 @@ fn replay(spec_path: &str, out_path: &str) -> Result<(), Box<dyn std::error::Err
         let dash_ends = std::fs::read_to_string(spec.out_path(i))
             .map(|t| legacy_dash_ends(&t, &cadence_core::trace::parse_csv(&t)))
             .unwrap_or_default();
-        let text = simulate_both(&world, inputs, spec.steps, view_w, &dash_ends).0;
+        let legacy = legacy_dual_death(&spec.out_path(i));
+        let text = simulate_both(&world, inputs, spec.steps, view_w, &dash_ends, legacy).0;
         if !out_path.contains("%d") {
             std::fs::write(out_path, text)?;
             break;
@@ -400,6 +403,17 @@ fn legacy_dash_ends(text: &str, rows: &[cadence_core::trace::Row]) -> BTreeMap<u
     out
 }
 
+/// Traces from the harness before it ended an attempt on player 2's death: player 2's file
+/// runs on past its first dead row, and player 1's row for that step was sampled at the end of
+/// the step (after its rotation update) rather than inside `destroyPlayer`.
+fn legacy_dual_death(out_path: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(format!("{out_path}.p2")) else { return false };
+    let rows = cadence_core::trace::parse_csv(&text);
+    rows.iter()
+        .position(|w| w.flags & cadence_core::trace::FLAG_DEAD != 0)
+        .is_some_and(|i| i + 1 < rows.len())
+}
+
 /// Replay every attempt of a spec and compare each with the real game's trace.
 fn verify(spec_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     use cadence_core::trace::parse_csv;
@@ -418,7 +432,8 @@ fn verify(spec_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         world.sched_phase = cadence_core::trace::sched_index(&real_text).unwrap_or(0);
         let mut p2_bad = false;
         let dash_ends = legacy_dash_ends(&real_text, &real);
-        let (ours_text, ours2_text) = simulate_both(&world, inputs, spec.steps, view_w, &dash_ends);
+        let legacy = legacy_dual_death(&spec.out_path(i));
+        let (ours_text, ours2_text) = simulate_both(&world, inputs, spec.steps, view_w, &dash_ends, legacy);
         let ours = parse_csv(&ours_text);
         // Player 2 (dual mode), compared step by step where the real game recorded it.
         if let Ok(real2_text) = std::fs::read_to_string(format!("{}.p2", spec.out_path(i))) {
@@ -1059,7 +1074,7 @@ fn route_platformer(level: &str, waypoints: &str, out_pattern: &str) -> Result<(
         for &(s, d, b) in &best.events {
             inputs.entry(s).or_default().push((d, b));
         }
-        let (text, _) = simulate_both(&base_world, &inputs, step, PLAN_VIEW_W, &BTreeMap::new());
+        let (text, _) = simulate_both(&base_world, &inputs, step, PLAN_VIEW_W, &BTreeMap::new(), false);
         let last = text.lines().last().unwrap_or("");
         for row in cadence_core::trace::parse_csv(&text) {
             if let Some(&(x, y)) = best.trail.get(row.step as usize) {

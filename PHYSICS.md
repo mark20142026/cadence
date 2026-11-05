@@ -18,14 +18,22 @@ what is approximated or missing. The details (addresses, field offsets, derivati
   - the flags word must be equal;
   - the visual rotation is compared bit for bit as well (reported separately).
 - **A suite passes** (`tools/verify_all.sh`) only if every attempt matches every step *and* the
-  rotation is bit-exact in every attempt.
+  rotation is bit-exact in every attempt. The camera (x and y) is compared bit for bit too and
+  tallied on its own line.
+- **The recorder's own timing is part of the comparison.** The harness writes a step's row at
+  the end of the step, except the step a player dies: that row is written inside
+  `PlayLayer::destroyPlayer`, during the collision pass, before either player's rotation update.
+  Cadence reproduces that (a dying step leaves the rotation as it was, for both players in dual
+  mode, which is also what the exit-dual copy shows). Older dual-mode traces, recorded before
+  the harness ended an attempt on player 2's death, sampled that row at the end of the step;
+  `verify` recognises them (player 2's file runs on past its death) and compares accordingly.
 - **Moving groups** (triggers) are compared with `tools/cmp_watch.py` on the watched objects'
   f64 positions and rotations, with a tolerance (1e-4 in the suites that use it), because the
   game refreshes some node values only once per drawn frame.
 
-**Current result: 124 of 135 suites bit for bit.** In the other 11, positions, velocities and
-flags still match every step; only the visual rotation differs, in some attempts (see "The 11
-suites that aren't fully exact" below).
+**Current result: 134 of 135 suites bit for bit; the camera bit for bit in 119.** In the
+remaining suite, positions, velocities and flags still match every step; only the visual
+rotation differs for a few steps (see "What isn't fully exact" below).
 
 ## At a glance
 
@@ -36,12 +44,12 @@ suites that aren't fully exact" below).
 | Ship, UFO, ball, wave, robot, spider, swing | Bit for bit | levels 3–22, Dash |
 | Mini, dual, mirror, speed portals | Bit for bit | levels 5–22, player-2 traces |
 | Orbs, pads, dash orbs, teleport portals | Bit for bit | Polargeist, Deadlocked, Dash |
-| Slopes (classic) | Bit for bit, except ball-on-slope rotation in one Hexagon Force attempt | v2–v5-16 |
+| Slopes (classic) | Bit for bit | v2–v5-16, Dash |
 | Collisions (solids, hazards, rotated objects, saws) | Bit for bit | all levels; object rects match the game's own dumps |
 | Platformer (walk, stop, turn, jump, slopes) | Bit for bit | pf1, pfslope, The Tower t1–t7 |
-| Player rotation (visual) | Bit for bit in 124 suites; close in 11 | see below |
-| Camera (normal, corridors, key 370) | Bit for bit where traced | camera columns, cam370t |
-| Camera at the level end, after teleports, edges (2062) | Approximated / not ported | — |
+| Player rotation (visual) | Bit for bit in 134 suites; close in 1 | see below |
+| Camera (follow, corridors, dual ground, key 370, level end, teleports, platformer band, spawned camera triggers) | Bit for bit in 119 suites | camera columns, cam370t |
+| Camera in Dash and four Tower routes | Close (a one-step 4-ulp blip, a slow drift in a static camera, zoom recentring under 1.7 units) | s8–s19-22, t4–t7-5001 |
 | Move / rotate / follow / spawn / advanced follow / area triggers, group parents | Within 1e-4 (watched groups) or bit for bit (player) | Geometrical Dominator, gparent, gremap, kfcurve, areahsv |
 | Follow (1347), item triggers | Ported from the decompile, not traced | — |
 | Random triggers (`fast_rand`) | Bit for bit | rand |
@@ -85,7 +93,8 @@ suites that aren't fully exact" below).
 | Easing | quaternion slerp of half angles with FMAs (m1 0x216db8); angles in (−360°, 360°] | Same, FMAs included (without them, 1-ulp differences) | Bit for bit |
 | Cube on the ground | ease to the nearest 90° by min(dt, speed·0.175·3·dt) while touching | Same | Bit for bit |
 | Spin | +180° per 0.4333 s at 1x; sign fixed at the start | Same | Bit for bit |
-| Ship | target atan2f(−dy, dx), t = 0.15·dt, only if the move is long enough | Same | Bit for bit |
+| Ship, UFO, wave, swing (`updateShipRotation`) | target atan2f(−dy, dx) (sideways atan2f(dx, dy); going left the forward step is taken as \|·\| and the target mirrored), t = 0.15·dt (wave 0.25, mini 0.4; UFO −0.4 of the angle, clamped to 0.1 rad, 0.07); only if the move is long enough, except a platformer ship or UFO; snapped back onto a moving block (+0x658) the target is level and the rate a quarter; platformer ship ±30° / ±45° by input | Same | Bit for bit |
+| Robot, spider off the ground | back to 0° at half the step time; the rate ×3 while touching the ground (`updateRotation` 0x36ccac) | Same | Bit for bit |
 | Ball, swing, sideways, slopes | from the decompile | Same | Bit for bit in most attempts; the exceptions are below |
 
 ## Side by side: camera
@@ -97,9 +106,11 @@ suites that aren't fully exact" below).
 | Corridors | the center tweens to floor + h/2 over 0.5 s (0.4 between corridors), ease-in-out via the system powf | Same (LLVM must not fold powf(x, 2) into x·x) | Bit for bit |
 | Camera triggers (static, offset, zoom, rotate) | `updateCamera` (~1,000 lines) | Ported from the decompile | Not all traced |
 | Camera key 370 | the corridor isn't snapped to the 30-point grid | Same | Bit for bit, camera included (cam370t) |
-| Level end | static y over 1.2 s; x settles at length − view width | Approximated | Close, not exact |
-| After teleports | a bezier transition in `updateCamera` | Not ported | Differs for a while after such teleports |
-| Camera edges (2062), platformer camera branch | in `updateCamera` | Not ported | — |
+| Dual ground | `animateInDualGroundNew`: 0.4 s in dual mode or from another corridor, else 0.5 | Same | Bit for bit (Hexagon Force) |
+| Level end | the end portal's limit (+0x3138 − view / zoom − offset), eased in like an edge | Same | Bit for bit |
+| After teleports | key 55 sets a 0.5 s teleport ease; y eased by 30 while it runs | Same | Bit for bit (Deadlocked, Fingerdash) |
+| Left edge, platformer band and easing | edge max 15; band 55 / 27.5, x easing 8; speed-based easing min(30, 30 − 0.2·distance) | Same | Bit for bit (pf1, pfslope, t1–t3); t4–t7 within 1.7 units |
+| Dash | — | — | a 4-ulp blip at step 3378 (back in step the next) and a drift from step ~13,650 in a smooth static camera; not found yet |
 
 ## Side by side: triggers and moving objects
 
@@ -136,46 +147,44 @@ different gravity and speed starts). All of them compare every step.
 | 13 Electroman Adventures | 3 | 3 |
 | 14 Clubstep | 4 | 4 |
 | 15 Electrodynamix | 3 | 3 |
-| 16 Hexagon Force | 6 | 3 |
-| 17 Blast Processing | 6 | 5 |
+| 16 Hexagon Force | 6 | 6 |
+| 17 Blast Processing | 6 | 6 |
 | 18 Theory of Everything 2 | 4 | 4 |
-| 19 Geometrical Dominator | 8 | 7 |
+| 19 Geometrical Dominator | 8 | 8 |
 | 20 Deadlocked | 5 | 5 |
-| 21 Fingerdash | 6 | 4 |
-| 22 Dash | 20 | 17 |
+| 21 Fingerdash | 6 | 6 |
+| 22 Dash | 20 | 19 |
 | 3001 The Challenge | 2 | 2 |
 | 5001 The Tower (platformer) | 7 | 7 |
-| Targeted suites (camera key 370 ×2, death, object dumps of levels 19–22 and 3001, group parents, remaps, keyframes, area HSV, platformer walk and slopes, random, multi-attempt, debug) | 17 | 16 |
-| **Total** | **135** | **124** |
+| Targeted suites (camera key 370 ×2, death, object dumps of levels 19–22 and 3001, group parents, remaps, keyframes, area HSV, platformer walk and slopes, random, multi-attempt, debug) | 17 | 17 |
+| **Total** | **135** | **134** |
 
-## The 11 suites that aren't fully exact
+## What isn't fully exact
 
-In every one of them, x, y, velocity and flags match every step. The difference is the drawn
-rotation, in some attempts:
+One suite, s19-22 (Dash), from step 20170: a wave turns into a cube through a portal in the same
+collision pass that lands it on two slopes. Cadence eases the cube's rotation toward the slope
+once more than the game (2° for a few steps). The game evidently meets the first slope before
+the portal in that pass (the portal's mode switch then resets the rotation); Cadence walks the
+portal first. Positions match throughout.
 
-| Suite | Where it differs | Size |
-|---|---|---|
-| v3-16, v4-16, v5-16 (Hexagon Force) | attempt 3 from step 5376: the ball rolling on a slope while accelerating | ~1.3° off, then a half-turn (the roll direction) |
-| v5-16 attempt 0 | step 7467, ship on a slope | ~1.7° |
-| s17-22 (Dash) | from step 16439: upside-down ship going sideways | mean 43°, max 73° |
-| s19-22 (Dash) | step 20170: ship rotation | max 2° |
-| s18-22 (Dash) | rotation | max 0.07° |
-| s3-21, s4-21 (Fingerdash) | rotation | under 0.0005° (last-bit differences) |
-| r5-19 (Geometrical Dominator) | one attempt | max 0.25° |
-| w3-17 (Blast Processing) | attempt 3, step 12015: the wave's rotation on the step it dies | ~2.8° |
-| cam370 | the ship start's rotation at step 0 (real −3.35°, ours 0) | 3.3° at step 0 |
+Earlier gaps (Hexagon Force's ball roll and dual deaths, Geometrical Dominator's ship
+on a moving block, Dash's sideways ship and falling robot, Fingerdash's last bits, the ship
+start at step 0) are fixed; see JOURNAL.md for each cause.
 
-These are visual only: the rotation feeds nothing else in the physics except the hazard test's
-rotated player box, and the positions after these steps still match.
+One rule in the moving-block snap is empirical: a player already moving away from the ground
+isn't snapped back onto a block that moved away (r5-19 step 5820, s17-22 step 16129). The
+decompile of the snap (0x36e834) doesn't show where the game decides this.
+
+The rotation is visual only: it feeds nothing else in the physics except the hazard test's
+rotated player box.
 
 ## Approximated or not ported (physics-related)
 
-- The camera at the level end (approximated), after teleports (bezier not ported), camera edges
-  (2062) and the platformer camera branch (not ported).
+- The camera: Dash's step-3378 blip and static-camera drift, and The Tower's zoom recentring
+  (t4–t7), as above.
 - Rotate / move aim modes, player targets for move-to-target, scale and teleport centers of
   groups with several objects and no parent (these use the group's first object).
 - Follow (1347) and item triggers: ported from the decompile, not traced.
-- The game forcing level setting kA40 on in official level 22 (Dash) isn't done.
 
 ## Not physics, for completeness
 

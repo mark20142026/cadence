@@ -206,6 +206,11 @@ pub struct Player {
     /// The death was player 2's (dual mode): `PlayLayer::destroyPlayer` explodes the player
     /// that died, the other one leaves with the exit-dual effect.
     pub second_died: bool,
+    /// Player 1's rotation on the step player 2 dies is left as it was: `PlayLayer::destroyPlayer`
+    /// (inside player 2's collisions) makes the exit-dual copy, and the harness samples the
+    /// step, before the rotation update. Traces from the older harness, which kept recording
+    /// after player 2's death, sampled at the end of the step instead (`verify` clears this).
+    pub rotation_at_dual_death: bool,
     /// The robot's hold boost timer (`m_accelerationOrSpeed`): up to 1.5, +dt·0.1 per held step.
     robot_boost: f64,
     /// Launched by a pad since the last jump (`m_touchedPad`): no robot hold boost.
@@ -338,6 +343,9 @@ pub struct Player {
     pub last_y: f32,
     /// `m_lastPosition.x` (sideways collisions measure the "up" movement along x).
     pub last_x: f32,
+    /// Where the player last stood (`m_lastGroundedPos`, +0x9e4; set by hitGround): the
+    /// platformer camera recenters on it.
+    pub last_grounded: (f32, f32),
     pub y_velocity: f64,
     pub on_ground: bool,
     pub speed: f32,
@@ -418,6 +426,10 @@ pub struct Player {
     pub slope_downhill: bool,
     /// The ball rolling on a slope turns faster (`m_isBallRotating`, `m_rotateSpeed`).
     pub ball_slope_scaled: bool,
+    /// The rotation before this step's `update_rotation` (a dual-mode death puts it back).
+    rotation_before: f32,
+    /// Spawned, no step taken yet.
+    fresh: bool,
     pub ball_rotate_speed: f32,
     /// Gravity flipped (the game's `m_isUpsideDown`).
     pub upside_down: bool,
@@ -511,6 +523,7 @@ impl Default for Player {
             y: GROUND_Y,
             last_y: GROUND_Y,
             last_x: 0.0,
+            last_grounded: (0.0, 0.0),
             y_velocity: 0.0,
             on_ground: false,
             speed: SPEED_NORMAL,
@@ -531,6 +544,7 @@ impl Default for Player {
             partner: None,
             is_second: false,
             second_died: false,
+            rotation_at_dual_death: true,
             robot_boost: 1.5,
             touched_pad: false,
             rect_cache: None,
@@ -619,6 +633,8 @@ impl Default for Player {
             last_snap_y: 0.0,
             slope_downhill: false,
             ball_slope_scaled: false,
+            rotation_before: 0.0,
+            fresh: true,
             ball_rotate_speed: 1.0,
             upside_down: false,
             controls_ready: false,
@@ -952,10 +968,13 @@ impl Player {
         self.corridor = p2.corridor;
         self.events.append(&mut p2.events);
         if p2.dead {
-            // (Player 1's rotation on that last step: the game sometimes keeps the old one —
-            // order of its rotation and collision passes in dual mode, not modelled.)
+            // The game runs both players' collisions before either's rotation, so a step that
+            // kills player 2 leaves player 1's rotation as it was too.
             if !self.dead {
                 self.second_died = true;
+                if self.rotation_at_dual_death {
+                    self.rotation = self.rotation_before;
+                }
             }
             self.dead = true;
         }
@@ -995,6 +1014,16 @@ impl Player {
             if let Some(p2) = &mut self.dual {
                 let left = !p2.going_left;
                 p2.do_reverse_player(left);
+            }
+        }
+        // camera triggers the world's spawns fired this step
+        for &order in &world.fired_camera {
+            match self.camera_triggers.spawned_action(order, world) {
+                Some(crate::camera::CameraAction::RotateGameplay { dir, dir2, edit, over, mod_x, mod_y }) => {
+                    self.rotate_gameplay(dir, dir2, edit, over, mod_x, mod_y);
+                }
+                Some(action) => self.camera_action(action),
+                None => {}
             }
         }
         let fired = std::mem::take(&mut self.pending_camera);
@@ -1074,7 +1103,9 @@ impl Player {
         if self.finished {
             return;
         }
-        let (x0, y0) = (self.x, self.y);
+        // (the last saved position, which the ship's rotation measures from, is (0, 0) at
+        // the level start)
+        let (x0, y0) = if std::mem::take(&mut self.fresh) { (0.0, 0.0) } else { (self.x, self.y) };
         self.controls_ready = true;
         self.apply_pending_speed();
         // This step's game time (time warp scales it).
@@ -1117,6 +1148,7 @@ impl Player {
             self.prev_ceiling = self.camera.corridor_bounds(c).1;
         }
         // A step that kills the player (or ends the level) leaves the rotation as it was.
+        self.rotation_before = self.rotation;
         if !self.dead && !self.finished {
             self.update_rotation(self.x - x0, self.y - y0);
         }
@@ -1190,8 +1222,11 @@ impl Player {
                     let t = dt.min(self.speed * 0.175 * 3.0 * dt);
                     self.rotation = lerp_angle(self.rotation, closest, t);
                 } else if self.rotation != 0.0 {
+                    // updateRotation's rate is tripled while touching the ground, settled or
+                    // not (a robot falling with a block under it, real s19-22).
                     let half = dt * 0.5;
-                    let t = (self.speed * 0.175 * half).min(half);
+                    let k = if self.touching_ground { self.speed * 0.175 * 3.0 } else { self.speed * 0.175 };
+                    let t = (k * half).min(half);
                     self.rotation = lerp_angle(self.rotation, 0.0, t);
                 }
             }
@@ -1201,19 +1236,65 @@ impl Player {
                 // movement direction (radians, clockwise), eased by a fixed 0.15·dt (the wave
                 // 0.25, mini 0.4). The UFO only tilts: −0.4 of that angle, nose-down at most
                 // 0.1 rad (upside down the other way), eased by 0.07·dt.
-                if dt * 1.2 <= dy * dy + dx * dx {
-                    let angle = (-dy).atan2(dx);
-                    let (target, k) = if self.mode == Mode::Ufo {
-                        let tilt = angle * -0.4;
-                        (if self.upside_down { tilt.min(0.1) } else { tilt.max(-0.1) }, 0.07f32)
-                    } else if self.mode == Mode::Wave {
-                        (angle, if self.size != 1.0 { 0.4 } else { 0.25 })
-                    } else {
-                        (angle, 0.15)
-                    };
-                    let t = (k * dt).min(dt);
-                    self.rotation = slerp_radians(self.rotation * 0.017453292, target, t) * 57.29578;
+                // Going left the step's forward component is taken as |·| and the target
+                // mirrored; sideways the axes swap (atan2(dx, dy)). Snapped back onto a moving
+                // block (+0x658, misnamed m_isCollidingWithSlope) the target is level and the
+                // easing a quarter. A platformer ship or UFO turns even when not moving.
+                let left = self.going_left;
+                let (a, b) = if self.sideways {
+                    (dx, if left { dy.abs() } else { dy })
+                } else {
+                    (-dy, if left { dx.abs() } else { dx })
+                };
+                let moved = dt * 1.2 <= a * a + b * b;
+                let pf = self.platformer.on;
+                if !moved && !(pf && matches!(self.mode, Mode::Ship | Mode::Ufo)) {
+                    return;
                 }
+                let angle = a.atan2(b);
+                let rot = self.rotation;
+                let mut target = if self.mode == Mode::Ufo { angle * -0.4 } else { angle };
+                if self.on_moving_ground {
+                    target = 0.0;
+                }
+                if left {
+                    target = -target;
+                }
+                let mut k: f32 = match self.mode {
+                    Mode::Ufo => {
+                        target = if left == self.upside_down { target.max(-0.1) } else { target.min(0.1) };
+                        if pf && (self.platformer.x_velocity.abs() <= 0.5 || self.touching_ground) {
+                            target = 0.0;
+                        }
+                        0.07
+                    }
+                    Mode::Wave => if self.size != 1.0 { 0.4 } else { 0.25 },
+                    Mode::Ship if pf => {
+                        let p = &self.platformer;
+                        if !(p.holding_left || p.holding_right || p.forced_slide_left || p.forced_slide_right) {
+                            target = 0.0;
+                            0.06
+                        } else {
+                            let mut s: f32 = if left { -1.0 } else { 1.0 };
+                            if self.upside_down != self.sideways {
+                                s = -s;
+                            }
+                            if 0.1 <= (s * 0.5235988).abs() - (rot * 0.017453292).abs() {
+                                target = s * 0.5235988;
+                                0.07
+                            } else {
+                                target = s * 0.7853982;
+                                0.015
+                            }
+                        }
+                    }
+                    _ => 0.15,
+                };
+                if self.on_moving_ground {
+                    k *= 0.25;
+                }
+                let t = (k * dt).min(dt);
+                self.rotation = slerp_radians(rot * 0.017453292, target, t) * 57.29578;
             }
         }
     }
@@ -2000,7 +2081,12 @@ impl Player {
             (true, false) => (Rect { w: r.w + ext, ..r }, me.x - r.max_x()),
         };
         let target = if me.intersects(&grown) { Some(g) } else { collided };
-        if let Some(t) = target.filter(|_| gap < ext) {
+        if std::env::var_os("CADENCE_DEBUG_SNAP").is_some() { eprintln!("  snap target {target:?} gap {gap} ext {ext} me {me:?} grown {grown:?}"); }
+        // Interim rule (empirical, r5-19 step 5820 and s17-22 step 16129): a player already
+        // moving away from the ground isn't snapped back (the game's +0x658 stays clear and
+        // the ship's tilt eases at full rate). Where the game decides this isn't found yet.
+        let rising = if self.upside_down { self.y_velocity < 0.0 } else { self.y_velocity > 0.0 };
+        if let Some(t) = target.filter(|_| gap < ext && !rising) {
             self.on_moving_ground = true;
             // collidedWithObjectInternal(dt, obj, rect, skipCheck = true).
             self.forced_contact = true;
@@ -2456,6 +2542,8 @@ impl Player {
         }
         let kind = world.objects[index].kind;
         self.used_rings.push(index);
+        // ringJump: the orb's spot counts as where the player last stood
+        self.last_grounded = (self.x, self.y);
         self.events.push(Event::Orb(index));
         // Marked activated by the player: collisionCheckObjects skips it for the rest of the
         // attempt (orbs without the 2.2 multi-activate option).
@@ -2637,8 +2725,7 @@ impl Player {
             Mode::Ball => {
                 self.spinning = true;
                 self.ball_spinning = false;
-                self.ball_slope_scaled = false;
-                self.ball_rotate_speed = 1.0;
+                // (the slope's roll scaling stays: flipGravity clears it)
                 // runBallRotation: ±120 by gravity, reversed going left, the result negated
                 // sideways.
                 let mut deg: i32 = if self.upside_down { -120 } else { 120 };
@@ -2908,11 +2995,14 @@ impl Player {
     /// `hitGround`'s rotation part (any landing, floor or block): a ball that was spinning, or
     /// not rolling yet, starts rolling.
     pub(crate) fn hit_ground(&mut self) {
+        self.last_grounded = (self.x, self.y);
         if !self.touching_ground {
             self.events.push(Event::Land { slope_angle: None });
         }
         self.touching_ground = true;
-        if self.mode == Mode::Ball && self.ball_slope_scaled && !self.on_slope {
+        // (hitGround's test is +0x968, m_wasOnSlope: a ball landing on a block while it rides
+        // a slope keeps its slope-scaled roll)
+        if self.mode == Mode::Ball && self.ball_slope_scaled && !self.was_on_slope {
             self.spinning = false;
             self.ball_slope_scaled = false;
             self.rotation_speed = 0.0;
@@ -2926,6 +3016,8 @@ impl Player {
 
     /// `propellPlayer`: launch with `power * 16` along the current gravity (mini: 0.8x).
     fn propel(&mut self, power: f32) {
+        // propellPlayer: the pad's spot counts as where the player last stood
+        self.last_grounded = (self.x, self.y);
         let size = self.size_factor();
         let v = if self.upside_down { -(power * 16.0) } else { power * 16.0 };
         self.y_velocity = round_velocity((size * v) as f64);

@@ -558,7 +558,8 @@ impl Player {
                 v <= lv as f64
             };
             if !skip && allowed {
-                // FUN_10037013c: the slope launch.
+                // FUN_10037013c: the slope launch (the spot counts as where the player last stood).
+                self.last_grounded = (self.x, self.y);
                 self.rising = true;
                 self.touching_ground = false;
                 self.on_ground = false;

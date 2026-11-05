@@ -1343,3 +1343,31 @@ prebuilt trace mod), corner and muted.
   112 of 135 suites (platformer turn-around easing, Dash's static camera and two Hexagon Force
   attempts left).
 - Dash forces kA40 (World::official, from the tools' and the game's official-level loading).
+
+## 2026-11-05 — rotation and camera: 134 of 135 suites, camera 119
+
+- `updateShipRotation` ported whole: sideways atan2f(dx, dy); going left the forward step is
+  |·| and the target mirrored; a platformer ship or UFO turns even when not moving (ship ±30° /
+  ±45° by input, level with no input; UFO level when slow or grounded); the UFO clamp by
+  going-left == upside-down. The flag it tests, called m_isCollidingWithSlope in the bindings
+  (+0x658), is really "snapped back onto a moving block" (FUN_10036e834 sets it before the
+  forced collidedWithObjectInternal): target level, rate ×0.25. That's Cadence's
+  `on_moving_ground`. r5-19 5816–5819 and s17-22 16128 now exact.
+- Interim rule (empirical): the snap-back doesn't happen while the player moves away from the
+  ground (r5-19 5820, s17-22 16129: the game's flag is clear and the tilt eases at full rate).
+  The decompile's snap conditions (moved away, grown rect, 5·dt gap) all hold there; where the
+  game decides otherwise isn't found.
+- Robot / spider off the ground: updateRotation (0x36ccac) triples the rate whenever a ground
+  mode touches the ground off slopes, settled or not (a robot falling with a block under it,
+  s18-22 and s19-22).
+- Dual deaths: the harness writes the death row inside `PlayLayer::destroyPlayer`, before
+  either player's rotation update; the game itself rotates both players that step. v3-16's
+  attempts were recorded by the older harness (player 2's file runs on after its death; rows at
+  the step's end): `verify` detects that and leaves player 1's rotation update in. v3/v5-16 and
+  w3-17 rotation now exact.
+- Dual ground slide-in: `animateInDualGroundNew` uses 0.4 s whenever dual mode is on (+0x3f2),
+  not only between corridors. Hexagon Force cameras exact (v3, v4, v5-16).
+- `tools/verify_all.sh` tallies the camera on its own line.
+- verify_all 134/135 (s19-22: a wave→cube portal and two slopes in one pass; the game meets
+  the first slope before the portal, Cadence the portal first — 2° for a few steps). Camera
+  119/135: Dash s8–s19-22 (the step-3378 4-ulp blip and the static drift) and The Tower t4–t7.
