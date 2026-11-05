@@ -38,6 +38,7 @@ mod treasure;
 pub mod keybinds;
 mod shards;
 mod particle;
+mod mylists;
 mod keybinds_table;
 mod reward;
 
@@ -187,6 +188,8 @@ pub enum Action {
     EditorMusic(Option<f32>),
     /// A saved level deleted, confirmed; its low detail mode switched.
     DeleteSaved(i32),
+    /// One of My Lists (by its key), and on the servers when it was uploaded
+    DeleteList(i64),
     ToggleLdm(i32),
     /// Restart the level from the start (pause menu, end screen).
     Restart,
@@ -433,6 +436,14 @@ pub enum Btn {
     PartZoom(u8),
     PartCopy,
     PartPaste,
+    ListsBack,
+    ListsNew,
+    ListsRow(u8),
+    ListsSide(u8),
+    ListsName,
+    ListsLevel(u8),
+    ListsUp(u8),
+    ListsView,
     GarageFire(u8),
     GarageItem(u8),
     GarageExplode,
@@ -723,6 +734,8 @@ pub struct Ui {
     shards_page: Option<usize>,
     /// The custom particle object's editor, when open
     particle_ed: Option<particle::Editor>,
+    /// My Lists, when open
+    my_lists: Option<mylists::Lists>,
     /// Alt (Option) held, for the keybinds' chords
     pub held_alt: bool,
     /// Paths of Power: the path page open (0-based), its chest's "Reward!" popup
@@ -852,6 +865,7 @@ impl Ui {
             keys: None,
             shards_page: None,
             particle_ed: None,
+            my_lists: None,
             held_alt: false,
             path_page: None,
             path_reward: false,
@@ -1469,6 +1483,17 @@ impl Ui {
             }
             return false;
         }
+        if self.alert.is_none() && self.confirm.is_none()
+            && let Some(m) = self.my_lists.as_mut()
+        {
+            match key {
+                K::Backspace if m.typing.is_some() => m.backspace(),
+                K::Enter | K::NumpadEnter | K::Escape if m.typing.is_some() => m.typing = None,
+                K::Escape => self.clicked(Btn::ListsBack),
+                _ => {}
+            }
+            return true;
+        }
         if let Some(pe) = self.particle_ed.as_mut() {
             match key {
                 K::Backspace => pe.backspace(),
@@ -1822,6 +1847,10 @@ impl Ui {
 
     /// Typed text (the online search box). Returns true if the UI used it.
     pub fn text(&mut self, text: &str) -> bool {
+        if let Some(m) = self.my_lists.as_mut().filter(|m| m.typing.is_some()) {
+            m.type_text(text);
+            return true;
+        }
         if let Some(pe) = self.particle_ed.as_mut() {
             pe.type_text(text);
             return true;
@@ -2072,6 +2101,19 @@ impl Ui {
                             self.progress.save();
                             self.online.my_selected = false;
                             self.online.my_levels = self.my_levels();
+                        }
+                        Action::DeleteList(key) => {
+                            if let Some(l) = crate::mylists::get(key)
+                                && l.list_id > 0
+                                && crate::gjapi::identity().account.is_some()
+                            {
+                                let form = crate::mylists::delete_form(&crate::gjapi::identity(), l.list_id);
+                                let _ = crate::net::spawn(async move { crate::net::post("deleteGJLevelList.php", &form).await });
+                            }
+                            crate::mylists::delete(key);
+                            if let Some(m) = self.my_lists.as_mut() {
+                                m.open = None;
+                            }
                         }
                         Action::DeleteSaved(id) => {
                             crate::saved::delete(id);
@@ -2646,6 +2688,33 @@ impl Ui {
             Btn::RewardCollect => self.unlock = None,
             Btn::KeysClose => self.keys = None,
             Btn::ShardsClose => self.shards_page = None,
+            Btn::ListsBack | Btn::ListsNew | Btn::ListsRow(_) | Btn::ListsSide(_) | Btn::ListsName | Btn::ListsLevel(_) | Btn::ListsUp(_) | Btn::ListsView => {
+                let now = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+                let Some(m) = self.my_lists.as_mut() else { return };
+                match m.click(id, now) {
+                    mylists::Effect::None => {}
+                    mylists::Effect::Close => self.my_lists = None,
+                    mylists::Effect::Alert(title, text) => self.alert = Some(Alert { title, text, t: 0.0 }),
+                    mylists::Effect::ConfirmDelete(key) => {
+                        self.confirm = Some(Confirm {
+                            title: "Delete List".into(),
+                            text: "Are you sure you want to <cr>delete</c> this list?".into(),
+                            btn1: "Cancel".into(),
+                            btn2: "Delete".into(),
+                            action: Action::DeleteList(key),
+                            t: 0.0,
+                        })
+                    }
+                    mylists::Effect::View(title, ids) => {
+                        self.my_lists = None;
+                        self.screen = Screen::Online;
+                        let mut search = crate::online::Search::new(10);
+                        search.query = ids;
+                        self.online.open_list(search, false);
+                        self.online.title = title;
+                    }
+                }
+            }
             // the icon kit's special tab: the ship's fire, the items; the death effects' Explode
             Btn::GarageFire(n) => {
                 self.progress.set_number("shipfire", n as f32);
@@ -2785,6 +2854,7 @@ impl Ui {
                         })
                     }
                     online::Effect::Clone(id) => self.clone_saved(id),
+                    online::Effect::MyLists(adding) => self.my_lists = Some(mylists::Lists::new(adding)),
                     online::Effect::GauntletChest(kind) => {
                         let key = format!("g_{kind}");
                         if let Some((_, items)) = chests_table::SPECIAL.iter().find(|s| s.0 == key) {
@@ -3678,6 +3748,15 @@ impl Ui {
                 }
                 self.keys = Some(k);
             }
+            // My Lists' browser (CADENCE_PAGE 1: a new list's page)
+            "mylists" => {
+                self.screen = Screen::Online;
+                let mut m = mylists::Lists::new(None);
+                if page == Some(1) {
+                    m.open = Some(crate::mylists::create(1).key);
+                }
+                self.my_lists = Some(m);
+            }
             // the particle editor on tab CADENCE_PAGE, over the menu
             "particle" => {
                 let mut pe = particle::Editor::new(None, |_| false);
@@ -4227,6 +4306,12 @@ impl Ui {
         if let Some(pe) = self.particle_ed.as_mut() {
             pe.update(dt);
         }
+        if let Some(m) = self.my_lists.as_mut() {
+            m.t += dt;
+            if let Some(mylists::Effect::Alert(title, text)) = m.poll() {
+                self.alert = Some(Alert { title, text, t: 0.0 });
+            }
+        }
         // the level page's leaderboard sends your progress there
         if let Some(id) = self.online.info.as_ref().map(|l| l.id) {
             let lp = self.progress.get(id);
@@ -4505,6 +4590,10 @@ impl Ui {
         if self.screen == Screen::Creator && self.online.daily.is_some() {
             ctx.buttons.clear();
             self.popup_anim(&mut canvas, "daily", |c| self.online.draw_daily(c, &mut ctx));
+        }
+        if let Some(m) = &self.my_lists {
+            ctx.buttons.clear();
+            mylists::draw(&mut canvas, &mut ctx, m);
         }
         if let Some(pe) = &self.particle_ed {
             ctx.buttons.clear();

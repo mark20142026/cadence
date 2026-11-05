@@ -268,6 +268,8 @@ pub enum Effect {
     Delete(i32),
     Clone(i32),
     LevelOptions(i32),
+    /// My Lists (`Some(level)`: pick the list to add that level to).
+    MyLists(Option<i32>),
     /// A gauntlet beaten: open its chest (`g_N`).
     GauntletChest(i32),
 }
@@ -868,7 +870,7 @@ impl Browser {
                     }
                     1 => return Effect::Alert("Import".into(), "Drop a level file (<cy>.gmd</c>) onto the window to import it into your levels.".into()),
                     2 => return Effect::Alert("Backup".into(), "Your levels are kept in Cadence's save on this device, and in your account's cloud save when you <cg>Save</c> from the Account page.".into()),
-                    3 => return Effect::Alert("My Lists".into(), "Lists group levels together. Make one from a level's page with the <cg>Lists</c> button.".into()),
+                    3 => return Effect::MyLists(None),
                     4 => {
                         self.my_folder = (self.my_folder + 1) % 10;
                         return Effect::RefreshMine;
@@ -996,7 +998,7 @@ impl Browser {
                 let Some(l) = self.info.clone() else { return Effect::None };
                 let saved = crate::saved::get(l.id);
                 match (k, saved) {
-                    (_, None) if k != 1 => return Effect::Alert("Saved Levels".into(), "Play the level first: it's saved when it downloads.".into()),
+                    (_, None) if k != 1 && k != 11 => return Effect::Alert("Saved Levels".into(), "Play the level first: it's saved when it downloads.".into()),
                     (0, _) => return Effect::Delete(l.id),
                     (1, _) => {
                         self.refresh_next = true;
@@ -1014,7 +1016,7 @@ impl Browser {
                         crate::saved::update(l.id, |x| x.folder = folder);
                         return Effect::Alert("Folder".into(), if folder == 0 { "Not in a folder.".to_string() } else { format!("Moved to folder <cy>{folder}</c>.") });
                     }
-                    _ => return Effect::Alert("Lists".into(), "Make a list from <cg>My Lists</c> to add saved levels to it.".into()),
+                    _ => return Effect::MyLists(Some(l.id)),
                 }
             }
             Btn::InfoSide(k) => {

@@ -3763,7 +3763,7 @@ impl App {
 
 /// The menu screens `CADENCE_SCREEN` can open for a headless screenshot (`Ui::open_for_screenshot`).
 const MENU_SCREENS: &[&str] = &[
-    "levels", "locked", "online", "settings", "options", "garage", "colors", "stats", "creator", "achievements", "account", "login", "support", "songs", "howto", "video", "parental", "osearch", "oinfo", "odaily", "opacks", "ogauntlets", "oscores", "olists", "oquests", "opaths", "rewards", "news", "editor", "tower", "shop", "shopbuy", "particle", "secret", "treasure", "keys", "shards", "register", "accounthelp", "myprofile", "friends", "requests", "acctsettings", "share", "oldmessages",
+    "levels", "locked", "online", "settings", "options", "garage", "colors", "stats", "creator", "achievements", "account", "login", "support", "songs", "howto", "video", "parental", "osearch", "oinfo", "odaily", "opacks", "ogauntlets", "oscores", "olists", "oquests", "opaths", "rewards", "news", "editor", "tower", "shop", "shopbuy", "particle", "mylists", "secret", "treasure", "keys", "shards", "register", "accounthelp", "myprofile", "friends", "requests", "acctsettings", "share", "oldmessages",
 ];
 
 /// The menus at startup: a level id of 0 opens the main menu, any other starts that level
@@ -3905,7 +3905,7 @@ impl App {
                 }
                 Action::Unlink => crate::gjapi::unlink(),
                 // started by the UI itself (its confirm), never sent here
-                Action::CloudSave | Action::CloudLoad | Action::AcceptRequest(_) | Action::ReportLevel(_) | Action::DeleteSaved(_) | Action::ToggleLdm(_) | Action::DeleteMine | Action::DeleteMyLevel(_) => {}
+                Action::CloudSave | Action::CloudLoad | Action::AcceptRequest(_) | Action::ReportLevel(_) | Action::DeleteSaved(_) | Action::DeleteList(_) | Action::ToggleLdm(_) | Action::DeleteMine | Action::DeleteMyLevel(_) => {}
                 Action::Practice(on) => {
                     if let Some(g) = self.game.as_mut() {
                         g.audio.set_paused(false);

@@ -923,6 +923,11 @@ void openGui(std::string const& name) {
     } else if (name.rfind("menu:", 0) == 0) {
         g_guiItem = std::atoi(name.c_str() + 5);
         g_guiShotFrame = 300;
+    } else if (name.rfind("mylevels", 0) == 0) {
+        CCDirector::get()->replaceScene(LevelBrowserLayer::scene(GJSearchObject::create(SearchType::MyLevels)));
+    } else if (name.rfind("mylists", 0) == 0) {
+        // the creator's My Lists (LevelBrowserLayer, SearchType::MyLists)
+        CCDirector::get()->replaceScene(LevelBrowserLayer::scene(GJSearchObject::create(SearchType::MyLists)));
     } else if (name.rfind("search", 0) == 0 && name.rfind("searchx", 0) != 0) {
         CCDirector::get()->replaceScene(LevelSearchLayer::scene(0));
     }
