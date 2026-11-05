@@ -1140,3 +1140,42 @@ tryGetObject, loadGroupParentsFromString).
   `cargo check` for wasm32, and the JS glue under node with a fake AudioContext. Not traced
   (FMOD state isn't in the harness).
 - verify_all 123/134 (the 11 failing suites are the same as before this session).
+
+## 2026-11-05 (SFX agent): SFX trigger leftovers; spawn remaps and main objects
+
+Worktree branch on main (af397ad); decompiles from a scratch Ghidra copy (playSFXTrigger,
+playEffectAdvanced + its disassembly, activateSFXTrigger / activateSFXEditTrigger /
+applySFXEditTrigger, stopChannel ×3, stopAndGetFade, updateChannel(Tweens), setChannelPitch,
+pitchForIdx, updateReverb, setupAudioEngine, SFXTriggerGameObject::customObjectSetup /
+getUniqueSFXID / getSFXRefID; FUN_1000d64d0, applyRemap, processRotationActions,
+processFollowActions, triggerMoveCommand, getMoveTargetDelta, tryGetMainObject, the level
+settings parser for kA40). Own harness root in the session scratch (game copy, home, the
+prebuilt trace mod), corner and muted.
+
+- **SFX** (`cadence_core::audiofx`, `audio.rs`, `index.html`): pitch 405 as a pitch shift that
+  keeps the length (FMOD's PITCHSHIFT DSP; here a phase vocoder with its FFT sizes, 412 picks
+  2048), the random speed / pitch / volume ranges with 599's whole steps (libc `rand()`),
+  pitchForIdx's table (out of range = 1, no clamp), start / end (the end stop is set at the
+  starting speed), fades in / out as real-time fade points, loops between start and end, edit
+  SFX 414 = stop looping (also with 417), unique-id override 420, min interval 434, no
+  one-shots at SFX volume 0, reverb group with the 22 presets (an FDN driven by FMOD's
+  parameters — an approximation, the algorithm isn't public), stopAllEffects on death /
+  restart / leaving. Native: a mixing bus (one rodio source, 44.1 kHz) instead of a player
+  per sound; web: AudioBufferSourceNode offset / stop / gain ramps / loop points, the pitch
+  shift via a wasm export, a ConvolverNode with the reverb's impulse response.
+  Checked: unit tests (audiofx: pitch table, rand, vocoder frequency / gain / length, end and
+  speed, fades, loops + 414, ranges, reverb decay; audio.rs: params passed, 414 / 417,
+  unique override, interval, muted; the bus mix and reverb tail), `cargo check` for wasm32,
+  the web build (`sfx_pitch_shift` exported), and the page glue under node with a fake
+  AudioContext. Not checked by ear in the browser pane, and not traced (FMOD state isn't
+  recorded).
+- **Spawn remaps / main objects** (`parents.rs`, `advfollow.rs`, `groups.rs`, `world.rs`):
+  advanced follow and its edit / re-target take the remapped 51 / 71; remapped target groups
+  get clusters; rotate centers, followed groups and move targets are `tryGetMainObject`
+  (rotate without one: in-place turns; kA40: `tryGetObject`). New real trace
+  re/traces/gremap: all 9 watched groups match (≤ 5e-6), main's build had 8 off.
+- Not done: the rotate / move aim modes' `tryGetObject`, player targets of move-to-target, the
+  level-22 kA40 override, scale centers / teleport targets (still the first object), FMOD's
+  exact reverb and pitch-shift sound.
+- verify_all **124/135** (was 123/134; +gremap, the same 11 failing). `cargo test --workspace
+  --release` green (73 core, 66 game).
