@@ -103,6 +103,8 @@ pub struct Social {
     pub members: Option<Result<social::Members, ()>>,
     pub members_confirm: Option<(i32, i64, String)>,
     pub owner_adds: bool,
+    /// `ReportPopup` on this thread: the reasons ticked, and the "Confirm Report" question.
+    pub reporting: Option<(social::Thread, Vec<i32>, bool)>,
     pub accepted: Option<social::Thread>,
     /// Your friends, for the new-thread popup's "To".
     pub friends: Option<Vec<User>>,
@@ -126,7 +128,7 @@ pub fn row_btn(what: u16, row: usize) -> Btn {
 
 impl Social {
     pub fn open() -> Social {
-        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), viewing: None, thread_page: None, friends: None, options: None, options_confirm: None, invites: None, ignoring: None, accepted: None, thread_search: None, members_of: None, members: None, members_confirm: None, owner_adds: false, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
+        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), viewing: None, thread_page: None, friends: None, options: None, options_confirm: None, invites: None, ignoring: None, accepted: None, thread_search: None, members_of: None, members: None, members_confirm: None, owner_adds: false, reporting: None, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
         s.load();
         s
     }
@@ -285,6 +287,41 @@ impl Social {
         }
     }
 
+    /// `ReportPopup`: close, a reason's tick box, Report (at least one reason; then the
+    /// game's "Confirm Report").
+    fn report_click(&mut self, id: Btn) -> Effect {
+        let Some((t, picked, confirm)) = self.reporting.as_mut() else { return Effect::None };
+        let Btn::Social(code) = id else { return Effect::None };
+        if *confirm {
+            match code {
+                8191 => {
+                    let (thread, reasons) = (t.id, picked.clone());
+                    self.reporting = None;
+                    self.job = Some(crate::net::spawn(async move { Msg::Done(social::report_thread(thread, reasons).await, "report") }));
+                }
+                8190 => *confirm = false,
+                _ => {}
+            }
+            return Effect::None;
+        }
+        match code {
+            8100 => self.reporting = None,
+            8101..=8105 => {
+                let reason = REPORT_REASONS[(code - 8101) as usize].0;
+                match picked.iter().position(|&r| r == reason) {
+                    Some(i) => {
+                        picked.remove(i);
+                    }
+                    None => picked.push(reason),
+                }
+            }
+            8106 if picked.is_empty() => return Effect::Alert("Report".into(), "Please select at least one reason.".into()),
+            8106 => *confirm = true,
+            _ => {}
+        }
+        Effect::None
+    }
+
     pub fn load_members(&mut self) {
         let Some(id) = self.members_of.as_ref().map(|t| t.id) else { return };
         self.members = None;
@@ -400,7 +437,10 @@ impl Social {
             }
             5 => self.options_confirm = Some(1),
             7 => self.options_confirm = Some(5),
-            // Report: the thread's report type isn't read yet (PLAN)
+            4 => {
+                self.options = None;
+                self.reporting = Some((t, Vec::new(), false));
+            }
             _ => {}
         }
         Effect::None
@@ -482,6 +522,7 @@ impl Social {
                 // the page reloads what changed
                 match what {
                     "member" => self.load_members(),
+                    "report" => return Effect::Alert("Report".into(), "Report received".into()),
                     "accept invite" => {
                         if let Some(t) = self.accepted.take() {
                             self.viewing = Some(t);
@@ -529,6 +570,9 @@ impl Social {
 
     /// A click on the page's layout button `i` (`Btn::Replay`) or a row's (`Btn::Social`).
     pub fn click(&mut self, id: Btn) -> Effect {
+        if self.reporting.is_some() {
+            return self.report_click(id);
+        }
         if self.members_of.is_some() {
             return self.members_click(id);
         }
@@ -866,6 +910,10 @@ pub fn draw(s: &Social, c: &mut Canvas, ctx: &mut Ctx) {
     if let Some(t) = &s.members_of {
         ctx.buttons.clear();
         draw_members(s, t, c, ctx, dx);
+    }
+    if let Some((t, picked, confirm)) = &s.reporting {
+        ctx.buttons.clear();
+        draw_report(t, picked, *confirm, c, ctx, dx);
     }
 }
 
@@ -1441,14 +1489,12 @@ fn draw_thread_options(s: &Social, t: &social::Thread, c: &mut Canvas, ctx: &mut
     let close = Btn::Social(7799);
     c.sprite("GJ_closeBtn_001.png", 172.5 + dx, top + 2.0, Look::scaled(0.8 * ctx.factor(close)));
     ctx.area(close, 172.5 + dx, top + 2.0, 36.8, 38.0);
-    for (k, (label, sheet, what)) in buttons.iter().enumerate() {
+    for (k, (label, sheet, _)) in buttons.iter().enumerate() {
         let y = top - 47.0 - 29.0 * k as f32;
         let id = Btn::Social(7700 + k as u16);
         let f = ctx.factor(id);
-        // Report isn't wired to its request yet: shown dimmed
-        let alpha = if *what == 4 { 120 } else { 255 };
-        c.nine_slice(sheet, cx, y, 146.0 * f, 22.0 * f, Look::default().alpha(alpha));
-        c.text("bigFont", label, cx - 1.0, y + 2.0, Look::scaled(0.5 * f).alpha(alpha));
+        c.nine_slice(sheet, cx, y, 146.0 * f, 22.0 * f, Look::default());
+        c.text("bigFont", label, cx - 1.0, y + 2.0, Look::scaled(0.5 * f));
         ctx.area(id, cx, y, 146.0, 22.0);
     }
     if let Some(mode) = s.options_confirm {
@@ -1660,6 +1706,56 @@ fn draw_members(s: &Social, t: &social::Thread, c: &mut Canvas, ctx: &mut Ctx, d
             c.nine_slice(sheet, x, 112.0, 116.0 * f, 34.0 * f, Look::default());
             c.text("goldFont", label, x, 114.0, Look::scaled(0.7 * f));
             ctx.area(id, x, 112.0, 116.0, 34.0);
+        }
+    }
+}
+
+/// A thread's report reasons: their ids (as the game sends them) and labels.
+const REPORT_REASONS: [(i32, &str); 5] = [(0, "Inappropriate Content"), (1, "Harassment / Hate"), (2, "Spam / Trolling"), (3, "Scam / Phishing"), (7, "Threats / Danger")];
+
+/// `ReportPopup` (captured): "Report", whose, "Select one or more reasons:", the five tick
+/// boxes, Report; then the game's "Confirm Report" listing the reasons.
+fn draw_report(t: &social::Thread, picked: &[i32], confirm: bool, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
+    c.rect(0.0, 0.0, c.width, c.height, [0.0; 3], 150.0 / 255.0);
+    let at = |x: f32| x + 38.0 + dx;
+    let cx = at(246.5);
+    let name = if t.direct { &t.name } else { &t.title };
+    c.nine_slice("GJ_square01.png", cx, 160.0, 320.0, 274.0, Look::default());
+    c.text("bigFont", "Report", cx, 283.0, Look::scaled(0.5));
+    c.text("bigFont", name, cx, 261.0, Look::scaled(0.6));
+    c.text("goldFont", "Select one or more reasons:", cx, 231.0, Look::scaled(0.5));
+    let close = Btn::Social(8100);
+    c.sprite("GJ_closeBtn_001.png", at(94.5), 285.0, Look::scaled(0.8 * ctx.factor(close)));
+    ctx.area(close, at(94.5), 285.0, 36.8, 38.0);
+    for (i, (id, label)) in REPORT_REASONS.iter().enumerate() {
+        let y = 201.0 - 28.0 * i as f32;
+        let b = Btn::Social(8101 + i as u16);
+        let on = picked.contains(id);
+        c.sprite(if on { "GJ_checkOn_001.png" } else { "GJ_checkOff_001.png" }, at(136.5), y, Look::scaled(0.7 * ctx.factor(b)));
+        ctx.area(b, at(136.5), y, 24.5, 24.15);
+        c.text("bigFont", label, at(152.5), y, Look::scaled(0.5).anchor(0.0, 0.5));
+    }
+    let go = Btn::Social(8106);
+    let f = ctx.factor(go);
+    c.nine_slice("GJ_button_06.png", cx, 47.0, 116.0 * f, 30.0 * f, Look::default());
+    c.text("bigFont", "Report", cx - 1.0, 49.0, Look::scaled(0.7 * f));
+    ctx.area(go, cx, 47.0, 116.0, 30.0);
+    if confirm {
+        ctx.buttons.clear();
+        c.rect(0.0, 0.0, c.width, c.height, [0.0; 3], 100.0 / 255.0);
+        let reasons: String = REPORT_REASONS.iter().filter(|r| picked.contains(&r.0)).map(|r| format!("\n- <cy>{}</c>", r.1)).collect();
+        let text = format!("Report <cg>{name}</c> for:{reasons}\n\nFalse reports may result in action against your own account.");
+        let lines = super::canvas::rich_lines(c, "chatFont", &text, 340.0);
+        let h = 110.0 + 18.0 * lines.len() as f32;
+        c.nine_slice("square01_001.png", cx, 160.0, 380.0, h, Look::default());
+        c.text("goldFont", "Confirm Report", cx, 160.0 + h * 0.5 - 24.0, Look::scaled(0.8));
+        super::canvas::draw_rich(c, "chatFont", &lines, cx, 160.0 + h * 0.5 - 52.0, 0.8, 18.0, 255);
+        for (id, label, x, sheet) in [(Btn::Social(8190), "Cancel", cx - 70.0, "GJ_button_01.png"), (Btn::Social(8191), "Report", cx + 70.0, "GJ_button_06.png")] {
+            let f = ctx.factor(id);
+            let y = 160.0 - h * 0.5 + 30.0;
+            c.nine_slice(sheet, x, y, 116.0 * f, 34.0 * f, Look::default());
+            c.text("goldFont", label, x, y + 2.0, Look::scaled(0.7 * f));
+            ctx.area(id, x, y, 116.0, 34.0);
         }
     }
 }

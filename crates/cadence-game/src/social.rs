@@ -581,6 +581,24 @@ pub async fn members(thread: i64) -> Result<Members, String> {
     Ok(ok(body).map(|b| parse_members(b.trim())).unwrap_or_default())
 }
 
+/// `reportGJContent.php` (built at 0x1004d3500; no base fields): a thread is type 8, its id the
+/// target; the reasons joined with commas (a thread's: 0 inappropriate, 1 harassment / hate,
+/// 2 spam / trolling, 3 scam / phishing, 7 threats / danger); `&messageID=` for one message.
+pub fn report_form(account: &gjapi::Account, kind: i32, target: i64, reasons: &[i32], message: Option<i64>) -> String {
+    let list = reasons.iter().map(i32::to_string).collect::<Vec<_>>().join(",");
+    let mut f = format!("type={kind}&targetID={target}&special=0&reasons={list}&accountID={}&gjp2={}&secret={}", account.account_id, account.gjp2, gjapi::SECRET);
+    if let Some(m) = message {
+        f.push_str(&format!("&messageID={m}"));
+    }
+    f
+}
+
+pub async fn report_thread(thread: i64, reasons: Vec<i32>) -> Result<(), String> {
+    let id = me()?;
+    let account = id.account.as_ref().ok_or_else(|| "not logged in".to_string())?;
+    ok(crate::net::post("reportGJContent.php", &report_form(account, 8, thread, &reasons, None)).await?).map(|_| ())
+}
+
 /// `searchGJThreadMessages.php` (GameLevelManager's request, decompiled): the query base64'd
 /// after the secret; the answer is message rows (the same parser) and `#` whether there are
 /// more.
@@ -720,6 +738,12 @@ mod thread_page_tests {
         assert_eq!((p.messages[0].text.as_str(), p.messages[2].deleted, p.messages[1].account), ("Hello there, first message", true, 1));
         assert_eq!((p.users[0].name.as_str(), p.users[0].icon, p.users[1].account), ("Alpha", 15, 1));
         assert_eq!((p.earlier, p.locked, p.status), (true, true, 7));
+    }
+
+    #[test]
+    fn report_form_order() {
+        let a = crate::gjapi::Account { account_id: 7, user_id: 1, name: "x".into(), gjp2: "G".into() };
+        assert_eq!(super::report_form(&a, 8, 9001, &[0, 7], None), "type=8&targetID=9001&special=0&reasons=0,7&accountID=7&gjp2=G&secret=Wmfd2893gb7");
     }
 
     #[test]

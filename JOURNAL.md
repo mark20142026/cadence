@@ -1290,3 +1290,9 @@ prebuilt trace mod), corner and muted.
   "Adds:" = 13 — recorded through their questions; Add Member = mode 4 with the picked accounts
   joined (MemberListPopup::friendPickerAdd → FUN_1004caa9c, decompiled). Cadence draws the
   popup from the capture; Add Member reuses the friends list of the New popup.
+- Report: ThreadOptionsPopup's Report (0x10082a004) calls the report helper at 0x10084393c:
+  type 8, target = the thread's id, special 0, reasons offered {0,1,2,3} + 7 (the literal at
+  0x1008fed0c, labels from the strings: Inappropriate Content, Harassment / Hate, Spam /
+  Trolling, Scam / Phishing, … Threats / Danger). reportGJContent's body (0x1004d3500) has no
+  base fields: `type=&targetID=&special=&reasons=<ids joined by ",">&accountID=&gjp2=&secret=`
+  [+ `&messageID=`]. Not recorded (the fake-account copy isn't logged in).
