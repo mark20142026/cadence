@@ -654,6 +654,21 @@ impl Camera {
         if z != lz {
             cam[0] = ((w / lz) * 0.5 - wz * 0.5) + cam[0];
             cam[1] = ((h / lz) * 0.5 - hz * 0.5) + cam[1];
+            // platformer: the internal offset along the gameplay axis keeps its share of the
+            // (re-zoomed) gameplay offset, and the camera moves with it (decompile lines
+            // 279–300; skipped while that axis is static)
+            let a = if sideways { 1 } else { 0 };
+            if platformer && self.internal_target[a] != 0.0 && !self.static_active[a] {
+                let cur = self.internal[a];
+                let share = cur / self.internal_target[a];
+                if share <= 1.0 {
+                    let n = goff[a] * share;
+                    if (0.0 <= cur && 0.0 <= n) || (cur < 0.0 && n < 0.0) {
+                        self.internal[a] = cur + (n - cur);
+                        cam[a] = (n - cur) + cam[a];
+                    }
+                }
+            }
         }
         let mut target = cam;
         for a in 0..2 {

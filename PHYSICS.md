@@ -31,7 +31,7 @@ what is approximated or missing. The details (addresses, field offsets, derivati
   f64 positions and rotations, with a tolerance (1e-4 in the suites that use it), because the
   game refreshes some node values only once per drawn frame.
 
-**Current result: 134 of 135 suites bit for bit; the camera bit for bit in 131.** In the
+**Current result: 134 of 135 suites bit for bit; the camera bit for bit in all 135.** In the
 remaining suite, positions, velocities and flags still match every step; only the visual
 rotation differs for a few steps (see "What isn't fully exact" below).
 
@@ -48,8 +48,7 @@ rotation differs for a few steps (see "What isn't fully exact" below).
 | Collisions (solids, hazards, rotated objects, saws) | Bit for bit | all levels; object rects match the game's own dumps |
 | Platformer (walk, stop, turn, jump, slopes) | Bit for bit | pf1, pfslope, The Tower t1–t7 |
 | Player rotation (visual) | Bit for bit in 134 suites; close in 1 | see below |
-| Camera (follow, corridors, dual ground, key 370, level end, teleports, platformer band, spawned camera triggers, zoom) | Bit for bit in 131 suites | camera columns, cam370t |
-| Camera in four Tower routes | Close (a zoom while the platformer camera follows: under 1.7 units) | t4–t7-5001 |
+| Camera (follow, corridors, dual ground, key 370, level end, teleports, platformer band, spawned camera triggers, zoom) | Bit for bit in all 135 suites | camera columns, cam370t |
 | libm calls (`sinf`, `cosf`, `exp2f`, `powf`) | Apple's, now and then an ulp from the correctly rounded value | The system's on macOS; elsewhere correctly rounded (f64, rounded) | Bit for bit on macOS (Dash's elastic zoom needed it) |
 | Move / rotate / follow / spawn / advanced follow / area triggers, group parents | Within 1e-4 (watched groups) or bit for bit (player) | Geometrical Dominator, gparent, gremap, kfcurve, areahsv |
 | Follow (1347), item triggers | Ported from the decompile, not traced | — |
@@ -110,7 +109,7 @@ rotation differs for a few steps (see "What isn't fully exact" below).
 | Dual ground | `animateInDualGroundNew`: 0.4 s in dual mode or from another corridor, else 0.5 | Same | Bit for bit (Hexagon Force) |
 | Level end | the end portal's limit (+0x3138 − view / zoom − offset), eased in like an edge | Same | Bit for bit |
 | After teleports | key 55 sets a 0.5 s teleport ease; y eased by 30 while it runs | Same | Bit for bit (Deadlocked, Fingerdash) |
-| Left edge, platformer band and easing | edge max 15; band 55 / 27.5, x easing 8; speed-based easing min(30, 30 − 0.2·distance) | Same | Bit for bit (pf1, pfslope, t1–t3); t4–t7 within 1.7 units |
+| Left edge, platformer band and easing | edge max 15; band 55 / 27.5, x easing 8; speed-based easing min(30, 30 − 0.2·distance); zooming rescales the internal offset and moves the camera with it | Same | Bit for bit (pf1, pfslope, The Tower t1–t7) |
 
 ## Side by side: triggers and moving objects
 
@@ -180,7 +179,6 @@ rotated player box.
 
 ## Approximated or not ported (physics-related)
 
-- The camera: The Tower's zoom while the platformer camera follows (t4–t7), as above.
 - Off macOS the libm calls are correctly rounded rather than Apple's: an ulp apart now and then
   (the game on Windows uses Microsoft's, which differs from both in the same way).
 - Rotate / move aim modes, player targets for move-to-target, scale and teleport centers of

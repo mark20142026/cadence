@@ -1378,3 +1378,11 @@ prebuilt trace mod), corner and muted.
   `cadence_core::mathf`: the system functions on macOS, f64-rounded elsewhere; used by the
   easings, the camera's ease in-out, the dash orb's angle and group rotation. Camera 131/135
   (The Tower t4–t7 left).
+- The Tower t4–t7: a zoom in a platformer level rescales the internal camera offset (+0x280)
+  by its share of the old target (+0x288) against the new, re-zoomed gameplay offset, and the
+  camera moves by the change (updateCamera decompile lines 279–300; skipped while the axis is
+  static). Camera 135/135.
+- Tried: sorting special objects by x within a section (would explain s19-22's slope-before-
+  portal order). Breaks eight suites; the game's comparator (0x1000cbbd8) sorts sections by
+  unique ID (+0x394), which follows load order (killer uids = load order + a small offset). So
+  s19-22's order comes from somewhere else.
