@@ -154,6 +154,8 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       levels added from a level page's list button, upload / delete (uploadGJLevelList body
       from the decompile: seed2 = base64(xor(sha1(levels sample + account), seed)); not yet
       recorded from the real game — its call:list harness command didn't send).
+- [x] Launcher and packages (`cadence-launcher`, `tools/package.sh`, the release workflow):
+      find the game, or get it with a Steam login (SteamCMD), Play, update check.
 - [ ] Still open: group parents / linked objects and SFX speed (agent running); the newer
       threads messaging (getGJThreads and its ThreadViewPopup / NewThreadPopup / members /
       invites) and notifications (getGJNotifications): their answer parsers are in unnamed

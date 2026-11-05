@@ -1082,3 +1082,21 @@ session's scratch (corner, muted); decompiles from the scratch Ghidra copy.
   proximity (audio backend); the editor's preview-lock line.
 - verify_all **122/133** (was 114/131): +pfslope, s12..s16-22, +kfcurve, +cam370t;
   `cargo test --workspace --release` green (57 core, 55 game).
+
+## 2026-11-05 — The launcher and the player packages
+
+- `crates/cadence-launcher` (binary `cadence`, egui): finds the game in every Steam library
+  (`steamapps/libraryfolders.vdf` under the macOS, Linux and Windows Steam folders), in its own
+  download folder, or a folder you pick; or gets it with your Steam login through Valve's
+  SteamCMD (`+@NoPromptForPassword 1 +login user password [code] +app_update 322170 validate`;
+  the Mac build on macOS, the Windows build elsewhere). A missing Steam Guard code ends the run
+  with a line the launcher reads ("Steam Guard code", "Two-factor") and asks for it; the
+  password goes to SteamCMD only and is cleared when the run ends. Play starts `cadence-game`
+  next to it with `CADENCE_GD_RESOURCES` and `CADENCE_QUALITY`. A newer GitHub release shows an
+  update link. `CADENCE_LAUNCHER_SHOT=<png>` saves the window and quits.
+- Checked here: it found the Steam copy on this Mac and the packaged game runs from the .app.
+  SteamCMD runs on this Mac (anonymous login, `+quit`). Not checked: a real Steam login and
+  download (no account to test with), and the Windows / Linux builds beyond CI.
+- `tools/package.sh`: dist/Cadence.app (ad-hoc signed, Cadence's own icon from
+  `tools/make_icon.py`), .zip and .dmg on macOS; a zip on Windows; a tarball with a .desktop file
+  on Linux. `.github/workflows/release.yml` runs it on all four and publishes on a v* tag.
