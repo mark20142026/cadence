@@ -1703,3 +1703,31 @@ are in the scratch `DecompileTyped.java`; with them Ghidra keeps the float expre
   pairs), +0x518 objects (skipped by cluster moves), rotated objects' skew under an uneven
   cluster scale, and the parent-first main object for the other triggers (rotate / move / follow
   still use the group's first object).
+
+## SFX trigger speed, edit SFX targets, per-sound proximity (2026-11-05, parents agent)
+
+- **SFX trigger 3602** (`SFXTriggerGameObject::customObjectSetup` 0x16c0f0, keys = string index
+  ÷ 0x18): 392 sound (+0x748), 404 speed index (+0x754), 405 pitch index (+0x758), 406 volume
+  (+0x75c), 415 unique (+0x775) with 416 its id (+0x778; `getUniqueSFXID`: 416 if ≥ 1 else
+  −uid), 455 SFX group (+0x7a0), 457 group of SFX triggers for edits (+0x7a8), 51 / 71
+  proximity group / center, 138 / 200 / 428 listeners, 421–426 volumes / distances, 458 mode,
+  489 (+0x79a) no proximity test, 10 duration (+0x5ac), 417 / 418 / 419 stop / volume / speed
+  (+0x7a4–6). `activateSFXTrigger` (0x10ef60): with 51 and without 489,
+  `volumeForProximityEffect` ≤ 0 → not played; `GameManager::playSFXTrigger` (0x2ef690) →
+  `playEffectAdvanced(speed = pitchForIdx(404) (± the 0x7c0 range), volume ≤ 2, pitch =
+  pitchForIdx(405))`: speed goes to `ChannelControl::setPitch` (the playback rate), the pitch to
+  a pitch-shift DSP (FMOD_DSP_TYPE_PITCHSHIFT 0xd). The channel id is kept per trigger uid
+  (+0xd8 map) and gets the trigger's proximity effect (`addProximityVolumeEffect(channel, 0)`).
+- **Edit SFX 3603** (`activateSFXEditTrigger` 0x10f2a0): the channels started by the 3602
+  objects of group 457, then SFX group 455 (`applySFXEditTrigger(455, type 1)`, the channel
+  group), then the unique id 416 (`channelIDForUniqueID`). Per target: stop (417, or 414),
+  speed 419 → `updateChannel(duration, +0x750 > 0 ? +0x750 : pitchForIdx(404), kind 1)`,
+  volume 418 → `updateChannel(duration, 406, kind 0)`; with 51 a proximity effect for the
+  457 / 455 targets (not the unique one). Proximity effects are kept by (channel, type) and
+  scale the channel's volume every step (`updateProximityVolumeEffects`).
+- **Cadence**: `SfxPlay` / `AudioEdit` (groups.rs); the app's `TriggerSounds` (audio.rs) keeps
+  each sound's handle, trigger, SFX group, unique id, volume and speed tweens and proximity;
+  the backends got per-sound volume and rate (native: a rodio `Player` per sound with
+  `set_speed`; web: `AudioBufferSourceNode.playbackRate` and a gain per sound). Not ported:
+  405 pitch (needs a pitch shifter), the random ranges, loops, fades in / out, start / end,
+  reverb, 414.

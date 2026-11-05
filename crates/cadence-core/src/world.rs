@@ -233,8 +233,8 @@ pub struct World {
     pub timers: std::collections::BTreeMap<i32, (f64, f32, bool, Option<f32>, i32)>,
     /// Armed time events (3615): (timer, time, target, multi).
     time_events: Vec<(i32, f32, i32, bool)>,
-    /// SFX triggers fired since the app last looked: (sound id, volume).
-    pub sfx: Vec<(i32, f32)>,
+    /// SFX triggers fired since the app last looked.
+    pub sfx: Vec<crate::groups::SfxPlay>,
     /// Song triggers fired since the app last looked: (song id, start ms, volume, looped).
     pub songs: Vec<(i32, i32, f32, bool, i32)>,
     /// kA41 (LevelSettings +0x1cb → layer +0x7bc): rotate triggers turn solids too.
@@ -260,7 +260,9 @@ pub struct World {
     pub bg_speed: (f32, f32),
     pub mg_speed: (f32, f32),
     /// Edit song / SFX triggers fired since the app last looked.
-    pub audio_edits: Vec<crate::groups::AudioEdit>,
+    /// With each edit SFX trigger, the level orders of group 457 (the SFX triggers whose
+    /// sounds it edits).
+    pub audio_edits: Vec<(crate::groups::AudioEdit, Vec<u32>)>,
     /// Touch triggers registered (`GJEffectManager` +0x1c0): (group, hold, mode, only, dual).
     touch_triggers: Vec<(i32, bool, i32, i32, bool)>,
     /// A reverse trigger (1917) fired this step (the player's camera step applies it).
@@ -448,7 +450,6 @@ impl World {
                 | crate::groups::Action::Teleport { .. }
                 | crate::groups::Action::PlayerControl { .. }
                 | crate::groups::Action::Song { .. }
-                | crate::groups::Action::Sfx { .. }
                 | crate::groups::Action::Timer { .. }
                 | crate::groups::Action::Sequence { .. }
                 | crate::groups::Action::EventLink { .. }
@@ -470,11 +471,29 @@ impl World {
                 | crate::groups::Action::Progress { .. }
                 | crate::groups::Action::BgEffect { .. }
                 | crate::groups::Action::ArtSpeed { .. }
-                | crate::groups::Action::AudioEdit(_)
                 | crate::groups::Action::Reverse
                 | crate::groups::Action::Enter { .. }
                 | crate::groups::Action::EnterStop { .. }
                 | crate::groups::Action::Effect { .. } => {}
+                crate::groups::Action::Sfx(play) => {
+                    // the proximity group and its listener group
+                    if let Some(p) = play.proximity {
+                        for g in [p.group, p.center].into_iter().filter(|&g| g > 0) {
+                            members.entry(g).or_default();
+                        }
+                    }
+                }
+                crate::groups::Action::AudioEdit(edit) => {
+                    // the SFX triggers it edits, and the proximity groups
+                    if edit.triggers > 0 {
+                        members.entry(edit.triggers).or_default();
+                    }
+                    if let Some(p) = edit.proximity {
+                        for g in [p.group, p.center].into_iter().filter(|&g| g > 0) {
+                            members.entry(g).or_default();
+                        }
+                    }
+                }
                 crate::groups::Action::KeyframeAnim { order } => {
                     // the animated group, and the keyframe objects' groups
                     if let Some(raw) = level.objects.get(order as usize) {
@@ -1579,7 +1598,7 @@ impl World {
                         let was = self.control.unwrap_or((false, false, false));
                         self.control = Some((was.0 || stop_jump, was.1 || stop_move, was.2 || stop_rotation));
                     }
-                    crate::groups::Action::Sfx { id, volume } => self.sfx.push((id, volume)),
+                    crate::groups::Action::Sfx(play) => self.sfx.push(play),
                     crate::groups::Action::EventLink { order, target } => {
                         if !self.event_links.contains(&(order, target)) {
                             self.event_links.push((order, target));
@@ -1785,7 +1804,10 @@ impl World {
                             self.bg_speed = (pick(x, 0.1), pick(y, 0.1));
                         }
                     }
-                    crate::groups::Action::AudioEdit(edit) => self.audio_edits.push(edit),
+                    crate::groups::Action::AudioEdit(edit) => {
+                        let triggers = if edit.triggers > 0 { self.members_of(edit.triggers).to_vec() } else { Vec::new() };
+                        self.audio_edits.push((edit, triggers));
+                    }
                     crate::groups::Action::Touch { group, hold, mode, only, dual } => {
                         let entry = (group, hold, mode, only, dual);
                         if !self.touch_triggers.contains(&entry) {
@@ -2196,6 +2218,27 @@ mod tests {
         act(&mut w, Action::Touch { group: 5, hold: false, mode: 2, only: 0, dual: true });
         assert!(w.player_button(true, false));
         assert!(!w.enabled[0]);
+    }
+
+    #[test]
+    fn edit_sfx_names_the_sfx_triggers_of_its_group() {
+        // SFX trigger (order 0) in group 9 with speed 5 and a proximity to group 4; an edit SFX
+        // trigger (order 1) for group 9's SFX triggers
+        let level = LevelString::parse("kA13,0;1,3602,2,0,3,0,57,9,392,7,404,5,51,4,138,1;1,3603,2,0,3,0,457,9,419,1,404,-3;1,5,2,300,3,105,57,4");
+        let mut w = World::from_level(&level);
+        let sfx = crate::groups::SfxPlay::from_raw(&level.objects[0], 0);
+        assert_eq!((sfx.id, sfx.speed, sfx.proximity.map(|p| p.group)), (7, 5, Some(4)));
+        let edit = match crate::groups::Trigger::parse(&level.objects[1], 1).unwrap().action {
+            crate::groups::Action::AudioEdit(e) => e,
+            a => panic!("{a:?}"),
+        };
+        act(&mut w, crate::groups::Action::Sfx(sfx));
+        act(&mut w, crate::groups::Action::AudioEdit(edit));
+        assert_eq!(w.sfx.len(), 1);
+        assert_eq!(w.audio_edits, vec![(edit, vec![0])]);
+        assert_eq!((edit.triggers, edit.speed), (9, Some(-3)));
+        // the proximity group is known to the world
+        assert_eq!(w.members_of(4), &[2]);
     }
 
     #[test]

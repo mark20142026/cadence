@@ -1104,3 +1104,21 @@ tryGetObject, loadGroupParentsFromString).
   (≤ 6.6e-6), rotations ≤ 1.5e-5 at frame steps. verify_all compares watch files now for
   suites with a `watch.args` (cmp_watch.py options; cmp_watch.py got --fields, --rot-frames and
   an exit status).
+
+## 2026-11-05 (parents agent): SFX speed and per-sound proximity
+
+- SFX triggers play at `pitchForIdx(404)` (the FMOD channel pitch = playback rate); edit SFX
+  speed (419) and volume (418) tween per sound over the trigger's duration; edit SFX targets
+  the sounds of the SFX triggers in group 457, SFX group 455 and unique id 416 (was: every
+  trigger sound, volume only). Proximity is per sound (the SFX trigger's own, replaced by an
+  edit's), and a 3602 with a proximity group doesn't play at a proximity volume of 0 (unless
+  489). Proximity groups are now registered in the world (they had no members before, so the
+  edit triggers' proximity was always 1).
+- Backends: native rodio player per trigger sound (`set_speed`, `set_volume`), web
+  `playTriggerEffect` / `setTriggerEffect` / `stopTriggerEffect` / `triggerEffectPlaying` in
+  index.html (AudioBufferSourceNode.playbackRate + a gain node per sound).
+- Checked by unit tests (audio.rs `trigger_tests`: speed, tweens, targeting by 457 / 455 / 416,
+  stop, proximity gate and per-sound factors; world.rs: the edit gets group 457's triggers),
+  `cargo check` for wasm32, and the JS glue under node with a fake AudioContext. Not traced
+  (FMOD state isn't in the harness).
+- verify_all 123/134 (the 11 failing suites are the same as before this session).
