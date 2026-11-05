@@ -1120,7 +1120,9 @@ void stepGui() {
     g_guiFrame++;
     int lead = 0;
     // .../dropnotice: every frame once the gui is open, until the shot
-    if (name.find("/dropnotice") != std::string::npos && g_guiFrame > lead + 40 && g_guiFrame < lead + g_guiShotFrame - 2) dropNotices();
+    // (only before a /press:, so the notices that press opens stay)
+    bool pressing = name.find("/press:") != std::string::npos;
+    if (name.find("/dropnotice") != std::string::npos && g_guiFrame > lead + 40 && g_guiFrame < lead + g_guiShotFrame - (pressing ? g_guiLate + 10 : 2)) dropNotices();
     if (g_guiFrame == lead + 1) {
         CCDirector::get()->replaceScene(MenuLayer::scene(false));
     }
@@ -1313,7 +1315,55 @@ void stepGui() {
             }
         }
     }
-    else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - 15 && name.find("/viewthread") != std::string::npos) {
+    else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - 4 && name.find("/press2:") != std::string::npos) {
+        // .../press2:<label>: a press on what /press: opened
+        auto want = name.substr(name.find("/press2:") + 8);
+        want = want.substr(0, want.find('/'));
+        for (auto& ch : want) if (ch == '_') ch = ' ';
+        pressLabel(want);
+    }
+    else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - 4 && name.find("/press2f:") != std::string::npos) {
+        // .../press2f:<frame>: the same, by a sprite (a tick box)
+        auto want = name.substr(name.find("/press2f:") + 9);
+        pressFrame(want.substr(0, want.find('/')));
+    }
+    else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - 4 && name.find("/typein:") != std::string::npos) {
+        // .../typein:<text>: the last text box drawn gets <text> ('_' for spaces), as typing does
+        auto text = name.substr(name.find("/typein:") + 8);
+        text = text.substr(0, text.find('/'));
+        for (auto& ch : text) if (ch == '_') ch = ' ';
+        CCTextInputNode* box = nullptr;
+        std::function<void(CCNode*)> walk = [&](CCNode* nd) {
+            for (auto c : CCArrayExt<CCNode*>(nd->getChildren())) {
+                if (auto t = typeinfo_cast<CCTextInputNode*>(c)) box = t;
+                else walk(c);
+            }
+        };
+        walk(CCDirector::get()->getRunningScene());
+        if (box) {
+            box->setString(text);
+            if (box->m_delegate) box->m_delegate->textChanged(box);
+        }
+        log::info("gui: typed into {}", box ? "a box" : "nothing");
+    }
+    else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - 1 && name.find("/press3:") != std::string::npos) {
+        auto want = name.substr(name.find("/press3:") + 8);
+        want = want.substr(0, want.find('/'));
+        for (auto& ch : want) if (ch == '_') ch = ' ';
+        pressLabel(want);
+    }
+    else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - 7 && name.find("/press:") != std::string::npos) {
+        // .../press:<label>: a press after /cell: or /viewthread ('_' for spaces)
+        auto want = name.substr(name.find("/press:") + 7);
+        want = want.substr(0, want.find('/'));
+        for (auto& ch : want) if (ch == '_') ch = ' ';
+        pressLabel(want);
+    }
+    else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - 15 && (name.find("/viewthread") != std::string::npos || name.find("/cell:") != std::string::npos)) {
+        // .../cell:<hex>: call that GJThreadCell handler (ARM offset) on the first row instead,
+        // e.g. 1ebf08 onThreadOptions, 1ebe90 onShowMembers, 1ebd08 onViewProfile
+        uintptr_t fn = 0x1ebf38;
+        if (auto at = name.find("/cell:"); at != std::string::npos) fn = std::stoul(name.substr(at + 6), nullptr, 16);
         // .../viewthread: open the first thread listed, as tapping its row does
         // (GJThreadCell::onViewThread, 2.2091 ARM 0x1ebf38: not bound on macOS)
         // (found by class name: the cell's type info isn't in the bindings)
@@ -1327,7 +1377,7 @@ void stepGui() {
         };
         walk(CCDirector::get()->getRunningScene());
         log::info("gui: view thread: {}", cell ? "found" : "missing");
-        if (cell) reinterpret_cast<void (*)(CCNode*, CCObject*)>(geode::base::get() + 0x1ebf38)(cell, nullptr);
+        if (cell) reinterpret_cast<void (*)(CCNode*, CCObject*)>(geode::base::get() + fn)(cell, nullptr);
     }
     else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - (threePresses(name) ? 80 : 15) && name.find("/then2label:") != std::string::npos) {
         auto want = name.substr(name.find("/then2label:") + 12);

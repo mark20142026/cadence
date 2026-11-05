@@ -1250,3 +1250,17 @@ prebuilt trace mod), corner and muted.
   Cadence: the writer's new-thread mode (DM: one friend + message, 500; group: friends + name
   20 + description 300), "To" opens a list of your friends. GUI matches the captures closely.
 - "Load earlier": the same request with beforeID = the oldest shown; older messages go first.
+- Thread options recorded from the real ThreadOptionsPopup (harness `/cell:<offset>` calls a
+  GJThreadCell handler on the first row — 1ebf08 onThreadOptions; `/press:`, `/press2:`,
+  `/press2f:`, `/press3:`, `/typein:` for the presses after it): updateGJThread
+  `&threadID=&mode=&secret=[&value=<b64>]` — 1 clear, 2 rename (value = the name), 5 leave,
+  10 mute (value "1"/"0"), 15 pin (value "1"/"0"). Members sends getGJThreadMembers
+  `&threadID=&secret=`; its answer isn't `account:user:name:role:…` rows ("Failed to load
+  members"), and its handler isn't found yet (the dispatcher calls the thread handlers at
+  0x100477f84…0x100478c64; invites is FUN_100492a18). Report goes through reportGJContent
+  (`type=&targetID=&special=&reasons=&accountID=&gjp2=&secret=[&messageID=]`, built at
+  0x1004d3500); the popup is opened by eight helpers (0x100842960…0x100843a20), the thread
+  one's type not yet read. Captures: shots/gui-real/acct/threadopts, groupopts, rename,
+  members, to-Report.
+- Next: the options popup in Cadence from these layouts and modes; then members, invites,
+  search, report's type.
