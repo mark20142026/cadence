@@ -62,6 +62,8 @@ pub enum Scene {
     /// The legacy messages (`MessagesProfilePage`) and `NotificationsPage` (`ui::social`)
     OldMessages,
     Notifications,
+    /// `MessageThreadsPage`: the newer messages (threads), its rows left out
+    Threads,
 }
 
 /// The scenes that are FLAlertLayer popups (they open with `FLAlertLayer::show`'s scale-in);
@@ -174,6 +176,7 @@ impl Scene {
             Scene::ShareLevel => include_str!("scenes/share.txt"),
             Scene::OldMessages => include_str!("scenes/oldmessages.txt"),
             Scene::Notifications => include_str!("scenes/notifications.txt"),
+            Scene::Threads => include_str!("scenes/threads.txt"),
         }
     }
 }

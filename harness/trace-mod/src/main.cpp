@@ -781,6 +781,12 @@ void openGui(std::string const& name) {
             glm->getLevelLeaderboard(level, LevelLeaderboardType::Global, LevelLeaderboardMode::Time);
             glm->getLevelLeaderboard(level, LevelLeaderboardType::Friends, LevelLeaderboardMode::Points);
         }
+    } else if (name.rfind("threads", 0) == 0) {
+        // MessageThreadsPage on its own (the profile's messages button goes through a notice
+        // first). Fake-account homes only, with CADENCE_HTTP_REDIRECT.
+        if (std::getenv("CADENCE_HTTP_REDIRECT")) {
+            if (auto p = MessageThreadsPage::create()) p->show();
+        }
     } else if (name.rfind("myprofile", 0) == 0) {
         // the logged-in menu's profile button (MenuLayer::onMyProfile): your own ProfilePage.
         // Fake-account homes only (re/home-fake) with CADENCE_HTTP_REDIRECT.
@@ -1252,6 +1258,16 @@ void stepGui() {
             else if (kind == "settings") ui->onSettings(nullptr);
             else if (kind == "pause") ui->onPause(nullptr);
         }
+    }
+    else if (g_guiFrame == lead + g_guiShotFrame - 20 && name.find("/dropnotice") != std::string::npos) {
+        // .../dropnotice: take plain notices (FLAlertLayer itself, not a page built on it) off
+        // the scene without pressing anything, so the page under them shows
+        auto scene = CCDirector::get()->getRunningScene();
+        std::vector<CCNode*> drop;
+        for (auto c : CCArrayExt<CCNode*>(scene->getChildren()))
+            if (typeinfo_cast<FLAlertLayer*>(c) && std::string(typeid(*c).name()) == typeid(FLAlertLayer).name()) drop.push_back(c);
+        for (auto c : drop) c->removeFromParent();
+        log::info("gui: dropped {} notice(s)", drop.size());
     }
     else if (g_guiFrame == lead + g_guiShotFrame - g_guiLate - (threePresses(name) ? 120 : 40) && name.find("/thenframe:") != std::string::npos) {
         // .../thenframe:<frame>: press the visible button whose sprite shows <frame> (safer than

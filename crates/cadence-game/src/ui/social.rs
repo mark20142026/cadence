@@ -26,12 +26,15 @@ pub enum Page {
     Notifications,
     /// Your comments on levels (`InfoLayer` in comment-history mode)
     History,
+    /// The message threads (`MessageThreadsPage`): 0 all, 1 direct messages, 2 groups
+    Threads(u8),
 }
 
 pub enum Msg {
     History(Vec<crate::online::Comment>),
     Notifications(Result<(Vec<social::Notification>, usize), ()>),
     Messages(Vec<social::Message>),
+    Threads(Result<(Vec<social::Thread>, usize, i32), ()>),
     Opened(Box<social::Message>),
     Profile(Box<(crate::online::Profile, Counts, Vec<Post>)>),
     Users(Vec<User>),
@@ -59,6 +62,9 @@ pub struct Social {
     pub notifications: Option<Result<(Vec<social::Notification>, usize), ()>>,
     /// The legacy messages listed, and the one opened.
     pub messages: Option<Vec<social::Message>>,
+    /// The threads listed (rows, total, invites waiting), and the rows ticked.
+    pub threads: Option<Result<(Vec<social::Thread>, usize, i32), ()>>,
+    pub ticked: Vec<i64>,
     pub open_message: Option<social::Message>,
     pub stack: Vec<Page>,
     pub profile: Option<(crate::online::Profile, Counts, Vec<Post>)>,
@@ -78,7 +84,7 @@ pub fn row_btn(what: u16, row: usize) -> Btn {
 
 impl Social {
     pub fn open() -> Social {
-        let mut s = Social { history: None, notifications: None, messages: None, open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
+        let mut s = Social { history: None, notifications: None, messages: None, threads: None, ticked: Vec::new(), open_message: None, stack: vec![Page::Profile], profile: None, users: None, settings: Default::default(), job: None, t: 0.0, scroll: 0.0 };
         s.load();
         s
     }
@@ -164,6 +170,10 @@ impl Social {
                     })
                 })
             }
+            Page::Threads(tab) => {
+                self.threads = None;
+                crate::net::spawn(async move { Msg::Threads(social::threads(tab as i32, 0).await.map_err(|_| ())) })
+            }
             Page::Messages(tab) => {
                 self.messages = None;
                 crate::net::spawn(async move { social::messages(tab == 1, 0).await.map_or_else(Msg::Error, Msg::Messages) })
@@ -206,6 +216,10 @@ impl Social {
             }
             Msg::Users(u) => self.users = Some(u),
             Msg::Messages(m) => self.messages = Some(m),
+            Msg::Threads(t) => {
+                self.ticked.clear();
+                self.threads = Some(t);
+            }
             Msg::Notifications(n) => self.notifications = Some(n),
             Msg::History(h) => self.history = Some(h),
             Msg::Opened(m) => self.open_message = Some(*m),
@@ -248,6 +262,7 @@ impl Social {
             Page::Messages(_) => self.messages.as_ref().map_or(0, Vec::len) as f32 * 50.0 - 188.0,
             Page::Notifications => self.notifications.as_ref().and_then(|r| r.as_ref().ok()).map_or(0, |(l, _)| l.len()) as f32 * 40.0 - 196.0,
             Page::History => s_len(&self.history) as f32 * 44.0 - 176.0,
+            Page::Threads(_) => self.threads.as_ref().and_then(|r| r.as_ref().ok()).map_or(0, |(l, _, _)| l.len()) as f32 * 40.0 - 196.0,
         };
         self.scroll = (self.scroll + delta).clamp(0.0, rows.max(0.0));
     }
@@ -268,7 +283,34 @@ impl Social {
             (Page::Profile, Btn::Replay(24)) => self.go(Page::Friends(0)),
             (Page::Profile, Btn::Replay(25)) => self.go(Page::Requests(0)),
             (Page::Profile, Btn::Replay(27)) => self.stack.push(Page::Settings),
-            (Page::Profile, Btn::Replay(23)) => self.go(Page::Messages(0)),
+            (Page::Profile, Btn::Replay(23)) => self.go(Page::Threads(0)),
+            // the threads page: back, Legacy (the old messages), the tabs, refresh, select all,
+            // a row's tick box
+            (Page::Threads(_), Btn::Replay(5)) => {
+                self.stack.pop();
+                self.load();
+            }
+            (Page::Threads(_), Btn::Replay(6)) => self.go(Page::Messages(0)),
+            (Page::Threads(tab), Btn::Replay(i @ 11..=13)) if i as u8 - 11 != tab => {
+                self.stack.pop();
+                self.go(Page::Threads(i as u8 - 11));
+            }
+            (Page::Threads(_), Btn::Replay(14)) if !self.busy() => self.load(),
+            (Page::Threads(_), Btn::Replay(15)) => {
+                let all: Vec<i64> = self.threads.as_ref().and_then(|r| r.as_ref().ok()).map(|(l, _, _)| l.iter().map(|t| t.id).collect()).unwrap_or_default();
+                self.ticked = if self.ticked.len() == all.len() { Vec::new() } else { all };
+            }
+            (Page::Threads(_), Btn::Social(code)) if (7100..7200).contains(&code) => {
+                let row = (code - 7100) as usize;
+                if let Some(t) = self.threads.as_ref().and_then(|r| r.as_ref().ok()).and_then(|(l, _, _)| l.get(row)) {
+                    match self.ticked.iter().position(|&id| id == t.id) {
+                        Some(i) => {
+                            self.ticked.remove(i);
+                        }
+                        None => self.ticked.push(t.id),
+                    }
+                }
+            }
             // the messages: the received / sent tabs, a message (opens with its text), its
             // reply, back
             (Page::Messages(tab), Btn::Social(code)) => {
@@ -450,6 +492,7 @@ pub fn draw(s: &Social, c: &mut Canvas, ctx: &mut Ctx) {
         // over your profile, as the game opens it
         Page::Messages(tab) => draw_messages(s, c, ctx, dx, tab),
         Page::Notifications => draw_notifications(s, c, ctx, dx),
+        Page::Threads(tab) => draw_threads(s, c, ctx, dx, tab),
         Page::History => draw_history(s, c, ctx, dx),
         Page::Settings => {
             draw_profile(s, c, ctx, dx);
@@ -814,6 +857,102 @@ fn draw_notifications(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
     }
 }
 
+/// `MessageThreadsPage` (captured with made-up threads): the page's layout without its rows,
+/// the tab icons (the open one in color, the others gray), and the rows: a direct message shows
+/// the other player's icon and name, a group its picture and title; then the unread count's
+/// green ball, the star, "removed", the age, the muted icon, "..." and the tick box.
+fn draw_threads(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32, tab: u8) {
+    const TABS: [&str; 3] = ["threadBtn_allOn_001.png", "threadBtn_dm_001.png", "threadBtn_groupOn_001.png"];
+    replay::draw_where(c, ctx, Scene::Threads, &|_, name, _, _| !TABS.contains(&name) && name != "GJ_commentSide_001.png");
+    for (i, name) in TABS.iter().enumerate() {
+        let look = if i as u8 == tab { Look::default() } else { Look::default().gray().rgb([240, 240, 240]).alpha(215) };
+        let f = ctx.factor(Btn::Replay(11 + i as u8));
+        c.sprite(name, 90.5 + dx, 228.0 - 37.0 * i as f32, look.scale_xy(f, f));
+    }
+    let (lx, ly, top) = (114.5 + dx, 50.0, 246.0);
+    for (x, flip) in [(lx - 7.0, false), (lx + 347.0, true)] {
+        c.sprite("GJ_commentSide_001.png", x, ly, Look::default().anchor(if flip { 1.0 } else { 0.0 }, 0.0).scale_xy(1.0, 6.3667).flip_x(flip));
+    }
+    let list = match &s.threads {
+        None => return super::online::loading_circle(c, 284.5 + dx, 148.0, s.t),
+        Some(Err(())) => {
+            c.text("goldFont", "Something went wrong...", 284.5 + dx, 148.0, Look::scaled(0.6));
+            return;
+        }
+        Some(Ok(l)) => l,
+    };
+    let (rows, total, invites) = (&list.0, list.1, list.2);
+    if invites > 0 {
+        c.sprite("d_ball_01_001.png", 491.0 + dx, 240.5, Look::scaled(0.6).rgb([255, 0, 0]));
+        c.text("bigFont", &invites.min(99).to_string(), 491.0 + dx, 241.1, Look::scaled(0.48));
+    }
+    if rows.is_empty() {
+        c.text("goldFont", "No messages", 284.5 + dx, 148.0, Look::scaled(0.6));
+        return;
+    }
+    c.text("chatFont", &format!("1 to {} of {total}", rows.len()), 284.5 + dx, 23.0, Look::scaled(0.5).rgb([0, 0, 0]).alpha(150));
+    let rgb = |c: [u8; 3]| c.map(|v| v as f32 / 255.0);
+    c.rect(lx, ly, 340.0, 196.0, rgb([191, 114, 62]), 1.0);
+    c.clip = Some([lx, ly, lx + 340.0, top]);
+    for (i, t) in rows.iter().enumerate() {
+        let y = 228.0 - 40.0 * i as f32 + s.scroll;
+        if !(ly - 20.0..=top + 20.0).contains(&y) {
+            continue;
+        }
+        c.rect(lx, y - 20.0, 340.0, 40.0, rgb(if i % 2 == 0 { [161, 88, 44] } else { [194, 114, 62] }), 1.0);
+        // the name (a direct message) or the title, then what follows it on the line
+        let mut x;
+        if t.direct {
+            let base = super::garage::icon_sheet((t.icon_type as usize).min(8), t.icon.max(1) as u32);
+            super::garage::draw_icon(c, &base, 136.5 + dx, y, 0.5, super::menu::color_for_idx(t.color1.max(0) as usize), super::menu::color_for_idx(t.color2.max(0) as usize));
+            let w = c.text_size("goldFont", &t.name).0 * 0.5;
+            let (cx, id) = (153.56 + dx + w * 0.5, Btn::Social(7000 + i as u16));
+            let f = ctx.factor(id);
+            c.text("goldFont", &t.name, cx, y, Look::scaled(0.5 * f));
+            ctx.area(id, cx, y, w * 1.2, 18.2);
+            x = cx + w * 0.5 + 1.0;
+        } else {
+            c.sprite("particle_52_001.png", 136.5 + dx, y, Look::scaled(1.0125));
+            // the title, fitted to about 92 points (the capture's 0.3845 for "Group Title B")
+            let full = c.text_size("bigFont", &t.title).0;
+            let scale = (92.37 / full.max(1.0)).min(0.45);
+            c.text("bigFont", &t.title, 152.5 + dx, y, Look::scaled(scale).anchor(0.0, 0.5));
+            x = 152.5 + dx + full * scale;
+            if t.described {
+                c.sprite("GJ_infoIcon_001.png", x + 14.6, y, Look::scaled(0.4));
+                x += 27.6;
+            }
+        }
+        if t.status == 8 {
+            let w = c.text_size("chatFont", "removed").0 * 0.45;
+            c.text("chatFont", "removed", x, y, Look::scaled(0.45).anchor(0.0, 0.5).rgb([255, 90, 90]));
+            x += w;
+        }
+        c.text("chatFont", &format!("{} ago", t.age), x + 6.06, y, Look::scaled(0.5).anchor(0.0, 0.5).rgb([0, 0, 0]).alpha(150));
+        if t.starred {
+            c.sprite("GJ_starsIcon_001.png", 121.5 + dx, y + 13.0, Look::scaled(0.35));
+        }
+        if t.unread > 0 {
+            let n = t.unread.min(99).to_string();
+            let k = if t.unread < 10 { 0.64 } else { 0.504 };
+            c.sprite("d_ball_01_001.png", 147.5 + dx, y + 12.0, Look::scaled(0.32).rgb([0, 255, 0]));
+            c.text("chatFont", &n, 147.82 + dx, y + 12.32, Look::scaled(k).rgb([0, 0, 0]).alpha(125));
+            c.text("chatFont", &n, 147.5 + dx, y + 12.64, Look::scaled(k).rgb([0, 0, 0]));
+        }
+        if t.muted {
+            c.sprite("GJ_musicOffBtn_001.png", 408.5 + dx, y + 10.0, Look::scaled(0.32).alpha(140));
+        }
+        c.text("bigFont", "...", 408.5 + dx, y + 2.0, Look::scaled(0.45).alpha(120));
+        let tick = Btn::Social(7100 + i as u16);
+        let on = s.ticked.contains(&t.id);
+        c.sprite(if on { "GJ_checkOn_001.png" } else { "GJ_checkOff_001.png" }, 432.5 + dx, y, Look::scaled(0.63 * ctx.factor(tick)));
+        ctx.area(tick, 432.5 + dx, y, 19.53, 19.53);
+    }
+    c.clip = None;
+    c.sprite("GJ_commentTop_001.png", lx + 170.0, ly + 192.0, Look::default());
+    c.sprite("GJ_commentTop_001.png", lx + 170.0, ly + 4.0, Look::default().flip_y(true));
+}
+
 /// `GJAccountSettingsLayer`: the layout with this account's choices checked.
 fn draw_settings(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
     // the check boxes' rows and their options' x (from the layout: the boxes at y 225, 185,
@@ -922,6 +1061,7 @@ pub fn wanted_sheets(s: &Social) -> Vec<String> {
     let mut v: Vec<String> = match s.page() {
         Page::Profile => s.profile.as_ref().map(|(p, _, _)| (0..9).map(|k| super::garage::icon_sheet(k, p.icons[k])).collect()).unwrap_or_default(),
         Page::Friends(_) | Page::Requests(_) => s.users.iter().flatten().map(|u| super::garage::icon_sheet((u.icon_type as usize).min(8), u.icon)).collect(),
+        Page::Threads(_) => s.threads.iter().flatten().flat_map(|(l, _, _)| l.iter()).filter(|t| t.direct).map(|t| super::garage::icon_sheet((t.icon_type as usize).min(8), t.icon.max(1) as u32)).collect(),
         Page::Settings | Page::Messages(_) | Page::Notifications | Page::History => Vec::new(),
     };
     v.sort();

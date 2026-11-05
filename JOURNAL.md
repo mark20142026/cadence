@@ -1161,3 +1161,22 @@ tryGetObject, loadGroupParentsFromString).
   `force-system-lib-on-osx` and no default features (the system libcurl, as the native build
   already used). Built locally for x86_64-apple-darwin (game and launcher).
 
+
+## 2026-11-05 — message threads: the list
+
+- The release workflow's four builds all pass (run 41979777465), the Intel Mac included.
+- getGJThreads: the answer's parser (GameLevelManager::onGetThreadsCompleted, 0x1004900a8; its
+  per-row code read from the disassembly after `operator new(0x150)`, where Ghidra stops)
+  splits `rows#total:offset:count:invites:…`, each row's `:` fields by position (rows with ≤ 6
+  fields skipped); fields 2, 3, 8, 21 go through base64DecodeString. The request (recorded):
+  `&page=&filter=<tab>&removed=1&secret=`.
+- Meanings from the real MessageThreadsPage with two made-up threads (harness `gui threads`:
+  MessageThreadsPage::create on its own, `/dropnotice` takes the messaging-rules notice off the
+  scene without pressing it): 1 account, 2 name, 3 title, 4 unread (green ball), 6 age,
+  10 muted, 12 direct message, 13 described (info icon), 14 starred, 15–20 the player's icon
+  (icon, color 1, color 2, glow color, kind, glow = 2), 25 membership (8 = "removed").
+  The `#` tail's 4th number is the invites waiting.
+- `ui/social.rs` Page::Threads(tab): scenes/threads.txt (the capture without its rows, moved to
+  the 569-point frame), the tabs (open one in color, others gray), rows per the capture with
+  spacing from the fonts' advances, tick boxes and select-all, Legacy → the old messages. The
+  profile's messages button now opens it, as the game's does.

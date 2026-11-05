@@ -370,3 +370,97 @@ mod notification_tests {
     }
 }
 
+/// A message thread (`GJMessageThread`, from `getGJThreads.php`; the game's parser,
+/// GameLevelManager::onGetThreadsCompleted, reads each `|` row's `:` fields by position).
+/// Fields mapped from a capture of the real MessageThreadsPage with made-up rows: 0 id, 1 the
+/// other player's account, 2 their name (base64), 3 the group's title (base64), 4 unread, 6 age,
+/// 8 the last message (base64), 10 muted, 12 a direct message (not a group), 13 has a
+/// description, 14 starred, 15–20 the other player's icon (icon, colors, glow color, kind,
+/// glow 2), 23 a time stamp, 25 your membership (8 removed).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Thread {
+    pub id: i64,
+    pub account: i64,
+    pub name: String,
+    pub title: String,
+    pub unread: i32,
+    pub age: String,
+    pub last: String,
+    pub muted: bool,
+    pub direct: bool,
+    pub described: bool,
+    pub starred: bool,
+    pub icon: i32,
+    pub color1: i32,
+    pub color2: i32,
+    pub glow_color: i32,
+    pub icon_type: i32,
+    pub glow: bool,
+    pub time: i64,
+    pub status: i32,
+}
+
+/// The thread list's answer: the threads, the total, and the invites waiting (the `#` part is
+/// `total:offset:count:invites:…`).
+pub fn parse_threads(body: &str) -> (Vec<Thread>, usize, i32) {
+    let mut parts = body.split('#');
+    let rows = parts.next().unwrap_or("");
+    let tail: Vec<i64> = parts.next().unwrap_or("").split(':').map(|v| v.parse().unwrap_or(0)).collect();
+    let list: Vec<Thread> = rows
+        .split('|')
+        .filter(|r| !r.is_empty())
+        .filter_map(|r| {
+            let f: Vec<&str> = r.split(':').collect();
+            // the game skips rows with 6 fields or fewer
+            if f.len() < 7 {
+                return None;
+            }
+            let s = |i: usize| f.get(i).copied().unwrap_or("");
+            let n = |i: usize| s(i).parse::<i64>().unwrap_or(0);
+            let dec = |i: usize| gjapi::b64_decode(s(i)).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+            Some(Thread {
+                id: n(0),
+                account: n(1),
+                name: dec(2),
+                title: dec(3),
+                unread: n(4) as i32,
+                age: s(6).into(),
+                last: dec(8),
+                muted: n(10) == 1,
+                direct: n(12) == 1,
+                described: n(13) == 1,
+                starred: n(14) == 1,
+                icon: n(15) as i32,
+                color1: n(16) as i32,
+                color2: n(17) as i32,
+                glow_color: n(18) as i32,
+                icon_type: n(19) as i32,
+                glow: n(20) == 2,
+                time: n(23),
+                status: n(25) as i32,
+            })
+        })
+        .collect();
+    let total = (tail.first().copied().unwrap_or(0) as usize).max(list.len());
+    (list, total, tail.get(3).copied().unwrap_or(0) as i32)
+}
+
+/// Your threads: `filter` 0 all, 1 direct messages, 2 groups (the page's tabs).
+pub async fn threads(filter: i32, page: u32) -> Result<(Vec<Thread>, usize, i32), String> {
+    let id = me()?;
+    // the game's request (recorded)
+    let body = crate::net::post("getGJThreads.php", &format!("{}&page={page}&filter={filter}&removed=1&secret={}", id.base(), gjapi::SECRET)).await?;
+    Ok(ok(body).map(|b| parse_threads(b.trim())).unwrap_or_default())
+}
+
+#[cfg(test)]
+mod thread_tests {
+    #[test]
+    fn rows_by_position() {
+        let (t, total, invites) = super::parse_threads("9001:21:QWxwaGEgTmFtZQ==:R3JvdXAgVGl0bGUgQQ==:3:5:2 hours:2:TGFzdCBtZXNzYWdlIEE=:9:0:11:1:0:1:15:3:12:5:0:2:RmllbGQyMSBB:F22a:1700000000:24:0|9002:22:QmV0YSBOYW1l:R3JvdXAgVGl0bGUgQg==:12:6:3 days:1:TGFzdCBtZXNzYWdlIEI=:19:1:21:0:1:0:25:4:13:6:1:0:RmllbGQyMSBC:F22b:1700000001:34:8|1:2:3#2:0:20:4:5");
+        assert_eq!((t.len(), total, invites), (2, 2, 4));
+        assert_eq!((t[0].name.as_str(), t[0].unread, t[0].direct, t[0].starred, t[0].icon, t[0].glow), ("Alpha Name", 3, true, true, 15, true));
+        assert_eq!((t[1].title.as_str(), t[1].muted, t[1].direct, t[1].status, t[1].last.as_str()), ("Group Title B", true, false, 8, "Last message B"));
+    }
+}
+

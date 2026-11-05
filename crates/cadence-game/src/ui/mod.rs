@@ -3101,7 +3101,7 @@ impl Ui {
         };
         match scene {
             // drawn and clicked by `ui::social`, never as a replayed screen
-            replay::Scene::MyProfile | replay::Scene::Friends | replay::Scene::Requests | replay::Scene::AcctSettings | replay::Scene::ShareLevel | replay::Scene::OldMessages | replay::Scene::Notifications => {}
+            replay::Scene::MyProfile | replay::Scene::Friends | replay::Scene::Requests | replay::Scene::AcctSettings | replay::Scene::ShareLevel | replay::Scene::OldMessages | replay::Scene::Notifications | replay::Scene::Threads => {}
             // OK (the first button) closes; the others (easing, pages, info) aren't ported
             replay::Scene::Trigger(_) | replay::Scene::Special(_) => {
                 if i == 0 {
@@ -3688,8 +3688,9 @@ impl Ui {
             }
             // your account's pages (CADENCE_SERVER at a stand-in with made-up answers)
             #[cfg(not(target_arch = "wasm32"))]
-            "myprofile" | "friends" | "requests" | "acctsettings" | "oldmessages" | "notifications" => {
+            "myprofile" | "friends" | "requests" | "acctsettings" | "oldmessages" | "notifications" | "threads" => {
                 let page = match which {
+                    "threads" => social::Page::Threads(0),
                     "notifications" => social::Page::Notifications,
                     "oldmessages" => social::Page::Messages(0),
                     "friends" => social::Page::Friends(0),
