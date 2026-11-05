@@ -163,7 +163,11 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       GJNotificationCell (emote per kind, title + age, body, new dot, bell = mute). GUI diff
       vs the real page with the same made-up rows 5.0.
 - [x] The Intel Mac release build: libcurl from the system on macOS (no OpenSSL to cross-build).
-- [ ] Still open: the newer threads messaging (getGJThreads and its ThreadViewPopup /
-      NewThreadPopup / members / invites): its answer parser is in unnamed code not found yet,
-      and there is no real account to record against. Smaller leftovers the agents noted: spawn-trigger remaps of target groups in
-      advanced follow, Edit SFX's stop (414), SFX pitch (405), random ranges, loops and fades.
+- [x] SFX leftovers (Edit SFX 414 stop-looping, pitch 405 as FMOD's pitch shift, random
+      ranges 596–599, start/end, fades, loops, unique id / interval rules, reverb presets
+      approximated) and spawn remaps in advanced follow + main objects for rotate / follow /
+      move (agent, merged; new trace gremap). verify_all 124/135.
+- [x] Message threads list (getGJThreads → MessageThreadsPage): rows by position as the
+      game's parser reads them, drawn like the real page with made-up threads.
+- [ ] Still open: a thread's own view (ThreadViewPopup, getGJThreadMessages), sending
+      (sendGJThreadMessage), new threads, members, invites, thread options and search.

@@ -1731,3 +1731,82 @@ are in the scratch `DecompileTyped.java`; with them Ghidra keeps the float expre
   `set_speed`; web: `AudioBufferSourceNode.playbackRate` and a gain per sound). Not ported:
   405 pitch (needs a pitch shifter), the random ranges, loops, fades in / out, start / end,
   reverb, 414.
+
+## SFX trigger leftovers: pitch, random ranges, start / end, fades, loops, reverb, 414 (2026-11-05, SFX agent)
+
+From `playSFXTrigger` (0x2ef690), `playEffectAdvanced` (0x351e14, checked in the disassembly),
+`applySFXEditTrigger` / `stopChannel` (0x3554cc, 0x35508c), `pitchForIdx`, `updateReverb`
+(0x34e628), `setupAudioEngine`. Keys (string index ÷ 0x18 in `customObjectSetup`): 405 pitch
+(+0x758), 407 reverb (+0x770), 408 start ms (+0x760), 409 fade in ms (+0x764), 410 end ms
+(+0x768), 411 fade out ms (+0x76c), 412 big FFT (+0x771), 413 loop (+0x772), 414 stop loop
+(+0x773), 420 override unique (+0x776), 433 pre-load (+0x799, off while a trigger plays), 434
+min interval s (+0x79c), 502 reverb type (+0x7b0), 503 reverb on (+0x7b4), 596 / 597 speed /
+pitch random range (+0x7c0 / +0x7c4), 598 volume range (+0x7c8), 599 whole steps (+0x7cc),
+601 (+0x74c, unused here).
+
+- **pitchForIdx** is a table for −12..12; any other index is 1.0 (not clamped).
+- **Random ranges** (`rand()` / 2.1474836e9): with 599, `pitchForIdx(int(int((2r − 1)·range) +
+  index))`; without, `low + (high − low)·r` between `pitchForIdx(index ∓ range)`; speed rolls
+  before pitch. Volume ± range is clamped to 0..2 by a macro that rolls again on every test.
+- **playEffectAdvanced**: nothing at an SFX volume ≤ 0 unless looping; min interval per
+  `getSFXRefID` (416, else −uid) against the engine clock; a playing unique id returns that
+  channel (the trigger registers it as its own) unless 420, which stops it first; volume ≤ 2;
+  `setPitch(speed)` (rate); 413 → `setLoopCount(−1)`; pitch ≠ 1 → a PITCHSHIFT DSP (FFT 1024, 2048
+  with 412); `setPosition(start)`; length = end − start (≥ 0) with an end; fade in = fade points
+  0 → 1 over its ms of DSP clock (real time); not looping: the end is `setDelay(clock + length /
+  speed, stop)` — at the starting speed — and fade out = points 1 → 0 ending there (without an
+  end: the sound's length − start); looping with a start or end: `setLoopPoints(start, end or
+  the sound's end)`, no end stop or fade out.
+- **Edit SFX** stop: `stopChannel(fade 0, 414)`: without 414 the channel stops; with 414 it only
+  gets `setLoopCount(0)` (plays on to its end; FMOD reads past the loop end once the count is 0).
+  414 without 417 does the same. Then the speed and volume tweens.
+- **Reverb**: SFX with 407 play into the reverb channel group (+0x208, a child of the SFX group)
+  whose DSP is an FMOD SFX reverb; 503 calls `updateReverb(502)` (only on a change) before
+  playing. Types 1–22 = FMOD's presets padded cell … underwater (tables at 0x1008e5544, nine
+  floats each; HF reference 5000, low shelf 250 / 0 dB fixed), anything else the generic preset
+  (also the engine's start). Dry level stays 0 dB.
+- **Death / restart** (`destroyPlayer`, `resetLevel`): `stopAllEffects`.
+- **Cadence** (`cadence_core::audiofx`, `audio.rs`): `SfxPlay::effect` rolls the ranges with the
+  macOS libc `rand()` (Park–Miller, seed 1: the game's own seed isn't known); `Voice` is one
+  channel (start, end stop, fade points, loop region, 414, rate / volume changes) mixed by the
+  native bus (`audio::bus`, 44.1 kHz) with the reverb group; the web page does the same with
+  AudioBufferSourceNode (offset, `stop(t)`, gain ramps, `loop` / `loopStart` / `loopEnd`) and a
+  ConvolverNode fed the reverb's impulse response. The pitch shift is a phase vocoder
+  (`pitch_shift`, 4× overlap, the game's FFT sizes) run once per sound and pitch, also on the web
+  (`sfx_pitch_shift` export). The reverb is an 8-line FDN driven by the preset's parameters —
+  FMOD's SFX reverb algorithm isn't public, so it's an approximation, not a port.
+- Not traced (the harness doesn't record sound); unit tests in audiofx.rs / audio.rs and the
+  glue under node with a fake AudioContext.
+
+## Spawn remaps in advanced follow / area clusters; main objects of rotate, move, follow (2026-11-05, SFX agent; traced)
+
+- **Remaps** (`applyRemap` 0xe869c): every trigger's target (+0x5b8, key 51) and center / follow
+  group (+0x5bc, key 71) go through the spawn remap, so a spawned advanced follow (3016) or its
+  edit / re-target (3660 / 3661) acts on the remapped 51 / 71 (Cadence: `Action::AdvFollow {
+  order, group, follow }`; the player / camera follow flags still win over 71). The cluster
+  table (`FUN_1000d64d0`) collects all spawn triggers' pairs (1268 key 442, from → set of to)
+  and gives each target group's remapped groups the same 280 / 281 combinations, following
+  remaps of remaps (`GroupLinks::new`).
+- **Rotate** (`processRotationActions` 0xfd4f8): the center is `tryGetMainObject(71)` — the
+  group's first parent (274), else its only object. Without one the group's objects each turn
+  in place (free-rotating ones, unless locked) and the group's move isn't claimed (no orbit).
+  The aim / follow rotate modes (`triggerRotateCommand`, dynamic) use `tryGetObject` — not ported.
+- **Follow** (`processFollowActions` 0xfe1b0): the followed group's main object; none → nothing.
+- **Move to target** (`getMoveTargetDelta` 0xe71e0, from `triggerMoveCommand` with
+  !layer+0x7bb): target = 71, from = 395 (else the group); `tryGetMainObject` for both, unless
+  level setting kA40 (+0x1c8 → +0x7bb; also forced on in the official level 22, not done) makes
+  them `tryGetObject` (the main object, else a random one by fast_rand). None, or the same
+  object: a zero move (the command is still made). Player targets (138 / 200) aren't ported.
+- Scale centers (`scale_group`), teleport targets and `group_main_position` still take the
+  group's first object (not checked against the decompile).
+- **Real trace** `re/traces/gremap` (watchgroups 10, 11, 41, 45, 50, 52, 60, 70, 74): an
+  advanced follow spawned with remap 10 → 11 (a linked cluster with a 34 leader + a lone
+  object), an area move spawned with 41 → 45 (a 279-led linked cluster), rotates about a center
+  group whose parent isn't its first object and about one with two objects and no parent, a
+  follow of a group whose parent isn't its first object (the first one moves 300, the parent
+  100 up), move-to-target onto a parent / onto a parentless two-object group. Every position
+  ≤ 5e-6, rotations ≤ 7e-6. Main's build had 8 of the 9 groups off (by up to 1708 units).
+- Watch files: a move trigger's decoration group (70, 74) changes its f64 positions once per
+  frame (steps ≡ 3 mod 4 at the harness speed) — `optimizeMoveGroups`' batching; cmp_watch got
+  `--real-frames N:K`. The harness lists `getStaticGroup(g)` first: group 61 there only held
+  the parent object, so it isn't compared.

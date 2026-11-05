@@ -28,19 +28,29 @@ pub trait Audio {
     }
     /// The music and sound effect volumes (0..1), the options' sliders.
     fn set_volumes(&mut self, _music: f32, _sfx: f32) {}
-    /// An SFX trigger's sound at a relative volume and playback rate (the FMOD channel's pitch:
-    /// speed and pitch together), kept so edit SFX triggers and proximity can change it. Returns
-    /// its handle (0: not kept).
-    fn play_trigger_effect(&mut self, file: &str, volume: f32, _speed: f32) -> u64 {
-        self.play_effect_volume(file, volume);
+    /// An SFX trigger's sound (`playEffectAdvanced`: volume, playback rate, pitch shift, start /
+    /// end, fades, loop, reverb; see `cadence_core::audiofx`), kept so edit SFX triggers and
+    /// proximity can change it. Returns its handle (0: not kept).
+    fn play_trigger_effect(&mut self, file: &str, p: &EffectParams) -> u64 {
+        self.play_effect_volume(file, p.volume);
         0
     }
     /// A kept trigger sound's volume and playback rate from now on.
     fn set_trigger_effect(&mut self, _handle: u64, _volume: f32, _speed: f32) {}
     fn stop_trigger_effect(&mut self, _handle: u64) {}
+    /// Edit SFX 414: the sound stops looping and plays on to its end (`setLoopCount(0)`).
+    fn end_trigger_loop(&mut self, _handle: u64) {}
     /// Whether a kept trigger sound still plays.
     fn trigger_effect_playing(&self, _handle: u64) -> bool {
         false
+    }
+    /// Every trigger sound stops (`stopAllEffects`: a death, a restart, leaving the level).
+    fn stop_trigger_effects(&mut self) {}
+    /// The reverb group's preset (`updateReverb`, an SFX trigger with 503 and type 502).
+    fn set_reverb(&mut self, _kind: i32) {}
+    /// The options' SFX volume (`playEffectAdvanced` plays nothing but loops at 0).
+    fn sfx_volume(&self) -> f32 {
+        1.0
     }
     /// Edit song triggers: the music's own volume (on top of the options') toward `volume` over
     /// `duration` seconds (stepped by `update`), and its speed.
@@ -111,18 +121,17 @@ impl Tween {
     }
 }
 
-/// `FMODAudioEngine::pitchForIdx`: a speed index in semitones (−12..12) as a playback rate.
-pub fn pitch_for_index(index: i32) -> f32 {
-    2f32.powf(index.clamp(-12, 12) as f32 / 12.0)
-}
+pub use cadence_core::audiofx::{pitch_for_index, EffectParams};
 
 /// A sound an SFX trigger started: its own volume and speed (tweened by edit SFX triggers) and
 /// its proximity effect, each per sound like the game's per-channel state.
 #[derive(Clone, Debug)]
 pub struct TriggerSound {
     pub handle: u64,
-    /// The SFX trigger's level order, its SFX group (455) and unique id.
-    pub order: u32,
+    /// The SFX triggers whose channel it is (`activateSFXTrigger` keeps the channel per trigger;
+    /// a trigger whose unique id was playing gets that channel), its SFX group (455) and
+    /// unique id.
+    pub orders: Vec<u32>,
     pub group: i32,
     pub unique: i32,
     pub volume: Tween,
@@ -133,10 +142,14 @@ pub struct TriggerSound {
 }
 
 /// The sounds SFX triggers started (`activateSFXTrigger`'s channel ids per trigger, the
-/// channels' tweens and the proximity effects by channel).
+/// channels' tweens and the proximity effects by channel), the C `rand()` the random ranges
+/// roll, and `playEffectAdvanced`'s minimum-interval times by reference id.
 #[derive(Clone, Debug, Default)]
 pub struct TriggerSounds {
     pub sounds: Vec<TriggerSound>,
+    rand: cadence_core::audiofx::CRand,
+    clock: f32,
+    last_played: Vec<(i32, f32)>,
 }
 
 impl TriggerSounds {
@@ -146,39 +159,73 @@ impl TriggerSounds {
         if play.proximity.is_some() && play.test_proximity && factor <= 0.0 {
             return;
         }
-        let speed = pitch_for_index(play.speed);
+        // activateSFXTrigger: 503 sets the reverb type first
+        if play.reverb_on {
+            audio.set_reverb(play.reverb_type);
+        }
+        // playSFXTrigger rolls the ranges, then playEffectAdvanced:
+        let mut p = play.effect(&mut self.rand);
+        // nothing with the SFX volume at 0, unless it loops
+        if audio.sfx_volume() <= 0.0 && !p.looped {
+            return;
+        }
+        // the minimum interval (434) per reference id
+        if play.min_interval > 0.0 {
+            match self.last_played.iter_mut().find(|l| l.0 == play.ref_id) {
+                Some(l) if self.clock - l.1 < play.min_interval => return,
+                Some(l) => l.1 = self.clock,
+                None => self.last_played.push((play.ref_id, self.clock)),
+            }
+        }
+        // a unique id already playing: kept (the trigger takes its channel) unless 420 overrides
+        if play.unique != 0 {
+            if let Some(i) = self.sounds.iter().position(|s| s.unique == play.unique) {
+                if !play.override_unique {
+                    let s = &mut self.sounds[i];
+                    if !s.orders.contains(&play.order) {
+                        s.orders.push(play.order);
+                    }
+                    return;
+                }
+                audio.stop_trigger_effect(self.sounds[i].handle);
+                self.sounds.remove(i);
+            }
+        }
+        let base = p.volume;
         let factor = if play.proximity.is_some() { factor } else { 1.0 };
-        let volume = play.volume * factor;
-        let handle = audio.play_trigger_effect(file, volume, speed);
+        p.volume = base * factor;
+        let handle = audio.play_trigger_effect(file, &p);
         if handle != 0 {
             self.sounds.push(TriggerSound {
                 handle,
-                order: play.order,
+                orders: vec![play.order],
                 group: play.group,
                 unique: play.unique,
-                volume: Tween::new(play.volume),
-                speed: Tween::new(speed),
+                volume: Tween::new(base),
+                speed: Tween::new(p.speed),
                 proximity: play.proximity,
-                sent: (volume, speed),
+                sent: (p.volume, p.speed),
             });
         }
     }
 
-    /// An edit SFX trigger (`activateSFXEditTrigger`): the sounds of the SFX triggers in its
-    /// group 457 (`triggers`), the ones in its SFX group 455 and the one with its unique id 416
-    /// stop, or tween their speed / volume over its duration; its proximity (51) replaces theirs
-    /// (not for the unique id's sound).
+    /// An edit SFX trigger (`activateSFXEditTrigger` → `applySFXEditTrigger`): the sounds of the
+    /// SFX triggers in its group 457 (`triggers`), the ones in its SFX group 455 and the one with
+    /// its unique id 416 stop (417; with 414 they only stop looping), then tween their speed /
+    /// volume over its duration; its proximity (51) replaces theirs (not for the unique id's).
     pub fn edit(&mut self, audio: &mut dyn Audio, edit: &cadence_core::groups::AudioEdit, triggers: &[u32]) {
         let mut i = 0;
         while i < self.sounds.len() {
             let s = &mut self.sounds[i];
-            let by_group = triggers.contains(&s.order) || (edit.sfx_group > 0 && s.group == edit.sfx_group);
+            let by_group = s.orders.iter().any(|o| triggers.contains(o)) || (edit.sfx_group > 0 && s.group == edit.sfx_group);
             let by_unique = edit.unique > 0 && s.unique == edit.unique;
             if !(by_group || by_unique) {
                 i += 1;
                 continue;
             }
-            if edit.stop {
+            if edit.stop_loop {
+                audio.end_trigger_loop(s.handle);
+            } else if edit.stop {
                 audio.stop_trigger_effect(s.handle);
                 self.sounds.remove(i);
                 continue;
@@ -198,9 +245,16 @@ impl TriggerSounds {
         }
     }
 
+    /// `stopAllEffects` (death, restart, leaving).
+    pub fn stop_all(&mut self, audio: &mut dyn Audio) {
+        audio.stop_trigger_effects();
+        self.sounds.clear();
+    }
+
     /// One step: the tweens advance, the proximity factors (`factor`) apply, changes go to the
     /// backend and finished sounds are dropped.
     pub fn step(&mut self, audio: &mut dyn Audio, dt: f32, factor: &dyn Fn(&cadence_core::groups::Proximity) -> f32) {
+        self.clock += dt;
         self.sounds.retain(|s| audio.trigger_effect_playing(s.handle));
         for s in &mut self.sounds {
             s.volume.step(dt);
@@ -237,7 +291,8 @@ mod native {
 
     use rodio::Source;
 
-    use super::{Audio, Meter};
+    use super::bus::{self, Bus, BusSource, Decoded};
+    use super::{Audio, EffectParams, Meter};
     use crate::files::Files;
 
     /// Plays through the default output device. File bytes are cached so restarting an
@@ -253,8 +308,10 @@ mod native {
         /// Edit song triggers: the music's gain and its fade (from, to, duration, elapsed).
         gain: f32,
         fade: Option<(f32, f32, f32, f32)>,
-        /// SFX triggers' sounds by handle (each its own player: volume and playback rate).
-        trigger_effects: Vec<(u64, rodio::Player)>,
+        /// SFX triggers' sounds: mixed by `BusSource` on the audio thread (FMOD's channels:
+        /// rate, fades, loops, the reverb group), decoded once per file and pitch.
+        bus: Arc<std::sync::Mutex<Bus>>,
+        decoded: HashMap<(String, u32, bool), Arc<Decoded>>,
         next_handle: u64,
     }
 
@@ -263,6 +320,8 @@ mod native {
         pub fn new(files: Box<dyn Files>) -> Option<NativeAudio> {
             let mut sink = rodio::DeviceSinkBuilder::open_default_sink().ok()?;
             sink.log_on_drop(false);
+            let bus = Arc::new(std::sync::Mutex::new(Bus::new()));
+            sink.mixer().add(BusSource::new(bus.clone()));
             Some(NativeAudio {
                 sink,
                 music: None,
@@ -272,9 +331,41 @@ mod native {
                 volumes: (1.0, 1.0),
                 gain: 1.0,
                 fade: None,
-                trigger_effects: Vec::new(),
+                bus,
+                decoded: HashMap::new(),
                 next_handle: 1,
             })
+        }
+
+        fn bus(&self) -> std::sync::MutexGuard<'_, Bus> {
+            self.bus.lock().unwrap_or_else(|e| e.into_inner())
+        }
+
+        /// A sound file's samples, pitch-shifted when `pitch` isn't 1 (cached).
+        fn samples(&mut self, file: &str, pitch: f32, big_fft: bool) -> Option<Arc<Decoded>> {
+            let shifted = pitch > 0.0 && pitch != 1.0;
+            let key = (file.to_string(), if shifted { pitch.to_bits() } else { 0 }, shifted && big_fft);
+            if let Some(d) = self.decoded.get(&key) {
+                return Some(d.clone());
+            }
+            let plain = (file.to_string(), 0, false);
+            let base = match self.decoded.get(&plain) {
+                Some(d) => d.clone(),
+                None => {
+                    let decoder = self.decoder(file)?;
+                    let (channels, rate) = (decoder.channels().get() as usize, decoder.sample_rate().get() as f32);
+                    let d = Arc::new(Decoded { samples: decoder.collect::<Vec<f32>>().into(), channels, rate });
+                    self.decoded.insert(plain, d.clone());
+                    d
+                }
+            };
+            if !shifted {
+                return Some(base);
+            }
+            let samples = cadence_core::audiofx::pitch_shift_interleaved(&base.samples, base.channels, base.rate, pitch, big_fft);
+            let d = Arc::new(Decoded { samples: samples.into(), channels: base.channels, rate: base.rate });
+            self.decoded.insert(key, d.clone());
+            Some(d)
         }
 
         fn decoder(&mut self, file: &str) -> Option<rodio::Decoder<Cursor<Arc<[u8]>>>> {
@@ -329,46 +420,59 @@ mod native {
                     player.set_volume(self.volumes.0 * self.gain);
                 }
             }
-            self.trigger_effects.retain(|(_, p)| !p.empty());
         }
 
-        fn play_trigger_effect(&mut self, file: &str, volume: f32, speed: f32) -> u64 {
-            if self.volumes.1 <= 0.0 {
+        fn play_trigger_effect(&mut self, file: &str, p: &EffectParams) -> u64 {
+            if self.volumes.1 <= 0.0 && !p.looped {
                 return 0;
             }
-            let Some(decoder) = self.decoder(file) else { return 0 };
-            let player = rodio::Player::connect_new(self.sink.mixer());
-            player.append(decoder);
-            // FMOD caps a channel's volume at 2; its pitch is the playback rate (resampled)
-            player.set_volume(self.volumes.1 * volume.clamp(0.0, 2.0));
-            player.set_speed(speed.clamp(0.01, 16.0));
+            let Some(d) = self.samples(file, p.pitch, p.big_fft) else { return 0 };
+            let voice = cadence_core::audiofx::Voice::new(d.samples.clone(), d.channels, d.rate, bus::RATE as f32, p);
             let handle = self.next_handle;
             self.next_handle += 1;
-            self.trigger_effects.push((handle, player));
+            self.bus().voices.push((handle, voice));
             handle
         }
 
         fn set_trigger_effect(&mut self, handle: u64, volume: f32, speed: f32) {
-            if let Some((_, p)) = self.trigger_effects.iter().find(|(h, _)| *h == handle) {
-                p.set_volume(self.volumes.1 * volume.clamp(0.0, 2.0));
-                p.set_speed(speed.clamp(0.01, 16.0));
+            if let Some((_, v)) = self.bus().voices.iter_mut().find(|(h, _)| *h == handle) {
+                // FMOD caps a channel's volume at 2; its pitch is the playback rate
+                v.volume = volume.clamp(0.0, 2.0);
+                v.speed = speed.clamp(0.01, 16.0);
             }
         }
 
         fn stop_trigger_effect(&mut self, handle: u64) {
-            if let Some(i) = self.trigger_effects.iter().position(|(h, _)| *h == handle) {
-                self.trigger_effects.remove(i).1.stop();
+            self.bus().voices.retain(|(h, _)| *h != handle);
+        }
+
+        fn end_trigger_loop(&mut self, handle: u64) {
+            if let Some((_, v)) = self.bus().voices.iter_mut().find(|(h, _)| *h == handle) {
+                v.end_loop();
             }
         }
 
         fn trigger_effect_playing(&self, handle: u64) -> bool {
-            self.trigger_effects.iter().any(|(h, p)| *h == handle && !p.empty())
+            self.bus().voices.iter().any(|(h, v)| *h == handle && !v.done())
+        }
+
+        fn stop_trigger_effects(&mut self) {
+            self.bus().voices.clear();
+        }
+
+        fn set_reverb(&mut self, kind: i32) {
+            self.bus().set_reverb(kind);
+        }
+
+        fn sfx_volume(&self) -> f32 {
+            self.volumes.1
         }
 
         fn set_paused(&mut self, paused: bool) {
             if let Some(player) = &self.music {
                 if paused { player.pause() } else { player.play() }
             }
+            self.bus().paused = paused;
         }
 
         fn play_loop(&mut self, file: &str) {
@@ -414,6 +518,148 @@ mod native {
             if let Some(player) = &self.music {
                 player.set_volume(self.volumes.0);
             }
+            let sfx = self.volumes.1;
+            self.bus().volume = sfx;
+        }
+    }
+}
+
+/// The SFX triggers' mixer: FMOD's effect channels (`cadence_core::audiofx::Voice`) summed, the
+/// ones sent to the reverb group (407) also through its reverb, times the options' SFX volume.
+#[cfg(not(target_arch = "wasm32"))]
+mod bus {
+    use std::num::NonZero;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use cadence_core::audiofx::{reverb_preset, Reverb, Voice};
+    use rodio::{ChannelCount, Sample, SampleRate, Source};
+
+    /// The mixer's clock (FMOD's DSP clock for fades and end times).
+    pub const RATE: u32 = 44100;
+    const BLOCK: usize = 256;
+
+    /// A decoded sound: interleaved samples, channels, sample rate.
+    pub struct Decoded {
+        pub samples: Arc<[f32]>,
+        pub channels: usize,
+        pub rate: f32,
+    }
+
+    pub struct Bus {
+        pub voices: Vec<(u64, Voice)>,
+        reverb: (i32, Reverb),
+        pub paused: bool,
+        pub volume: f32,
+    }
+
+    impl Bus {
+        pub fn new() -> Bus {
+            // the engine starts with type 0: FMOD's generic preset
+            Bus { voices: Vec::new(), reverb: (0, Reverb::new(&reverb_preset(0), RATE as f32)), paused: false, volume: 1.0 }
+        }
+
+        /// `updateReverb`: only a different type changes it.
+        pub fn set_reverb(&mut self, kind: i32) {
+            if kind != self.reverb.0 {
+                self.reverb = (kind, Reverb::new(&reverb_preset(kind), RATE as f32));
+            }
+        }
+
+        /// Mixes `out.len() / 2` stereo frames.
+        pub fn mix(&mut self, out: &mut [f32]) {
+            out.iter_mut().for_each(|v| *v = 0.0);
+            if self.paused {
+                return;
+            }
+            for frame in out.chunks_exact_mut(2) {
+                let (mut l, mut r, mut send) = (0.0f32, 0.0f32, 0.0f32);
+                for (_, v) in &mut self.voices {
+                    if let Some((a, b)) = v.next_frame() {
+                        l += a;
+                        r += b;
+                        if v.reverb {
+                            send += (a + b) * 0.5;
+                        }
+                    }
+                }
+                let (wl, wr) = self.reverb.1.process(send);
+                frame[0] = (l + wl) * self.volume;
+                frame[1] = (r + wr) * self.volume;
+            }
+            self.voices.retain(|(_, v)| !v.done());
+        }
+    }
+
+    /// The bus as a never-ending rodio source (silence when nothing plays).
+    pub struct BusSource {
+        bus: Arc<Mutex<Bus>>,
+        block: Vec<f32>,
+        at: usize,
+    }
+
+    impl BusSource {
+        pub fn new(bus: Arc<Mutex<Bus>>) -> BusSource {
+            BusSource { bus, block: vec![0.0; BLOCK * 2], at: BLOCK * 2 }
+        }
+    }
+
+    impl Iterator for BusSource {
+        type Item = Sample;
+
+        fn next(&mut self) -> Option<Sample> {
+            if self.at >= self.block.len() {
+                let mut bus = self.bus.lock().unwrap_or_else(|e| e.into_inner());
+                bus.mix(&mut self.block);
+                self.at = 0;
+            }
+            let v = self.block[self.at];
+            self.at += 1;
+            Some(v)
+        }
+    }
+
+    impl Source for BusSource {
+        fn current_span_len(&self) -> Option<usize> {
+            None
+        }
+        fn channels(&self) -> ChannelCount {
+            NonZero::new(2).unwrap()
+        }
+        fn sample_rate(&self) -> SampleRate {
+            NonZero::new(RATE).unwrap()
+        }
+        fn total_duration(&self) -> Option<Duration> {
+            None
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use cadence_core::audiofx::EffectParams;
+
+        #[test]
+        fn mixes_voices_and_the_reverb_send() {
+            let mut bus = Bus::new();
+            let data: Arc<[f32]> = Arc::from(vec![0.5f32; 4410]);
+            bus.voices.push((1, Voice::new(data.clone(), 1, 44100.0, RATE as f32, &EffectParams::default())));
+            bus.volume = 0.5;
+            let mut out = vec![0.0; 512];
+            bus.mix(&mut out);
+            assert_eq!((out[0], out[1]), (0.25, 0.25));
+            // a reverb voice adds a wet tail that outlives it
+            let mut bus = Bus::new();
+            let p = EffectParams { reverb: true, end_ms: 20, ..Default::default() };
+            bus.voices.push((2, Voice::new(data, 1, 44100.0, RATE as f32, &p)));
+            let mut out = vec![0.0; 44100 * 2];
+            bus.mix(&mut out);
+            assert!(bus.voices.is_empty());
+            assert!(out[44100..].iter().any(|v| v.abs() > 1e-4), "no tail");
+            // paused: silence, nothing advances
+            bus.paused = true;
+            bus.mix(&mut out);
+            assert!(out.iter().all(|v| *v == 0.0));
         }
     }
 }
@@ -526,9 +772,11 @@ pub use web::{web_add_file, web_download, web_has_file, WebAudio};
 
 #[cfg(target_arch = "wasm32")]
 mod web {
+    use std::cell::Cell;
+
     use wasm_bindgen::prelude::*;
 
-    use super::Audio;
+    use super::{Audio, EffectParams};
 
     #[wasm_bindgen]
     extern "C" {
@@ -539,7 +787,16 @@ mod web {
         #[wasm_bindgen(js_namespace = cadenceAudio, js_name = playEffect)]
         fn js_play_effect(file: &str, volume: f32);
         #[wasm_bindgen(js_namespace = cadenceAudio, js_name = playTriggerEffect)]
-        fn js_play_trigger_effect(file: &str, volume: f32, speed: f32) -> u32;
+        fn js_play_trigger_effect(
+            file: &str, volume: f32, speed: f32, pitch: f32, big_fft: bool, start_ms: i32, end_ms: i32, fade_in_ms: i32, fade_out_ms: i32, looped: bool,
+            reverb: bool,
+        ) -> u32;
+        #[wasm_bindgen(js_namespace = cadenceAudio, js_name = endTriggerLoop)]
+        fn js_end_trigger_loop(handle: u32);
+        #[wasm_bindgen(js_namespace = cadenceAudio, js_name = stopTriggerEffects)]
+        fn js_stop_trigger_effects();
+        #[wasm_bindgen(js_namespace = cadenceAudio, js_name = setReverb)]
+        fn js_set_reverb(impulse: &[f32], rate: f32);
         #[wasm_bindgen(js_namespace = cadenceAudio, js_name = setTriggerEffect)]
         fn js_set_trigger_effect(handle: u32, volume: f32, speed: f32);
         #[wasm_bindgen(js_namespace = cadenceAudio, js_name = stopTriggerEffect)]
@@ -560,6 +817,31 @@ mod web {
         fn js_has_file(name: &str) -> bool;
         #[wasm_bindgen(js_namespace = cadenceAudio, js_name = download)]
         fn js_download(name: &str, bytes: &[u8]);
+    }
+
+    /// The page's pitch shift for a trigger sound (the pitch-shift DSP; see
+    /// `cadence_core::audiofx::pitch_shift`), one channel at a time.
+    #[wasm_bindgen]
+    pub fn sfx_pitch_shift(samples: &[f32], rate: f32, pitch: f32, big_fft: bool) -> Vec<f32> {
+        cadence_core::audiofx::pitch_shift(samples, rate, pitch, if big_fft { 2048 } else { 1024 })
+    }
+
+    thread_local! {
+        /// The reverb type the page's convolver has (None: none yet) and the SFX volume.
+        static REVERB: Cell<Option<i32>> = const { Cell::new(None) };
+        static SFX_VOLUME: Cell<f32> = const { Cell::new(1.0) };
+    }
+
+    /// The reverb group's preset as an impulse response for the page's convolver.
+    fn send_reverb(kind: i32) {
+        if REVERB.with(|r| r.get()) == Some(kind) {
+            return;
+        }
+        REVERB.with(|r| r.set(Some(kind)));
+        let preset = cadence_core::audiofx::reverb_preset(kind);
+        let rate = 44100.0;
+        let ir = cadence_core::audiofx::Reverb::impulse(&preset, rate, cadence_core::audiofx::Reverb::tail_secs(&preset));
+        js_set_reverb(&ir, rate);
     }
 
     /// Give the player a file to save (an exported level).
@@ -592,8 +874,36 @@ mod web {
         fn play_effect_volume(&mut self, file: &str, volume: f32) {
             js_play_effect(file, volume);
         }
-        fn play_trigger_effect(&mut self, file: &str, volume: f32, speed: f32) -> u64 {
-            js_play_trigger_effect(file, volume.clamp(0.0, 2.0), speed) as u64
+        fn play_trigger_effect(&mut self, file: &str, p: &EffectParams) -> u64 {
+            // the engine starts with the generic reverb
+            if p.reverb && REVERB.with(|r| r.get()).is_none() {
+                send_reverb(0);
+            }
+            js_play_trigger_effect(
+                file,
+                p.volume.clamp(0.0, 2.0),
+                p.speed,
+                p.pitch,
+                p.big_fft,
+                p.start_ms,
+                p.end_ms,
+                p.fade_in_ms,
+                p.fade_out_ms,
+                p.looped,
+                p.reverb,
+            ) as u64
+        }
+        fn end_trigger_loop(&mut self, handle: u64) {
+            js_end_trigger_loop(handle as u32);
+        }
+        fn stop_trigger_effects(&mut self) {
+            js_stop_trigger_effects();
+        }
+        fn set_reverb(&mut self, kind: i32) {
+            send_reverb(kind);
+        }
+        fn sfx_volume(&self) -> f32 {
+            SFX_VOLUME.with(|v| v.get())
         }
         fn set_trigger_effect(&mut self, handle: u64, volume: f32, speed: f32) {
             js_set_trigger_effect(handle as u32, volume.clamp(0.0, 2.0), speed);
@@ -614,6 +924,7 @@ mod web {
             js_play_loop(file);
         }
         fn set_volumes(&mut self, music: f32, sfx: f32) {
+            SFX_VOLUME.with(|v| v.set(sfx));
             js_set_volumes(music, sfx);
         }
     }
@@ -667,16 +978,30 @@ mod trigger_tests {
         next: u64,
         playing: Vec<(u64, f32, f32)>,
         stopped: Vec<u64>,
+        params: Vec<super::EffectParams>,
+        loops_ended: Vec<u64>,
+        reverb: Vec<i32>,
+        muted: bool,
     }
 
     impl Audio for Probe {
         fn play_music(&mut self, _file: &str, _offset: f32) {}
         fn stop_music(&mut self) {}
         fn play_effect(&mut self, _file: &str) {}
-        fn play_trigger_effect(&mut self, _file: &str, volume: f32, speed: f32) -> u64 {
+        fn play_trigger_effect(&mut self, _file: &str, p: &super::EffectParams) -> u64 {
             self.next += 1;
-            self.playing.push((self.next, volume, speed));
+            self.playing.push((self.next, p.volume, p.speed));
+            self.params.push(*p);
             self.next
+        }
+        fn end_trigger_loop(&mut self, handle: u64) {
+            self.loops_ended.push(handle);
+        }
+        fn set_reverb(&mut self, kind: i32) {
+            self.reverb.push(kind);
+        }
+        fn sfx_volume(&self) -> f32 {
+            if self.muted { 0.0 } else { 1.0 }
         }
         fn set_trigger_effect(&mut self, handle: u64, volume: f32, speed: f32) {
             if let Some(p) = self.playing.iter_mut().find(|p| p.0 == handle) {
@@ -782,5 +1107,78 @@ mod trigger_tests {
         probe.playing.retain(|p| p.0 != 2);
         sounds.step(&mut probe, 0.01, &factor);
         assert_eq!(sounds.sounds.len(), 1);
+    }
+
+    #[test]
+    fn sfx_trigger_passes_pitch_times_fades_loop_and_reverb() {
+        let mut probe = Probe::default();
+        let mut sounds = TriggerSounds::default();
+        // pitch +5 with the big FFT, start 100, fade in 50, end 900, fade out 200, loop, reverb
+        // into type 9 (arena) first
+        let s = sfx("392,1,405,5,412,1,408,100,409,50,410,900,411,200,413,1,407,1,503,1,502,9", 1);
+        sounds.play(&mut probe, "a.ogg", &s, 1.0);
+        let p = probe.params[0];
+        assert_eq!((p.pitch, p.big_fft), (pitch_for_index(5), true));
+        assert_eq!((p.start_ms, p.fade_in_ms, p.end_ms, p.fade_out_ms), (100, 50, 900, 200));
+        assert!(p.looped && p.reverb);
+        assert_eq!(probe.reverb, vec![9]);
+    }
+
+    #[test]
+    fn edit_sfx_414_ends_the_loop_and_417_stops() {
+        let mut probe = Probe::default();
+        let mut sounds = TriggerSounds::default();
+        sounds.play(&mut probe, "a.ogg", &sfx("392,1,413,1,455,3", 1), 1.0);
+        sounds.play(&mut probe, "b.ogg", &sfx("392,1,413,1,455,4", 2), 1.0);
+        // 414 (with or without 417): stop looping, keep playing
+        sounds.edit(&mut probe, &edit("455,3,414,1,417,1"), &[]);
+        assert_eq!(probe.loops_ended, vec![1]);
+        assert!(probe.stopped.is_empty());
+        assert_eq!(sounds.sounds.len(), 2);
+        // 417 alone stops
+        sounds.edit(&mut probe, &edit("455,4,417,1"), &[]);
+        assert_eq!(probe.stopped, vec![2]);
+        sounds.stop_all(&mut probe);
+        assert!(sounds.sounds.is_empty());
+    }
+
+    #[test]
+    fn unique_ids_override_and_minimum_interval() {
+        let mut probe = Probe::default();
+        let mut sounds = TriggerSounds::default();
+        // unique 7 playing: a second trigger with it doesn't play, it takes the channel over
+        sounds.play(&mut probe, "a.ogg", &sfx("392,1,415,1,416,7", 1), 1.0);
+        sounds.play(&mut probe, "a.ogg", &sfx("392,1,415,1,416,7", 2), 1.0);
+        assert_eq!(probe.playing.len(), 1);
+        assert_eq!(sounds.sounds[0].orders, vec![1, 2]);
+        // an edit through trigger 2 reaches it
+        sounds.edit(&mut probe, &edit("457,9,419,1,404,12"), &[2]);
+        sounds.step(&mut probe, 0.01, &|_| 1.0);
+        assert_eq!(probe.of(1).1, 2.0);
+        // 420: the old one stops, the new one plays
+        sounds.play(&mut probe, "a.ogg", &sfx("392,1,415,1,416,7,420,1", 3), 1.0);
+        assert_eq!(probe.stopped, vec![1]);
+        assert_eq!(probe.playing.len(), 1);
+        // 434: 0.5 s between plays of the same reference id (416, else the trigger's own)
+        let mut sounds = TriggerSounds::default();
+        let mut probe = Probe::default();
+        let t = sfx("392,1,434,0.5", 4);
+        sounds.play(&mut probe, "a.ogg", &t, 1.0);
+        sounds.step(&mut probe, 0.25, &|_| 1.0);
+        sounds.play(&mut probe, "a.ogg", &t, 1.0);
+        assert_eq!(probe.params.len(), 1);
+        sounds.step(&mut probe, 0.3, &|_| 1.0);
+        sounds.play(&mut probe, "a.ogg", &t, 1.0);
+        assert_eq!(probe.params.len(), 2);
+    }
+
+    #[test]
+    fn muted_effects_only_play_loops() {
+        let mut probe = Probe { muted: true, ..Default::default() };
+        let mut sounds = TriggerSounds::default();
+        sounds.play(&mut probe, "a.ogg", &sfx("392,1", 1), 1.0);
+        assert!(probe.params.is_empty());
+        sounds.play(&mut probe, "a.ogg", &sfx("392,1,413,1", 2), 1.0);
+        assert_eq!(probe.params.len(), 1);
     }
 }

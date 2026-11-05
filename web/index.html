@@ -137,7 +137,7 @@
 </main>
 
 <script type="module">
-import init, { FileStore, needed_files, start, level_song, death_effect, import_level_file } from "./pkg/cadence_game.js";
+import init, { FileStore, needed_files, start, level_song, death_effect, import_level_file, sfx_pitch_shift } from "./pkg/cadence_game.js";
 
 // While playing: a level file (.gmd) dropped anywhere goes into your levels.
 document.addEventListener("dragover", (e) => { if (document.body.classList.contains("playing")) e.preventDefault(); });
@@ -342,25 +342,96 @@ const sound = {
     });
   },
   // SFX triggers' sounds, kept by handle so edit SFX triggers and proximity can change their
-  // volume and playback rate (FMOD's channel pitch) while they play.
+  // volume and playback rate (FMOD's channel pitch) while they play. Like FMOD's
+  // playEffectAdvanced: the pitch is a pitch shift that keeps the length (sfx_pitch_shift, the
+  // same phase vocoder as the native build), the start offset, an end that stops it at a time
+  // set with the starting speed, fade points in real time, loops between start and end, and
+  // the reverb group (a convolver with the preset's impulse response from setReverb).
   triggerEffects: new Map(),
   nextTrigger: 1,
-  playTriggerEffect(path, volume, speed) {
+  shifted: new Map(),
+  reverb: null,
+  shiftedBuffer(path, buf, pitch, bigFft) {
+    if (!(pitch > 0) || pitch === 1) return buf;
+    const key = `${path}|${pitch}|${bigFft}`;
+    let out = this.shifted.get(key);
+    if (!out) {
+      out = this.ctx.createBuffer(buf.numberOfChannels, buf.length, buf.sampleRate);
+      for (let c = 0; c < buf.numberOfChannels; c++) {
+        out.copyToChannel(sfx_pitch_shift(buf.getChannelData(c), buf.sampleRate, pitch, bigFft), c);
+      }
+      this.shifted.set(key, out);
+    }
+    return out;
+  },
+  // The reverb group's wet path: mono in (as FMOD's SFX reverb), the stereo impulse response
+  // (interleaved) from the game, into the SFX volume.
+  setReverb(impulse, rate) {
+    if (!this.ctx) return;
+    this.gains();
+    if (!this.reverb) {
+      const input = this.ctx.createGain();
+      input.channelCount = 1;
+      input.channelCountMode = "explicit";
+      const convolver = this.ctx.createConvolver();
+      convolver.normalize = false;
+      input.connect(convolver);
+      convolver.connect(this.sfxGain);
+      this.reverb = { input, convolver };
+    }
+    const n = impulse.length >> 1;
+    const ir = this.ctx.createBuffer(2, Math.max(n, 1), rate);
+    const l = ir.getChannelData(0), r = ir.getChannelData(1);
+    for (let i = 0; i < n; i++) { l[i] = impulse[2 * i]; r[i] = impulse[2 * i + 1]; }
+    this.reverb.convolver.buffer = ir;
+  },
+  playTriggerEffect(path, volume, speed, pitch, bigFft, startMs, endMs, fadeInMs, fadeOutMs, loop, reverb) {
     if (!this.ctx) return 0;
+    // FMOD plays nothing with the SFX volume at 0, except loops
+    if (this.volumes[1] <= 0 && !loop) return 0;
     const handle = this.nextTrigger++;
-    const entry = { node: null, gain: this.ctx.createGain(), volume, speed, stopped: false };
+    const entry = { node: null, gain: this.ctx.createGain(), env: this.ctx.createGain(), volume, speed, stopped: false };
     entry.gain.gain.value = volume;
     this.triggerEffects.set(handle, entry);
-    this.buffer(path).then((buf) => {
-      if (!buf || entry.stopped) { this.triggerEffects.delete(handle); return; }
+    this.buffer(path).then((raw) => {
+      if (!raw || entry.stopped) { this.triggerEffects.delete(handle); return; }
+      const buf = this.shiftedBuffer(path, raw, pitch, bigFft);
       const node = this.ctx.createBufferSource();
       node.buffer = buf;
       node.playbackRate.value = entry.speed;
+      const t0 = this.ctx.currentTime;
+      const s = speed > 0 ? speed : 1;
+      const len = endMs > 0 ? Math.max(endMs - startMs, 0) : endMs;
+      const points = [];
+      if (fadeInMs > 0) points.push([t0, 0], [t0 + fadeInMs / 1000, 1]);
+      let stopAt = null;
+      if ((len > 0 || fadeOutMs > 0) && !loop) {
+        const secs = (len !== 0 ? len : Math.max(buf.duration * 1000 - startMs, 0)) / s / 1000;
+        if (len > 0) stopAt = t0 + secs;
+        if (fadeOutMs > 0) points.push([t0 + Math.max(secs - fadeOutMs / 1000, 0), 1], [t0 + secs, 0]);
+      }
+      if (points.length) {
+        points.sort((a, b) => a[0] - b[0]);
+        const g = entry.env.gain;
+        g.value = points[0][1];
+        g.setValueAtTime(points[0][1], points[0][0]);
+        for (const [t, v] of points.slice(1)) g.linearRampToValueAtTime(v, t);
+      }
+      if (loop) {
+        node.loop = true;
+        if (startMs >= 1 || endMs >= 1) {
+          node.loopStart = Math.max(startMs, 0) / 1000;
+          node.loopEnd = endMs >= 1 ? Math.min(endMs / 1000, buf.duration) : buf.duration;
+        }
+      }
       this.gains();
-      node.connect(entry.gain);
+      node.connect(entry.env);
+      entry.env.connect(entry.gain);
       entry.gain.connect(this.sfxGain);
+      if (reverb && this.reverb) entry.gain.connect(this.reverb.input);
       node.onended = () => this.triggerEffects.delete(handle);
-      node.start();
+      node.start(t0, Math.min(Math.max(startMs, 0) / 1000, buf.duration));
+      if (stopAt !== null) node.stop(stopAt);
       entry.node = node;
     });
     return handle;
@@ -379,6 +450,14 @@ const sound = {
     e.stopped = true;
     if (e.node) { try { e.node.stop(); } catch (_) {} }
     this.triggerEffects.delete(handle);
+  },
+  // Edit SFX 414: no more loops; it plays on to the sound's end.
+  endTriggerLoop(handle) {
+    const e = this.triggerEffects.get(handle);
+    if (e && e.node) e.node.loop = false;
+  },
+  stopTriggerEffects() {
+    for (const handle of [...this.triggerEffects.keys()]) this.stopTriggerEffect(handle);
   },
   triggerEffectPlaying(handle) { return this.triggerEffects.has(handle); },
 };

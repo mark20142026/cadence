@@ -271,9 +271,10 @@ pub enum Action {
     Enter { order: u32 },
     EnterStop { channel: i32, mode: i32, effect_id: i32 },
     /// Advanced follow (3016) and its edit / re-target triggers (3660 / 3661), by level order
-    /// (`advfollow.rs`).
-    AdvFollow { order: u32 },
-    AdvFollowEdit { order: u32 },
+    /// (`advfollow.rs`), with their target group (51) and follow group (71) as a spawn remap
+    /// leaves them (`applyRemap` remaps every trigger's 51 and 71).
+    AdvFollow { order: u32, group: i32, follow: i32 },
+    AdvFollowEdit { order: u32, group: i32, follow: i32 },
     /// Keyframe animation trigger (3033), by level order (`keyframes.rs`).
     KeyframeAnim { order: u32 },
 }
@@ -283,13 +284,39 @@ pub enum Action {
 /// `pitchForIdx(404)` (the channel's pitch: its playback rate), in SFX group 455, with a unique
 /// id when 415 (416, else the trigger's own). With a target group (51) and unless 489, the
 /// proximity volume decides whether it plays (≤ 0: not) and then follows it
-/// (`addProximityVolumeEffect`). Not used: 405 pitch (a pitch-shift DSP), the random speed /
-/// pitch / volume ranges, loops, fades, start / end times, reverb.
+/// (`addProximityVolumeEffect`). The rest of `playEffectAdvanced`'s arguments (pitch, random
+/// ranges, start / end, fades, loop, reverb, unique override, minimum interval): see
+/// `crate::audiofx` and the fields below.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SfxPlay {
     pub id: i32,
     pub volume: f32,
     pub speed: i32,
+    /// 405 pitch (semitones, a pitch-shift DSP), 412 its bigger FFT.
+    pub pitch: i32,
+    pub big_fft: bool,
+    /// Random ranges: 596 speed / 597 pitch (semitones), 598 volume; 599 whole semitones.
+    pub speed_rand: i32,
+    pub pitch_rand: i32,
+    pub volume_rand: f32,
+    pub rand_steps: bool,
+    /// Milliseconds: 408 start, 409 fade in, 410 end, 411 fade out; 413 loop.
+    pub start_ms: i32,
+    pub fade_in_ms: i32,
+    pub end_ms: i32,
+    pub fade_out_ms: i32,
+    pub looped: bool,
+    /// 407 into the reverb group; 503 sets the reverb type 502 first (`updateReverb`).
+    pub reverb: bool,
+    pub reverb_on: bool,
+    pub reverb_type: i32,
+    /// 420: a sound with the same unique id playing is stopped and replaced (else this one
+    /// doesn't play and the trigger takes over the playing one).
+    pub override_unique: bool,
+    /// 434: seconds that must pass between plays with the same reference id (`getSFXRefID`:
+    /// 416 when set, else the trigger's own).
+    pub min_interval: f32,
+    pub ref_id: i32,
     /// The trigger's level order (edit SFX triggers find its sounds by the triggers in a group).
     pub order: u32,
     pub group: i32,
@@ -305,6 +332,23 @@ impl SfxPlay {
             id: i(392),
             volume: raw.get_f32(406).unwrap_or(1.0),
             speed: i(404),
+            pitch: i(405),
+            big_fft: raw.get(412) == Some("1"),
+            speed_rand: i(596),
+            pitch_rand: i(597),
+            volume_rand: raw.get_f32(598).unwrap_or(0.0),
+            rand_steps: raw.get(599) == Some("1"),
+            start_ms: i(408),
+            fade_in_ms: i(409),
+            end_ms: i(410),
+            fade_out_ms: i(411),
+            looped: raw.get(413) == Some("1"),
+            reverb: raw.get(407) == Some("1"),
+            reverb_on: raw.get(503) == Some("1"),
+            reverb_type: i(502),
+            override_unique: raw.get(420) == Some("1"),
+            min_interval: raw.get_f32(434).unwrap_or(0.0),
+            ref_id: if i(416) >= 1 { i(416) } else { -(order as i32) - 1 },
             order,
             group: i(455),
             // `getUniqueSFXID`: 416 when set, else the trigger's (negative) unique id
@@ -319,7 +363,9 @@ impl SfxPlay {
 /// 0x10f2a0 → `applySFXEditTrigger` 0x112928): song channel 432 (song); for SFX the sounds of
 /// the SFX triggers in group 457, the sounds in SFX group 455 and the sound with unique id 416.
 /// 417 stop, 418 change the volume to 406 over the duration 10, 419 change the speed to 404
-/// (`pitchForIdx`) over it too (`FMODAudioEngine::updateChannel` tweens).
+/// (`pitchForIdx`) over it too (`FMODAudioEngine::updateChannel` tweens). Edit SFX's 414
+/// ("stop loop", `stopChannel(…, 414)` → `setLoopCount(0)`): the sounds stop looping and play
+/// on to their end; with 414 a 417 stop does only that.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AudioEdit {
     pub song: bool,
@@ -329,6 +375,7 @@ pub struct AudioEdit {
     pub sfx_group: i32,
     pub unique: i32,
     pub stop: bool,
+    pub stop_loop: bool,
     pub volume: Option<f32>,
     pub speed: Option<i32>,
     pub duration: f32,
@@ -533,6 +580,7 @@ impl Trigger {
                 sfx_group: if raw.id() == 3603 { raw.get_i32(455).unwrap_or(0) } else { 0 },
                 unique: if raw.id() == 3603 { raw.get_i32(416).unwrap_or(0) } else { 0 },
                 stop: raw.get(417) == Some("1"),
+                stop_loop: raw.id() == 3603 && raw.get(414) == Some("1"),
                 volume: (raw.get(418) == Some("1")).then(|| raw.get_f32(406).unwrap_or(1.0)),
                 speed: (raw.get(419) == Some("1")).then(|| raw.get_i32(404).unwrap_or(0)),
                 duration: raw.get_f32(10).unwrap_or(0.0),
@@ -554,8 +602,8 @@ impl Trigger {
                 mode: raw.get_i32(217).unwrap_or(0),
                 effect_id: raw.get_i32(225).unwrap_or(0),
             },
-            3016 => Action::AdvFollow { order },
-            3660 | 3661 => Action::AdvFollowEdit { order },
+            3016 => Action::AdvFollow { order, group, follow: raw.get_i32(71).unwrap_or(0) },
+            3660 | 3661 => Action::AdvFollowEdit { order, group, follow: raw.get_i32(71).unwrap_or(0) },
             3033 => Action::KeyframeAnim { order },
             1612 => Action::PlayerVisible { on: false },
             1613 => Action::PlayerVisible { on: true },
@@ -1191,6 +1239,8 @@ fn remap_action(a: Action, map: &[(i32, i32)]) -> Action {
             a.center = r(a.center);
             Action::Area(a)
         }
+        Action::AdvFollow { order, group, follow } => Action::AdvFollow { order, group: r(group), follow: r(follow) },
+        Action::AdvFollowEdit { order, group, follow } => Action::AdvFollowEdit { order, group: r(group), follow: r(follow) },
         other => other,
     }
 }

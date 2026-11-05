@@ -1243,6 +1243,8 @@ impl Game {
     }
 
     fn start_music(&mut self) {
+        // resetLevel: stopAllEffects
+        self.audio_edits.sounds.stop_all(self.audio.as_mut());
         if self.practice {
             return;
         }
@@ -1907,6 +1909,8 @@ impl Game {
                 if !self.practice {
                     self.audio.stop_music();
                 }
+                // destroyPlayer: stopAllEffects (before the death sound)
+                self.audio_edits.sounds.stop_all(self.audio.as_mut());
                 self.pending_checkpoint = None;
                 self.audio.play_effect(crate::audio::DEATH_EFFECT);
                 self.world.player_died();
@@ -3930,6 +3934,7 @@ impl App {
                 Action::LeaveLevel | Action::LeaveEditor => {
                     if let Some(mut g) = self.game.take() {
                         g.audio.stop_music();
+                        g.audio.stop_trigger_effects();
                         g.audio.set_paused(false);
                         self.audio = Some(std::mem::replace(&mut g.audio, Box::new(NoAudio)));
                     }
@@ -4046,6 +4051,7 @@ impl App {
     /// Load and start a level chosen in the level select.
     fn start_level(&mut self, id: i32) {
         if let Some(mut g) = self.game.take() {
+            g.audio.stop_trigger_effects();
             self.audio = Some(std::mem::replace(&mut g.audio, Box::new(NoAudio)));
         }
         if let Some(a) = self.audio.as_deref_mut() {
