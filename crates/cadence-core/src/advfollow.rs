@@ -262,6 +262,23 @@ impl AdvFollow {
         AdvFollow { specs: std::sync::Arc::new(specs), delayed_targets: delayed, rng: crate::fastrand::FastRand::new(0x1234_5678), ..Default::default() }
     }
 
+    /// Also keep the history of these follow targets (spawn-remapped ones with a delay).
+    pub fn with_delayed(mut self, more: &[i32]) -> AdvFollow {
+        for &t in more {
+            if !self.delayed_targets.contains(&t) {
+                self.delayed_targets.push(t);
+            }
+        }
+        self.delayed_targets.sort_unstable();
+        self
+    }
+
+    /// The follow target a trigger fired with `follow` (its 71 after a spawn remap) uses: the
+    /// player / camera flags win, else that group.
+    fn follow_of(spec: &AdvSpec, follow: i32) -> i32 {
+        if spec.follow < 0 { spec.follow } else { follow }
+    }
+
     /// Seed its `fast_rand` (`fast_srand`).
     pub fn reseed(&mut self, seed: u64) {
         self.rng = crate::fastrand::FastRand::new(seed);
@@ -272,20 +289,22 @@ impl AdvFollow {
         self.rng.unit()
     }
 
-    /// `triggerAdvancedFollowCommand`: a new instance, or the same trigger's restarted.
-    pub fn fire(&mut self, order: u32) {
+    /// `triggerAdvancedFollowCommand`: a new instance, or the same trigger's restarted. `group`
+    /// and `follow` are its 51 / 71 after any spawn remap.
+    pub fn fire(&mut self, order: u32, group: i32, follow: i32) {
         let Some(spec) = self.specs.get(&order).copied() else { return };
+        let follow = Self::follow_of(&spec, follow);
         self.counter += 1;
         let counter = self.counter;
         let mut found = false;
         for inst in &mut self.instances {
-            if inst.spec == order && inst.group == spec.group && inst.follow == spec.follow && inst.control_id == spec.control_id {
+            if inst.spec == order && inst.group == group && inst.follow == follow && inst.control_id == spec.control_id {
                 inst.counter = counter;
                 found = true;
             }
         }
         if !found {
-            self.instances.push(AdvInstance { spec: order, group: spec.group, follow: spec.follow, control_id: spec.control_id, counter, started: false });
+            self.instances.push(AdvInstance { spec: order, group, follow, control_id: spec.control_id, counter, started: false });
         }
         // priority first (365, highest first), then the trigger's order
         let specs = std::sync::Arc::clone(&self.specs);
@@ -330,14 +349,16 @@ impl AdvFollow {
 }
 
 impl World {
-    /// An advanced follow trigger fired.
-    pub(crate) fn adv_fire(&mut self, order: u32) {
-        self.adv.fire(order);
+    /// An advanced follow trigger fired (51 / 71 after any spawn remap).
+    pub(crate) fn adv_fire(&mut self, order: u32, group: i32, follow: i32) {
+        self.adv.fire(order, group, follow);
     }
 
-    /// Edit (3660) / re-target (3661) advanced follow triggers.
-    pub(crate) fn adv_edit(&mut self, order: u32) {
-        let Some(spec) = self.adv.specs.get(&order).copied() else { return };
+    /// Edit (3660) / re-target (3661) advanced follow triggers (51 / 71 after any spawn remap).
+    pub(crate) fn adv_edit(&mut self, order: u32, group: i32, follow: i32) {
+        let Some(mut spec) = self.adv.specs.get(&order).copied() else { return };
+        spec.group = group;
+        spec.follow = AdvFollow::follow_of(&spec, follow);
         if spec.retarget {
             let target = spec.follow;
             if target == 0 {
@@ -422,7 +443,7 @@ impl World {
 
     /// `tryGetObject`: the group's main object, else one of its objects at random
     /// (`fast_rand_0_1`).
-    fn try_get_object(&mut self, group: i32) -> Option<u32> {
+    pub(crate) fn try_get_object(&mut self, group: i32) -> Option<u32> {
         if let Some(o) = self.main_object(group) {
             return Some(o);
         }
@@ -728,7 +749,7 @@ mod tests {
         // object 1 (group 2) follows group 3's main object at (400, 300) with easing 10
         let mut w = world("1,1,2,100,3,100,57,2;1,1,2,400,3,300,57,3;1,3016,2,0,3,0,51,2,71,3,367,0,361,10");
         let start = w.level_position(0);
-        w.adv_fire(2);
+        w.adv_fire(2, 2, 3);
         w.pre_step((0.0, 0.0));
         let p = w.level_position(0);
         // a tenth of the way per step
@@ -745,7 +766,7 @@ mod tests {
     fn max_speed_caps_and_x_only() {
         let mut w = world("1,1,2,100,3,100,57,2;1,1,2,400,3,300,57,3;1,3016,2,0,3,0,51,2,71,3,367,0,361,1,298,2,306,1");
         let start = w.level_position(0);
-        w.adv_fire(2);
+        w.adv_fire(2, 2, 3);
         w.pre_step((0.0, 0.0));
         let p = w.level_position(0);
         assert!(((p.0 - start.0) - 2.0).abs() < 1e-4, "{p:?}");
@@ -756,7 +777,7 @@ mod tests {
     fn mode1_accelerates() {
         let mut w = world("1,1,2,100,3,100,57,2;1,1,2,400,3,100,57,3;1,3016,2,0,3,0,51,2,71,3,367,1,334,100");
         let start = w.level_position(0);
-        w.adv_fire(2);
+        w.adv_fire(2, 2, 3);
         w.pre_step((0.0, 0.0));
         let a = w.level_position(0).0 - start.0;
         w.pre_step((0.0, 0.0));
@@ -766,10 +787,26 @@ mod tests {
     }
 
     #[test]
+    fn spawn_remap_moves_the_remapped_group() {
+        // the advanced follow (group 2 follows 3) is spawned through a remap 2 → 5, 3 → 6: the
+        // object of group 5 follows group 6's, group 2's stays
+        let mut w = world(
+            "1,1,2,100,3,100,57,2;1,1,2,100,3,100,57,5;1,1,2,400,3,300,57,3;1,1,2,100,3,500,57,6;\
+             1,3016,2,0,3,0,51,2,71,3,367,0,361,10,57,9,62,1;1,1268,2,0,3,0,51,9,442,2.5.3.6,57,8,62,1",
+        );
+        w.spawn_group(8);
+        assert_eq!((w.adv.instances.len(), w.adv.instances[0].group, w.adv.instances[0].follow), (1, 5, 6));
+        w.pre_step((0.0, 0.0));
+        assert_eq!(w.level_position(0), (100.0, 100.0 + crate::world::GROUND_OFFSET as f64));
+        let p = w.level_position(1);
+        assert!((p.1 - (100.0 + crate::world::GROUND_OFFSET as f64) - 40.0).abs() < 1e-3, "{p:?}");
+    }
+
+    #[test]
     fn retarget_switches_the_followed_group() {
         let mut w = world("1,1,2,100,3,100,57,2;1,1,2,400,3,100,57,3;1,1,2,100,3,500,57,4;1,3016,2,0,3,0,51,2,71,3,57,9;1,3661,2,0,3,0,51,9,71,4");
-        w.adv_fire(3);
-        w.adv_edit(4);
+        w.adv_fire(3, 2, 3);
+        w.adv_edit(4, 9, 4);
         assert_eq!(w.adv.instances[0].follow, 4);
     }
 }

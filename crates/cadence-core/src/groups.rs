@@ -271,9 +271,10 @@ pub enum Action {
     Enter { order: u32 },
     EnterStop { channel: i32, mode: i32, effect_id: i32 },
     /// Advanced follow (3016) and its edit / re-target triggers (3660 / 3661), by level order
-    /// (`advfollow.rs`).
-    AdvFollow { order: u32 },
-    AdvFollowEdit { order: u32 },
+    /// (`advfollow.rs`), with their target group (51) and follow group (71) as a spawn remap
+    /// leaves them (`applyRemap` remaps every trigger's 51 and 71).
+    AdvFollow { order: u32, group: i32, follow: i32 },
+    AdvFollowEdit { order: u32, group: i32, follow: i32 },
     /// Keyframe animation trigger (3033), by level order (`keyframes.rs`).
     KeyframeAnim { order: u32 },
 }
@@ -601,8 +602,8 @@ impl Trigger {
                 mode: raw.get_i32(217).unwrap_or(0),
                 effect_id: raw.get_i32(225).unwrap_or(0),
             },
-            3016 => Action::AdvFollow { order },
-            3660 | 3661 => Action::AdvFollowEdit { order },
+            3016 => Action::AdvFollow { order, group, follow: raw.get_i32(71).unwrap_or(0) },
+            3660 | 3661 => Action::AdvFollowEdit { order, group, follow: raw.get_i32(71).unwrap_or(0) },
             3033 => Action::KeyframeAnim { order },
             1612 => Action::PlayerVisible { on: false },
             1613 => Action::PlayerVisible { on: true },
@@ -1238,6 +1239,8 @@ fn remap_action(a: Action, map: &[(i32, i32)]) -> Action {
             a.center = r(a.center);
             Action::Area(a)
         }
+        Action::AdvFollow { order, group, follow } => Action::AdvFollow { order, group: r(group), follow: r(follow) },
+        Action::AdvFollowEdit { order, group, follow } => Action::AdvFollowEdit { order, group: r(group), follow: r(follow) },
         other => other,
     }
 }

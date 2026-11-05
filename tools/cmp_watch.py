@@ -5,9 +5,12 @@ Per step and object: the f64 position (`real=`), rotation, scale and opacity. Pr
 the samples compared, the largest difference and the first step past the tolerance.
 
 Usage: cmp_watch.py <real.csv> [<ours.csv>] [--tol 1e-3] [--fields real,rot] [--rot-frames N:K]
+                    [--real-frames N:K]
 
 --fields limits the comparison to those fields; --rot-frames N:K compares the rotation only at
-steps where step % N == K (the game refreshes a node's area rotation once per drawn frame).
+steps where step % N == K (the game refreshes a node's area rotation once per drawn frame);
+--real-frames N:K the same for positions (the game moves a move trigger's decoration group in
+batches, `optimizeMoveGroups`: its f64 positions change once per frame).
 Exits with 1 when a compared field is past the tolerance somewhere.
 """
 import sys
@@ -47,11 +50,12 @@ def main():
         i = args.index("--fields")
         fields = tuple(args[i + 1].split(","))
         del args[i:i + 2]
-    rot_frames = None
-    if "--rot-frames" in args:
-        i = args.index("--rot-frames")
-        rot_frames = tuple(int(v) for v in args[i + 1].split(":"))
-        del args[i:i + 2]
+    frames = {}
+    for opt, field in (("--rot-frames", "rot"), ("--real-frames", "real")):
+        if opt in args:
+            i = args.index(opt)
+            frames[field] = tuple(int(v) for v in args[i + 1].split(":"))
+            del args[i:i + 2]
     failed = False
     real_path = args[0]
     ours_path = args[1] if len(args) > 1 else real_path + ".ours"
@@ -62,7 +66,7 @@ def main():
         for step in sorted(r):
             if step not in o:
                 continue
-            if field == "rot" and rot_frames and step % rot_frames[0] != rot_frames[1]:
+            if field in frames and step % frames[field][0] != frames[field][1]:
                 continue
             for k, (a, b) in enumerate(zip(r[step], o[step])):
                 if field not in a or field not in b:

@@ -23,6 +23,11 @@
 //!
 //! `tryGetMainObject(g)` (the center or target of most triggers): the first parent of g (274;
 //! a "+" item makes that object the first), else the group's only object, else none.
+//!
+//! Spawn remaps: the same function gathers every spawn trigger's remap pairs (1268 key 442,
+//! from → to) and gives each target group's remapped groups the same flag combinations
+//! (following remaps of remaps), so a trigger spawned with a remap finds the clusters of the
+//! group it was remapped to.
 
 use crate::level::LevelString;
 use std::collections::HashMap;
@@ -74,6 +79,28 @@ impl GroupLinks {
                     }
                 }
             }
+        }
+        // spawn remaps: from → its "to" groups, over every spawn trigger; the remapped groups get
+        // the flags of the groups they're remapped from
+        let mut remaps: HashMap<i32, Vec<i32>> = HashMap::new();
+        for o in objs.iter().filter(|o| o.id() == 1268) {
+            let pairs: Vec<i32> = o.get(442).map(|r| r.split('.').filter_map(|n| n.parse().ok()).collect()).unwrap_or_default();
+            for c in pairs.chunks_exact(2) {
+                let to = remaps.entry(c[0]).or_default();
+                if !to.contains(&c[1]) {
+                    to.push(c[1]);
+                }
+            }
+        }
+        let mut i = 0;
+        while i < targets.len() {
+            let (g, ignore_parent, ignore_linked) = targets[i];
+            for &to in remaps.get(&g).map(|v| v.as_slice()).unwrap_or(&[]) {
+                if to > 0 && !targets.contains(&(to, ignore_parent, ignore_linked)) {
+                    targets.push((to, ignore_parent, ignore_linked));
+                }
+            }
+            i += 1;
         }
         // parents (`loadGroupParentsFromString`, at each object's load: level order)
         let mut parents_of: HashMap<i32, Vec<u32>> = HashMap::new();
@@ -265,6 +292,23 @@ mod tests {
         let c = l.clusters(5, false, false).unwrap();
         assert_eq!(c.leaders, vec![1]);
         assert_eq!(c.parent[&1], 0);
+    }
+
+    #[test]
+    fn remapped_target_groups_get_clusters() {
+        // advanced follow on group 5 (no members); a spawn remaps 5 → 6 (a linked cluster) and
+        // 6 → 7 (a parent cluster) in another trigger
+        let l = links(
+            "1,211,57,6,108,1,34,1;1,211,57,6,108,1;1,211,57,7,274,7;1,211,57,7;\
+             1,3016,51,5,281,0;1,1268,51,9,442,5.6;1,1268,51,9,442,6.7",
+        );
+        let c = l.clusters(6, false, false).unwrap();
+        assert_eq!(c.leaders, vec![0]);
+        assert_eq!(c.members[&0], vec![0, 1]);
+        let c = l.clusters(7, false, false).unwrap();
+        assert_eq!(c.leaders, vec![2]);
+        // not for flag combinations the source group doesn't use
+        assert!(l.clusters(6, true, false).is_none());
     }
 
     #[test]

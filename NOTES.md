@@ -1777,3 +1777,36 @@ pitch random range (+0x7c0 / +0x7c4), 598 volume range (+0x7c8), 599 whole steps
   FMOD's SFX reverb algorithm isn't public, so it's an approximation, not a port.
 - Not traced (the harness doesn't record sound); unit tests in audiofx.rs / audio.rs and the
   glue under node with a fake AudioContext.
+
+## Spawn remaps in advanced follow / area clusters; main objects of rotate, move, follow (2026-11-05, SFX agent; traced)
+
+- **Remaps** (`applyRemap` 0xe869c): every trigger's target (+0x5b8, key 51) and center / follow
+  group (+0x5bc, key 71) go through the spawn remap, so a spawned advanced follow (3016) or its
+  edit / re-target (3660 / 3661) acts on the remapped 51 / 71 (Cadence: `Action::AdvFollow {
+  order, group, follow }`; the player / camera follow flags still win over 71). The cluster
+  table (`FUN_1000d64d0`) collects all spawn triggers' pairs (1268 key 442, from → set of to)
+  and gives each target group's remapped groups the same 280 / 281 combinations, following
+  remaps of remaps (`GroupLinks::new`).
+- **Rotate** (`processRotationActions` 0xfd4f8): the center is `tryGetMainObject(71)` — the
+  group's first parent (274), else its only object. Without one the group's objects each turn
+  in place (free-rotating ones, unless locked) and the group's move isn't claimed (no orbit).
+  The aim / follow rotate modes (`triggerRotateCommand`, dynamic) use `tryGetObject` — not ported.
+- **Follow** (`processFollowActions` 0xfe1b0): the followed group's main object; none → nothing.
+- **Move to target** (`getMoveTargetDelta` 0xe71e0, from `triggerMoveCommand` with
+  !layer+0x7bb): target = 71, from = 395 (else the group); `tryGetMainObject` for both, unless
+  level setting kA40 (+0x1c8 → +0x7bb; also forced on in the official level 22, not done) makes
+  them `tryGetObject` (the main object, else a random one by fast_rand). None, or the same
+  object: a zero move (the command is still made). Player targets (138 / 200) aren't ported.
+- Scale centers (`scale_group`), teleport targets and `group_main_position` still take the
+  group's first object (not checked against the decompile).
+- **Real trace** `re/traces/gremap` (watchgroups 10, 11, 41, 45, 50, 52, 60, 70, 74): an
+  advanced follow spawned with remap 10 → 11 (a linked cluster with a 34 leader + a lone
+  object), an area move spawned with 41 → 45 (a 279-led linked cluster), rotates about a center
+  group whose parent isn't its first object and about one with two objects and no parent, a
+  follow of a group whose parent isn't its first object (the first one moves 300, the parent
+  100 up), move-to-target onto a parent / onto a parentless two-object group. Every position
+  ≤ 5e-6, rotations ≤ 7e-6. Main's build had 8 of the 9 groups off (by up to 1708 units).
+- Watch files: a move trigger's decoration group (70, 74) changes its f64 positions once per
+  frame (steps ≡ 3 mod 4 at the harness speed) — `optimizeMoveGroups`' batching; cmp_watch got
+  `--real-frames N:K`. The harness lists `getStaticGroup(g)` first: group 61 there only held
+  the parent object, so it isn't compared.

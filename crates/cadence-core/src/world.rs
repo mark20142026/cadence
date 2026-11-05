@@ -239,6 +239,9 @@ pub struct World {
     pub songs: Vec<(i32, i32, f32, bool, i32)>,
     /// kA41 (LevelSettings +0x1cb → layer +0x7bc): rotate triggers turn solids too.
     pub rotate_free_all: bool,
+    /// Level setting kA40 (layer +0x7bb): move triggers' targets are `tryGetObject` (the main
+    /// object, else a random one) instead of `tryGetMainObject` (`getMoveTargetDelta`).
+    pub random_move_targets: bool,
     /// The game's `m_levelLength`: furthest object x + 340 (or more for very short levels).
     /// Gameplay ends once the player reaches `level_length - 300`.
     pub level_length: f32,
@@ -399,6 +402,7 @@ impl World {
         let triggers = crate::groups::GroupTriggers::new(level);
         let mut moving_groups = std::collections::HashSet::new();
         let mut members: std::collections::HashMap<i32, Vec<u32>> = std::collections::HashMap::new();
+        let mut adv_delayed: Vec<i32> = Vec::new();
         for action in triggers.actions() {
             match action {
                 crate::groups::Action::Move(m) => {
@@ -512,17 +516,20 @@ impl World {
                         }
                     }
                 }
-                crate::groups::Action::AdvFollow { order } | crate::groups::Action::AdvFollowEdit { order } => {
-                    // the followed group and the moved group
+                crate::groups::Action::AdvFollow { order, group, follow } | crate::groups::Action::AdvFollowEdit { order, group, follow } => {
+                    // the followed group and the moved group (as a spawn remap leaves them)
                     if let Some(raw) = level.objects.get(order as usize) {
-                        let g = raw.get_i32(51).unwrap_or(0);
-                        if g > 0 && raw.id() == 3016 {
-                            moving_groups.insert(g);
-                        }
-                        for k in [51, 71, 560, 565] {
-                            if let Some(g) = raw.get_i32(k).filter(|&g| g > 0) {
-                                members.entry(g).or_default();
+                        if group > 0 && raw.id() == 3016 {
+                            moving_groups.insert(group);
+                            // a remapped follow target with a delay needs its history kept
+                            let spec = crate::advfollow::AdvSpec::from_raw(raw, order);
+                            if follow > 0 && spec.follow > 0 && (spec.delay.0 > 0.0 || spec.delay.1 != 0.0) {
+                                adv_delayed.push(follow);
                             }
+                        }
+                        let keys = [raw.get_i32(560).unwrap_or(0), raw.get_i32(565).unwrap_or(0)];
+                        for g in [group, follow].into_iter().chain(keys).filter(|&g| g > 0) {
+                            members.entry(g).or_default();
                         }
                     }
                 }
@@ -660,6 +667,7 @@ impl World {
             time_events: Vec::new(),
             animated_at: vec![None; n],
             rotate_free_all: level.setting("kA41") == Some("1") || std::env::var_os("CADENCE_ROTATE_ALL").is_some(),
+            random_move_targets: level.setting("kA40") == Some("1"),
             start,
             level_pos,
             collectibles,
@@ -761,7 +769,7 @@ impl World {
             platformer: level.setting("kA22") == Some("1"),
             restored: Vec::new(),
             restore_count: 0,
-            adv: crate::advfollow::AdvFollow::new(level),
+            adv: crate::advfollow::AdvFollow::new(level).with_delayed(&adv_delayed),
             keyframes: crate::keyframes::Keyframes::new(level),
             links: std::sync::Arc::new(links),
             player2_pos: None,
@@ -1025,6 +1033,14 @@ impl World {
             if delta == 0.0 {
                 continue;
             }
+            // no main object for the center (`tryGetMainObject`: no parent and not exactly one
+            // object): every object turns in place (unless locked) and the move isn't claimed
+            if center != IN_PLACE && self.main_object(center).is_none() {
+                if !lock {
+                    self.rotate_group(group, IN_PLACE, delta, (0.0, 0.0), false);
+                }
+                continue;
+            }
             let claimed = match moves.iter().position(|m| m.0 == group) {
                 Some(i) => {
                     let m = moves.remove(i);
@@ -1049,7 +1065,7 @@ impl World {
             .filter_map(|c| c.follow.map(|(f, mx, my)| (c.spec.group, f, mx, my)))
             .collect();
         for (group, followed, mx, my) in follows {
-            let Some(&main) = self.members.get(&followed).and_then(|m| m.first()) else { continue };
+            let Some(main) = self.main_object(followed) else { continue };
             let main = main as usize;
             self.stamp(main);
             let dx = mx as f64 * (self.level_pos[main].0 - self.level_last[main].0 as f64);
@@ -1151,7 +1167,8 @@ impl World {
             }
             return;
         }
-        let Some(&center_order) = self.members.get(&center).and_then(|m| m.first()) else { return };
+        // the center group's main object (`tryGetMainObject`: its parent, or its only object)
+        let Some(center_order) = self.main_object(center) else { return };
         let Some(members) = self.members.get(&group).cloned() else { return };
         let (cx, cy) = (self.level_pos[center_order as usize].0 as f32, self.level_pos[center_order as usize].1 as f32);
         // CCNode::nodeToParentTransform with rotation r: radians = -r·(π/180) in f32.
@@ -1537,12 +1554,24 @@ impl World {
             {
                 match action {
                     crate::groups::Action::Move(mut spec) => {
-                        // getMoveTargetDelta: target's position − center's, now (f32).
+                        // getMoveTargetDelta: target's position − center's, now (f32): their main
+                        // objects (kA40: tryGetObject, a random object without one); none, or the
+                        // same object: no movement
                         if let Some((target, center, axis)) = spec.target {
-                            let main = |g: i32| self.members.get(&g).and_then(|m| m.first()).map(|&o| self.level_pos[o as usize]);
-                            let (Some(t), Some(c)) = (main(target), main(center)) else { continue };
-                            spec.dx = if axis == 2 { 0.0 } else { t.0 as f32 - c.0 as f32 };
-                            spec.dy = if axis == 1 { 0.0 } else { t.1 as f32 - c.1 as f32 };
+                            let (from, to) = if self.random_move_targets {
+                                (self.try_get_object(center), self.try_get_object(target))
+                            } else {
+                                (self.main_object(center), self.main_object(target))
+                            };
+                            let (dx, dy) = match (to, from) {
+                                (Some(t), Some(c)) if t != c => {
+                                    let (t, c) = (self.level_pos[t as usize], self.level_pos[c as usize]);
+                                    (t.0 as f32 - c.0 as f32, t.1 as f32 - c.1 as f32)
+                                }
+                                _ => (0.0, 0.0),
+                            };
+                            spec.dx = if axis == 2 { 0.0 } else { dx };
+                            spec.dy = if axis == 1 { 0.0 } else { dy };
                         }
                         let mut c = crate::groups::MoveCommand::new(spec);
                         c.origin = origin;
@@ -1827,8 +1856,8 @@ impl World {
                         }
                     }
                     crate::groups::Action::EnterStop { channel, mode, effect_id } => self.enter.stop(channel, mode, effect_id),
-                    crate::groups::Action::AdvFollow { order } => self.adv_fire(order),
-                    crate::groups::Action::AdvFollowEdit { order } => self.adv_edit(order),
+                    crate::groups::Action::AdvFollow { order, group, follow } => self.adv_fire(order, group, follow),
+                    crate::groups::Action::AdvFollowEdit { order, group, follow } => self.adv_edit(order, group, follow),
                     crate::groups::Action::KeyframeAnim { order } => self.keyframe_fire(order),
                 }
             }
