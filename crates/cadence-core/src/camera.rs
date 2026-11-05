@@ -368,6 +368,9 @@ pub struct Camera {
     pub gameplay_no_zoom: [bool; 2],
     /// Camera edges (+0x420.. left, right, up, down): the edge object by level order (see
     /// `CameraAction::Edge`).
+    /// The teleport ease (+0x4a8): a smooth-camera teleport sets 0.5 s; while it runs the y
+    /// axis eases by 30.
+    pub teleport_timer: f32,
     /// The level's end (`+0x3138`: max(screen width + 300, furthest object + 340), set when
     /// the end portal is made — not in platformer levels): the view's right limit is this
     /// minus the view width and the camera offset, eased into like an edge.
@@ -484,6 +487,7 @@ impl Camera {
             gameplay_no_zoom: [false; 2],
             edges: [None; 4],
             level_end_x: None,
+            teleport_timer: 0.0,
         }
     }
 
@@ -767,10 +771,15 @@ impl Camera {
         if debug_camera() {
             eprintln!("cam y: cam {:?} target {:?} ease {:?} z {} lz {} static {:?} basic {basic} side {sideways} up {up} p {:?}", cam, target, ease, z, lz, self.static_active, ppos);
         }
+        // the teleport ease (+0x4a8): y eased by 30 while it counts down (dt/60 a step)
         if !instant[1] {
-            // (The teleport ease timer isn't modelled.)
+            if 0.0 < self.teleport_timer {
+                self.teleport_timer += dt / -60.0;
+                ease[1] = 30.0;
+            }
         } else {
             ease[1] = 1.0;
+            self.teleport_timer = 0.0;
         }
         if instant[0] {
             ease[0] = 1.0;

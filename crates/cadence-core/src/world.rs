@@ -77,6 +77,9 @@ pub struct Object {
     /// 353).
     pub teleport_target: Option<i32>,
     pub teleport_keep: (bool, bool),
+    /// Teleports: key 55 smooth camera (+0x748): `teleportPlayer` starts the camera's 0.5 s
+    /// teleport ease (y eased by 30).
+    pub teleport_smooth: bool,
     /// Mode portals with key 112: the camera padding (114, clamped to [0, 1]) and easing (113,
     /// [1, 40]) they set (`playerWillSwitchMode`).
     pub portal_camera: Option<(f32, f32)>,
@@ -173,8 +176,8 @@ pub struct World {
     death_triggers: Vec<(i32, bool)>,
     /// A teleport trigger fired after the last step (target x, y, keep x, keep y, gravity),
     /// and the one the coming player step applies.
-    teleport: Option<(f64, f64, bool, bool, i8)>,
-    pub teleport_now: Option<(f64, f64, bool, bool, i8)>,
+    teleport: Option<(f64, f64, bool, bool, i8, bool)>,
+    pub teleport_now: Option<(f64, f64, bool, bool, i8, bool)>,
     /// Player 1's rect after the last step (its collision block).
     player_rect: Option<Rect>,
     /// Collision blocks (1816): (level order, block id 80, dynamic 94, half size).
@@ -392,6 +395,7 @@ impl World {
                 teleport_force: (raw.get(345) == Some("1")).then(|| (raw.get_f32(346).unwrap_or(0.0), raw.get(347) == Some("1"))),
                 teleport_target: (kind == ObjectType::TELEPORT_PORTAL && raw.canonical_id() != 747).then(|| raw.get_i32(51)).flatten(),
                 teleport_keep: (raw.get(352) == Some("1"), raw.get(353) == Some("1")),
+                teleport_smooth: raw.get(55) == Some("1"),
                 portal_camera: (raw.get(112) == Some("1")).then(|| {
                     let pad = raw.get_f32(114).unwrap_or(0.0);
                     let ease = raw.get_f32(113).unwrap_or(0.0);
@@ -1699,9 +1703,9 @@ impl World {
                             self.death_triggers.push((group, on));
                         }
                     }
-                    crate::groups::Action::Teleport { group, keep_x, keep_y, gravity } => {
+                    crate::groups::Action::Teleport { group, keep_x, keep_y, gravity, smooth } => {
                         if let Some((x, y)) = self.group_main_position(group) {
-                            self.teleport = Some((x, y, keep_x, keep_y, gravity));
+                            self.teleport = Some((x, y, keep_x, keep_y, gravity, smooth));
                         }
                     }
                     crate::groups::Action::ItemCompare(it) => {

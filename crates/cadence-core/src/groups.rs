@@ -202,8 +202,8 @@ pub enum Action {
     /// button), 541 stop move (platformer directions), 542 stop rotation, 543 stop slide.
     PlayerControl { stop_jump: bool, stop_move: bool, stop_rotation: bool },
     /// Teleport trigger (3022): player 1 to group 51's main object (352 / 353 keep x / y, 354
-    /// gravity after: 1 normal, 2 flipped, 3 toggled).
-    Teleport { group: i32, keep_x: bool, keep_y: bool, gravity: i8 },
+    /// gravity after: 1 normal, 2 flipped, 3 toggled; 55 smooth camera).
+    Teleport { group: i32, keep_x: bool, keep_y: bool, gravity: i8, smooth: bool },
     /// Item Compare (3620) / Item Edit (3619), `ItemTriggerGameObject`.
     ItemCompare(ItemSpec),
     ItemEdit(ItemSpec),
@@ -664,7 +664,7 @@ impl Trigger {
             3602 => Action::Sfx(SfxPlay::from_raw(raw, order)),
             1585 => Action::Animate { group, anim: raw.get_i32(76).unwrap_or(0) },
             1812 => Action::OnDeath { group, on: raw.get(56) == Some("1") },
-            3022 => Action::Teleport { group, keep_x: raw.get(352) == Some("1"), keep_y: raw.get(353) == Some("1"), gravity: raw.get_i32(354).unwrap_or(0) as i8 },
+            3022 => Action::Teleport { group, keep_x: raw.get(352) == Some("1"), keep_y: raw.get(353) == Some("1"), gravity: raw.get_i32(354).unwrap_or(0) as i8, smooth: raw.get(55) == Some("1") },
             3620 => Action::ItemCompare(ItemSpec::from_raw(raw)),
             3619 => Action::ItemEdit(ItemSpec::from_raw(raw)),
             1049 => Action::Toggle { group, on: raw.get(56) == Some("1") },
@@ -1217,7 +1217,7 @@ fn remap_action(a: Action, map: &[(i32, i32)]) -> Action {
         }
         Action::Follow { group, followed, mod_x, mod_y, duration } => Action::Follow { group: r(group), followed: r(followed), mod_x, mod_y, duration },
         Action::OnDeath { group, on } => Action::OnDeath { group: r(group), on },
-        Action::Teleport { group, keep_x, keep_y, gravity } => Action::Teleport { group: r(group), keep_x, keep_y, gravity },
+        Action::Teleport { group, keep_x, keep_y, gravity, smooth } => Action::Teleport { group: r(group), keep_x, keep_y, gravity, smooth },
         Action::ItemCompare(mut spec) => {
             spec.target = r(spec.target);
             spec.other = r(spec.other);

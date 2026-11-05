@@ -226,6 +226,8 @@ pub struct Player {
     pub(crate) last_ground: Option<usize>,
     /// `m_wasTeleported`: set by a teleport, read and cleared by the next collision pass.
     was_teleported: bool,
+    /// A smooth-camera teleport (key 55) this step: the camera's teleport ease starts.
+    camera_smooth_teleport: bool,
     /// `m_isDashing` and `m_dashY` (tan of the dash angle): while dashing the y velocity is 0
     /// and y moves by the x step times it.
     pub dashing: bool,
@@ -535,6 +537,7 @@ impl Default for Player {
             slope_rect_width: None,
             last_ground: None,
             was_teleported: false,
+            camera_smooth_teleport: false,
             dashing: false,
             dash_y: 0.0,
             icon_spin: None,
@@ -893,7 +896,8 @@ impl Player {
             }
         }
         // a teleport trigger (3022) fired last step: like a teleport portal with a target group
-        if let Some((x, y, keep_x, keep_y, gravity)) = world.teleport_now {
+        if let Some((x, y, keep_x, keep_y, gravity, smooth)) = world.teleport_now {
+            self.camera_smooth_teleport |= smooth;
             if !keep_x {
                 self.x = x as f32;
             }
@@ -998,6 +1002,9 @@ impl Player {
             eprintln!("camera at x {} y {}: {:?}", self.x, self.y, fired);
         }
         let mut cam = self.camera;
+        if std::mem::take(&mut self.camera_smooth_teleport) {
+            cam.teleport_timer = 0.5;
+        }
         cam.level_end_x = (world.level_length > 0.0 && !self.platformer.on).then_some(world.level_length);
         let position = |o: u32| {
             let (x, y) = world.level_position(o as usize);
@@ -2219,6 +2226,7 @@ impl Player {
                 }
                 self.touching_ground = false;
                 self.was_teleported = true;
+                self.camera_smooth_teleport |= obj.teleport_smooth;
                 // Key 354: the gravity after the teleport.
                 match obj.teleport_gravity {
                     1 => self.flip_gravity(false),

@@ -1336,3 +1336,10 @@ prebuilt trace mod), corner and muted.
 - Dash: the camera differs once by ~4 ulps at step 3378 (back in step the next) and drifts
   from step ~13,650 in a smooth static camera (2 s, both axes); not found yet.
 - verify_all 124/135, unchanged (the same 11, rotation only).
+- Teleports: key 55 (smooth camera, +0x748) makes `teleportPlayer` set the camera's teleport
+  ease (+0x4a8) to 0.5 s; updateCamera then eases y by 30 while it counts down (dt/60 a step),
+  and an instant y clears it. Ported for portals and the teleport trigger (3022): Deadlocked
+  (r1–r5-20) and Fingerdash (s1–s4-21) cameras now match bit for bit. Camera bit for bit in
+  112 of 135 suites (platformer turn-around easing, Dash's static camera and two Hexagon Force
+  attempts left).
+- Dash forces kA40 (World::official, from the tools' and the game's official-level loading).
