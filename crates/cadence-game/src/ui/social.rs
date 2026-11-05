@@ -30,7 +30,7 @@ pub enum Page {
 
 pub enum Msg {
     History(Vec<crate::online::Comment>),
-    Notifications(Result<usize, ()>),
+    Notifications(Result<(Vec<social::Notification>, usize), ()>),
     Messages(Vec<social::Message>),
     Opened(Box<social::Message>),
     Profile(Box<(crate::online::Profile, Counts, Vec<Post>)>),
@@ -56,7 +56,7 @@ pub struct Social {
     /// Your comment history.
     pub history: Option<Vec<crate::online::Comment>>,
     /// The notifications' count, or an error (`NotificationsPage`).
-    pub notifications: Option<Result<usize, ()>>,
+    pub notifications: Option<Result<(Vec<social::Notification>, usize), ()>>,
     /// The legacy messages listed, and the one opened.
     pub messages: Option<Vec<social::Message>>,
     pub open_message: Option<social::Message>,
@@ -154,10 +154,12 @@ impl Social {
                 self.notifications = None;
                 crate::net::spawn(async {
                     let id = crate::gjapi::identity();
-                    let body = crate::net::post("getGJNotifications.php", &format!("{}&page=0&secret={}&total=0", id.base(), crate::gjapi::SECRET)).await;
+                    // the game's request (recorded): every kind (mask 65535)
+                    let body = crate::net::post("getGJNotifications.php", &format!("{}&page=0&total=0&mask=65535&secret={}", id.base(), crate::gjapi::SECRET)).await;
                     Msg::Notifications(match body {
-                        Ok(b) if b.trim().starts_with('-') || b.trim().is_empty() => Err(()),
-                        Ok(b) => Ok(b.split('#').next().unwrap_or("").split('|').filter(|e| !e.is_empty()).count()),
+                        Ok(b) if b.trim() == "-2" || b.trim().is_empty() => Ok((Vec::new(), 0)),
+                        Ok(b) if b.trim().starts_with('-') => Err(()),
+                        Ok(b) => Ok(social::parse_notifications(b.trim())),
                         Err(_) => Err(()),
                     })
                 })
@@ -244,7 +246,7 @@ impl Social {
             Page::Friends(_) | Page::Requests(_) => self.users.as_ref().map_or(0, Vec::len) as f32 * 40.0 - 180.0,
             Page::Settings => 0.0,
             Page::Messages(_) => self.messages.as_ref().map_or(0, Vec::len) as f32 * 50.0 - 188.0,
-            Page::Notifications => 0.0,
+            Page::Notifications => self.notifications.as_ref().and_then(|r| r.as_ref().ok()).map_or(0, |(l, _)| l.len()) as f32 * 40.0 - 196.0,
             Page::History => s_len(&self.history) as f32 * 44.0 - 176.0,
         };
         self.scroll = (self.scroll + delta).clamp(0.0, rows.max(0.0));
@@ -297,6 +299,14 @@ impl Social {
                 self.load();
             }
             (Page::Notifications, Btn::Replay(1)) if !self.busy() => self.load(),
+            // a row's bell: stop notifications from that player (`muteGJUser.php`)
+            (Page::Notifications, Btn::Social(code)) if code >= 6000 => {
+                let row = (code - 6000) as usize;
+                let Some(n) = self.notifications.as_ref().and_then(|r| r.as_ref().ok()).and_then(|(l, _)| l.get(row)).cloned() else { return Effect::None };
+                if n.account > 0 {
+                    self.act(Act::Mute { user: n.account, on: true }, "mute");
+                }
+            }
             (Page::Notifications, Btn::Replay(2)) => return Effect::Alert("Notifications".into(), "Notifications show likes, friend requests, rewards and level activity on your account.".into()),
             // the old messages' layout buttons: back, the sent ones, select all, refresh
             (Page::Messages(_), Btn::Replay(8)) => {
@@ -749,18 +759,57 @@ fn draw_history(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
 
 /// `NotificationsPage`: its layout, and the list's state (none, or an error).
 fn draw_notifications(s: &Social, c: &mut Canvas, ctx: &mut Ctx, dx: f32) {
-    replay::draw_where(c, ctx, Scene::Notifications, &|k, name, _, _| !(k == 'T' && name == "Something went wrong"));
+    // the list's sides are drawn with the rows (the capture's right one is flipped in place)
+    replay::draw_where(c, ctx, Scene::Notifications, &|k, name, _, _| !(k == 'T' && name == "Something went wrong") && name != "GJ_commentSide_001.png");
     let cx = 284.5 + dx;
     match &s.notifications {
         None => super::online::loading_circle(c, cx, 160.0, s.t),
         Some(Err(())) => {
             c.text("goldFont", "Something went wrong", cx, 160.0, Look::scaled(0.6));
         }
-        Some(Ok(0)) => {
+        Some(Ok((list, _))) if list.is_empty() => {
             c.text("goldFont", "No notifications", cx, 160.0, Look::scaled(0.6));
         }
-        Some(Ok(n)) => {
-            c.text("goldFont", &format!("{n} notification{}", if *n == 1 { "" } else { "s" }), cx, 160.0, Look::scaled(0.6));
+        Some(Ok((list, total))) => {
+            // GJNotificationCell (captured with made-up rows): the kind's picture, the title and
+            // its age, the body, a green dot when new, the bell (stop notifications from them)
+            c.text("goldFont", &format!("1 to {} of {total}", list.len()), 494.5 + dx, 285.0, Look::scaled(0.5).anchor(1.0, 0.5));
+            // each kind's EmoteSprite and its scale (captured)
+            const PICTURES: [(i32, &str, f32); 6] = [(1, "particle_207_001.png", 1.125), (2, "particle_226_001.png", 1.1666), (3, "particle_62_001.png", 1.575), (4, "particle_222_001.png", 1.3333), (5, "particle_222_001.png", 1.3333), (6, "particle_246_001.png", 1.125)];
+            // GJCommentListLayer: 340 × 196 at (114.5, 57), its 40-high rows dark first
+            let (lx, ly, top) = (114.5 + dx, 57.0, 253.0);
+            let rgb = |c: [u8; 3]| c.map(|v| v as f32 / 255.0);
+            c.rect(lx, ly, 340.0, 196.0, rgb([191, 114, 62]), 1.0);
+            c.clip = Some([lx, ly, lx + 340.0, top]);
+            for (i, n) in list.iter().enumerate() {
+                let y = 234.0 - 40.0 * i as f32 + s.scroll;
+                if !(ly - 20.0..=top + 20.0).contains(&y) {
+                    continue;
+                }
+                c.rect(lx, y - 20.0, 340.0, 40.0, rgb(if i % 2 == 0 { [161, 88, 44] } else { [194, 114, 62] }), 1.0);
+                let (_, pic, scale) = PICTURES.iter().find(|p| p.0 == n.kind).copied().unwrap_or(PICTURES[0]);
+                c.sprite(pic, 132.5 + dx, y + 1.0, Look::scaled(scale));
+                if n.new {
+                    c.sprite("d_ball_01_001.png", 120.5 + dx, y + 9.0, Look::scaled(0.214).rgb([0, 255, 0]));
+                }
+                let (tw, _) = c.text_size("bigFont", &n.title);
+                c.text("bigFont", &n.title, 150.5 + dx, y + 8.0, Look::scaled(0.5).anchor(0.0, 0.5));
+                if !n.age.is_empty() {
+                    c.text("chatFont", &format!("{} ago", n.age), 150.5 + tw * 0.5 + 6.0 + dx, y + 7.0, Look::scaled(0.5).anchor(0.0, 0.5).rgb([0, 0, 0]).alpha(150));
+                }
+                c.text("chatFont", &n.body, 151.0 + dx, y - 5.5, Look::scaled(0.54).anchor(0.0, 1.0).rgb([0, 0, 0]));
+                c.text("chatFont", &n.body, 150.5 + dx, y - 5.0, Look::scaled(0.54).anchor(0.0, 1.0));
+                let id = Btn::Social(6000 + i as u16);
+                let f = ctx.factor(id);
+                c.sprite("accountBtn_notifications_001.png", 380.5 + dx, y, Look::scaled(0.5 * f));
+                ctx.area(id, 380.5 + dx, y, 21.5, 20.75);
+            }
+            c.clip = None;
+            for (x, flip) in [(lx - 7.0, false), (lx + 347.0, true)] {
+                c.sprite("GJ_commentSide_001.png", x, ly, Look::default().anchor(if flip { 1.0 } else { 0.0 }, 0.0).scale_xy(1.0, 6.3667).flip_x(flip));
+            }
+            c.sprite("GJ_commentTop_001.png", lx + 170.0, ly + 192.0, Look::default());
+            c.sprite("GJ_commentTop_001.png", lx + 170.0, ly + 4.0, Look::default().flip_y(true));
         }
     }
 }

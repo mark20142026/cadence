@@ -158,8 +158,12 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       find the game, or get it with a Steam login (SteamCMD), Play, update check.
 - [x] Group parents / linked objects in advanced follow and area triggers (gparent suite),
       SFX speed and per-sound proximity (agent, merged). verify_all 123/134.
+- [x] Notifications (getGJNotifications, `mask=65535` as recorded): rows parsed like the
+      game's parser (FUN_100493430: `key:value` rows, `#total:offset:count`) and drawn like
+      GJNotificationCell (emote per kind, title + age, body, new dot, bell = mute). GUI diff
+      vs the real page with the same made-up rows 5.0.
+- [x] The Intel Mac release build: libcurl from the system on macOS (no OpenSSL to cross-build).
 - [ ] Still open: the newer threads messaging (getGJThreads and its ThreadViewPopup /
-      NewThreadPopup / members / invites) and notifications (getGJNotifications): their answer
-      parsers are in unnamed code not found yet, and there is no real account to record
-      against. Smaller leftovers the agents noted: spawn-trigger remaps of target groups in
+      NewThreadPopup / members / invites): its answer parser is in unnamed code not found yet,
+      and there is no real account to record against. Smaller leftovers the agents noted: spawn-trigger remaps of target groups in
       advanced follow, Edit SFX's stop (414), SFX pitch (405), random ranges, loops and fades.

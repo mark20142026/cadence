@@ -30,11 +30,16 @@ zune-jpeg = "0.5"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rodio = { version = "0.23", default-features = false, features = ["playback", "mp3", "vorbis"] }
 ureq = "2"
-# the game servers: the same system libcurl the game uses (same TLS, HTTP version and headers)
+
+# the game servers: the same system libcurl the game uses (same TLS, HTTP version and headers).
+# On macOS always the system's (no OpenSSL: the Intel build is cross-compiled, where curl-sys
+# would otherwise build its own curl against an OpenSSL that isn't there)
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "macos")))'.dependencies]
 curl = "0.4"
 
 # CADENCE_CORNER parks the window with AppKit (the versions winit already uses)
 [target.'cfg(target_os = "macos")'.dependencies]
+curl = { version = "0.4", default-features = false, features = ["force-system-lib-on-osx"] }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry"] }
 

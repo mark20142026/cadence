@@ -309,3 +309,64 @@ mod tests {
         assert_eq!((msgs[0].name.as_str(), msgs[0].subject.as_str(), msgs[0].body.as_str(), msgs[0].read), ("FriendOne", "Nice level!", "Body text", false));
     }
 }
+
+/// A notification (`getGJNotifications.php`, the game's parser at 0x100493430: rows split by
+/// `|`, each `key:value` pairs, then `#total:offset:count`): 1 id, 2 type, 3 the player's name,
+/// 4 title (base64), 5 body (base64), 6 age, 7 new, 8 the player's account, 9 the target (level,
+/// list…), 10 a picture, 11–15 numbers, 16 text.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Notification {
+    pub id: i64,
+    pub kind: i32,
+    pub user: String,
+    pub title: String,
+    pub body: String,
+    pub age: String,
+    pub new: bool,
+    pub account: i64,
+    pub target: i64,
+    pub picture: String,
+}
+
+pub fn parse_notifications(body: &str) -> (Vec<Notification>, usize) {
+    let mut parts = body.split('#');
+    let rows = parts.next().unwrap_or("");
+    let total = parts.next().and_then(|p| p.split(':').next()).and_then(|t| t.parse().ok()).unwrap_or(0);
+    let list: Vec<Notification> = rows
+        .split('|')
+        .filter(|r| !r.is_empty())
+        .map(|r| {
+            let w: Vec<&str> = r.split(':').collect();
+            let get = |k: &str| w.chunks(2).find(|c| c[0] == k).and_then(|c| c.get(1)).copied().unwrap_or("");
+            let dec = |v: &str| gjapi::b64_decode(v).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+            Notification {
+                id: get("1").parse().unwrap_or(0),
+                kind: get("2").parse().unwrap_or(0),
+                user: get("3").into(),
+                title: dec(get("4")),
+                body: dec(get("5")),
+                age: get("6").into(),
+                new: get("7") == "1",
+                account: get("8").parse().unwrap_or(0),
+                target: get("9").parse().unwrap_or(0),
+                picture: get("10").into(),
+            }
+        })
+        .collect();
+    let total = total.max(list.len());
+    (list, total)
+}
+
+#[cfg(test)]
+mod notification_tests {
+    #[test]
+    fn rows_like_the_game() {
+        let (n, total) = super::parse_notifications("1:900:2:1:3:Alpha:4:VGl0bGUgb25l:5:Qm9keSB0ZXh0IG9uZQ==:6:2 hours:7:0:8:21:9:128:10:s10|1:901:2:2:3:Beta:4:VHdv:5:Qm9keQ==:6:1 day:7:1:8:22:9:129#6:0:10");
+        assert_eq!(total, 6);
+        assert_eq!(n.len(), 2);
+        assert_eq!((n[0].title.as_str(), n[0].body.as_str(), n[0].age.as_str(), n[0].new), ("Title one", "Body text one", "2 hours", false));
+        assert!(n[1].new);
+        assert_eq!(n[1].account, 22);
+    }
+}
+

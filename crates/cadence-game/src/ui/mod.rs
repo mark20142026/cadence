@@ -3688,8 +3688,9 @@ impl Ui {
             }
             // your account's pages (CADENCE_SERVER at a stand-in with made-up answers)
             #[cfg(not(target_arch = "wasm32"))]
-            "myprofile" | "friends" | "requests" | "acctsettings" | "oldmessages" => {
+            "myprofile" | "friends" | "requests" | "acctsettings" | "oldmessages" | "notifications" => {
                 let page = match which {
+                    "notifications" => social::Page::Notifications,
                     "oldmessages" => social::Page::Messages(0),
                     "friends" => social::Page::Friends(0),
                     "requests" => social::Page::Requests(0),

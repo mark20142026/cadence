@@ -1140,3 +1140,24 @@ tryGetObject, loadGroupParentsFromString).
   `cargo check` for wasm32, and the JS glue under node with a fake AudioContext. Not traced
   (FMOD state isn't in the harness).
 - verify_all 123/134 (the 11 failing suites are the same as before this session).
+
+## 2026-11-05 — notification rows, Intel Mac build
+
+- Notifications: the real NotificationsPage captured with made-up rows (fake-account home,
+  recorder answering getGJNotifications). The parser (FUN_100493430) reads `|` rows of
+  `responseToDict` pairs, keys 1–16 (4 and 5 base64), then `#total:offset:count`.
+  `social::parse_notifications` matches it (test `rows_like_the_game`); the request is now the
+  recorded body (`&page=0&total=0&mask=65535`).
+- The page is GJCommentListLayer's frame (340 × 196 at 114.5, 57; rows 40 high, 161,88,44 /
+  194,114,62 from the top; centres 234 − 40i). Per row: the kind's EmoteSprite (207/226/62/
+  222/222/246, each with its captured scale), the title (bigFont 0.5 at +8), its age (chatFont,
+  black at 150), the body (chatFont 0.54, top at −5, shadowed), a green dot when new, the bell
+  (muteGJUser). Key 10 is a GJChestSprite (a reward's chest) — not drawn yet. GUI diff 5.0.
+- The capture's right GJ_commentSide is flipped in place (flipX), which the scene export wrote
+  as scale −1; drawn here from the capture's node instead.
+- Screenshots of popups need `CADENCE_UI_TIME` (else they're mid open-animation).
+- CI: the Intel Mac job (cross-built on macos-14) failed in openssl-sys: cross-compiling,
+  curl-sys builds its own libcurl with OpenSSL. macOS now takes `curl` with
+  `force-system-lib-on-osx` and no default features (the system libcurl, as the native build
+  already used). Built locally for x86_64-apple-darwin (game and launcher).
+
