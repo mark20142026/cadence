@@ -54,6 +54,9 @@ MINGW*|MSYS*|CYGWIN*|Windows_NT)
     mkdir -p "$out"
     cp "$bin/cadence-launcher" "$out/cadence"
     cp "$bin/cadence-game" "$out/"
+    # the release profile keeps debug info (debug = 1), which Linux leaves inside the
+    # executables (~70 MB); drop it, keeping the symbols for backtraces
+    strip --strip-debug "$out/cadence" "$out/cadence-game"
     cp packaging/icon-1024.png "$out/cadence.png"
     cp packaging/cadence.desktop README.md LICENSE "$out/"
     tar -C dist -czf dist/Cadence-linux.tar.gz Cadence
