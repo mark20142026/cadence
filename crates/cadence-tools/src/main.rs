@@ -349,6 +349,8 @@ thread_local! {
 /// A player at the level start, with the level's camera triggers.
 fn spawn_player(world: &cadence_core::world::World) -> cadence_core::physics::Player {
     let mut p = cadence_core::physics::Player::spawn(world);
+    // (CADENCE_NOCLIP: no deaths, as in the game; smoke runs through whole levels)
+    p.noclip = std::env::var_os("CADENCE_NOCLIP").is_some();
     p.camera_triggers = CAMERA_TRIGGERS.with(|c| c.borrow().clone());
     LEVEL_SETTINGS.with(|c| {
         if let Some(level) = c.borrow().as_ref() {
