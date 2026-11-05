@@ -156,7 +156,10 @@ Mark: every item the README listed as missing gets done for 0.0.2. Tick items he
       recorded from the real game — its call:list harness command didn't send).
 - [x] Launcher and packages (`cadence-launcher`, `tools/package.sh`, the release workflow):
       find the game, or get it with a Steam login (SteamCMD), Play, update check.
-- [ ] Still open: group parents / linked objects and SFX speed (agent running); the newer
-      threads messaging (getGJThreads and its ThreadViewPopup / NewThreadPopup / members /
-      invites) and notifications (getGJNotifications): their answer parsers are in unnamed
-      code not found yet, and there is no real account to record against.
+- [x] Group parents / linked objects in advanced follow and area triggers (gparent suite),
+      SFX speed and per-sound proximity (agent, merged). verify_all 123/134.
+- [ ] Still open: the newer threads messaging (getGJThreads and its ThreadViewPopup /
+      NewThreadPopup / members / invites) and notifications (getGJNotifications): their answer
+      parsers are in unnamed code not found yet, and there is no real account to record
+      against. Smaller leftovers the agents noted: spawn-trigger remaps of target groups in
+      advanced follow, Edit SFX's stop (414), SFX pitch (405), random ranges, loops and fades.
