@@ -34,3 +34,6 @@ __pycache__/
 /.claude/worktrees/
 /.wrangler/
 /dist/
+
+# launch drafts (local only)
+LAUNCH_POSTS.md
