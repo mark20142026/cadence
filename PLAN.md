@@ -103,17 +103,17 @@ Added the same day:
 | M0 | Project, RE setup, level decoding | done |
 | M1 | Real-game harness records traces | done (multi-attempt, fast-forward, object/sprite dumps) |
 | M2 | Cube physics matches on Stereo Madness | done (82/82 attempts exact, incl. first ship section) |
-| M3 | All game modes, portals, pads, orbs match | |
-| M4 | Triggers (move, rotate, alpha, color, pulse, toggle, spawn, ...) match | |
+| M3 | All game modes, portals, pads, orbs match | done (bit for bit: 134 of 135 suites, camera 135 of 135; PHYSICS.md) |
+| M4 | Triggers (move, rotate, alpha, color, pulse, toggle, spawn, ...) match | done (player bit for bit, moved groups within 1e-4; Follow 1347, item triggers and the 2.2 move / rotate modes ported from the decompile, not traced) |
 | M5 | Renderer: levels look right (native) | first version (sheets, sprite trees, colors, camera, rotation) |
 | M6 | Web build with bring-your-own-folder loading | done (WebGPU + WebGL2 fallback; CPU fallback pending) |
-| M7 | Menus, progress saving, official levels complete | |
-| M8 | Online level browser via relay | |
-| M9 | Editor | |
-| M10 | Every remaining menu, setting and button | |
-| M11 | Optimization pass on a low-end target; texture packs; older-version levels | |
-| M12 | Cloudflare deploy (site + relay) | |
-| M13 | Mod API (compile-time, then runtime WASM) | |
+| M7 | Menus, progress saving, official levels complete | done (main levels and The Tower, progress save, menus) |
+| M8 | Online level browser via relay | done (search, level pages, downloads; on the web through the relay) |
+| M9 | Editor | done (v0.0.2 checklist) |
+| M10 | Every remaining menu, setting and button | done (v0.0.2 checklist; the Free Chest isn't wired) |
+| M11 | Optimization pass on a low-end target; texture packs; older-version levels | partly (old levels' kS29–kS37 colors read; benchmarks only on an M2, no low-end run; no texture packs) |
+| M12 | Cloudflare deploy (site + relay) | done (one Worker, `wrangler.toml`, `tools/deploy-web.sh`) |
+| M13 | Mod API (compile-time, then runtime WASM) | not started |
 
 ## v0.0.2: nothing left "not yet" (Mark, 2026-11-04)
 

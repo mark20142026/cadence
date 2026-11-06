@@ -86,19 +86,47 @@ Identity: Cadence keeps its own `identity.txt` next to its progress save (`udid`
 account). On first run it copies the device and player ids from the game's save, read-only, so the
 servers see the same player. Logging in turns the password into GJP2 (SHA-1 of the password and
 the game's salt, what the game itself stores) and keeps only that; the password is never written
-or logged. Writes (likes, comments, uploads, rewards) will be opt-in and paced like the real game.
-Cloud save backup/sync is manual, as in the game.
+or logged. Writes are opt-in: each one is sent only when the player presses its button (there are
+no automatic writes and no global switch). Cloud save backup/sync is manual, as in the game.
 
 Logging in: Settings → Account → Log in opens the game's login popup (`ui/login.rs`, from
 `AccountLoginLayer`): username and password fields (Tab switches, Enter submits), the game's own
 error messages in the field labels, Forgot Username / Password open RobTop's pages. On success the
 account and its user id become Cadence's identity, as in the game, and the page shows "Linked to
-account"; More → Unlink logs out. Save and Load (cloud backup) stay greyed: Save would replace the
-account's cloud backup with Cadence's progress, which isn't in the game's save format yet.
+account"; More → Unlink logs out.
 
-Not done yet: registering, the rest of the account UI (chests, comment/like/rating buttons,
-level upload). On the web, browsers can't call the servers directly (no CORS), so the online functions
-are stubs there until a small relay server is deployed; the relay must never log credentials.
+Registering: Account → Register opens the game's register popup (`ui/register.rs`, from
+`AccountRegisterLayer`): username, password and email, each typed twice where the game asks,
+checked in the game's order, then sent to `accounts/registerGJAccount.php` the way the game sends
+it. The password is not kept. On success the game's "Created" alert asks to activate the account
+by email.
+
+Cloud Save and Load (`cloud.rs`, `AccountLayer::onBackup` / `onSync`), shown once logged in:
+Save needs 10 stars, both wait 30 s between tries, and both ask first with the game's text. Load
+downloads the cloud save (`syncGJAccountNew.php`) and reads it into Cadence's progress. Save
+downloads it first, writes Cadence's progress into it without lowering anything (best %,
+attempts and coins only grow), and uploads the result (`backupGJAccountNew.php`), so what Cadence
+doesn't keep stays as the game left it.
+
+Other writes, all from their buttons:
+
+- level pages: comments (`uploadGJComment21.php`), like / dislike once per level, no account
+  needed (`likeGJItem211.php`), rate stars / demon (`rateGJStars211.php`, `rateGJDemon21.php`),
+  report (`reportGJLevel.php`);
+- your levels: upload from the level page's Share popup (`ui/share.rs`, `uploadGJLevel21.php`);
+  your lists: upload / delete (`uploadGJLevelList.php`);
+- accounts (`social.rs`): profile posts and their likes, friend requests, unfriend, block,
+  follow, mute, messages, account settings;
+- the daily chests (`getGJRewards.php` types 1 and 2). The Free Chest only says "No free chests
+  right now".
+
+On the web, browsers can't call the servers directly (no CORS headers), so every request goes
+through Cadence's relay (`relay/worker.js`, a Cloudflare Worker serving the site with the relay
+under `/relay`; `window.CADENCE_RELAY` points the page elsewhere). It passes each request on
+unchanged, stores nothing and logs nothing (no console calls, observability off in
+`wrangler.toml`), since login forms carry a password hash. It is deployed with
+`tools/deploy-web.sh`, which uploads only `web/index.html` and `web/pkg`. `relay/dev.mjs` runs
+the same Worker under Node for local testing.
 
 ## Developer switches
 
