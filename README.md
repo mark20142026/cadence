@@ -11,7 +11,8 @@ Cadence ships **none** of the original game's files. You point it at your own co
 game, and it reads the textures, fonts, sounds and levels from there. It is not affiliated with
 or endorsed by RobTop Games.
 
-**Built in under four days with Claude Opus 5.5.** Cadence is written mostly by Claude Opus 5.5
+**Built in under 72 hours with Claude Opus 5.5** (the first public version after 50). Cadence is
+written mostly by Claude Opus 5.5
 (Anthropic's AI model), with Mark directing, playing and testing it against the real game; the
 day-by-day log is in [JOURNAL.md](JOURNAL.md).
 
